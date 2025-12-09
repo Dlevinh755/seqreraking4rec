@@ -1,11 +1,14 @@
 from typing import Dict, List, Set
 
+from copy import deepcopy
+
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
 from retrieval.base import BaseRetriever
 from retrieval.models.neural_lru import NeuralLRUConfig, NeuralLRURec
+from evaluation.metrics import recall_at_k, ndcg_at_k
 
 
 class _NeuralLRUTrainDataset(Dataset):
@@ -92,6 +95,7 @@ class LRURecRetriever(BaseRetriever):
             raise ValueError("LRURecRetriever.fit requires 'item_count' in kwargs")
         self.item_count = int(item_count)
         self.user_history = train_data
+        val_data: Dict[int, List[int]] | None = kwargs.get("val_data")
 
         cfg = NeuralLRUConfig(
             num_items=self.item_count,
@@ -119,6 +123,9 @@ class LRURecRetriever(BaseRetriever):
             pin_memory=True,
         )
 
+        best_state = None
+        best_val_recall = -1.0
+
         model.train()
         for epoch in range(self.num_epochs):
             total_loss = 0.0
@@ -140,10 +147,57 @@ class LRURecRetriever(BaseRetriever):
                 total_loss += float(loss.item()) * batch_size
 
             avg_loss = total_loss / max(1, seen)
-            print(f"[LRURecRetriever] Epoch {epoch+1}/{self.num_epochs} - loss: {avg_loss:.4f}")
+            log_msg = f"[LRURecRetriever] Epoch {epoch+1}/{self.num_epochs} - loss: {avg_loss:.4f}"
+
+            # Optional validation on val_data after each epoch.
+            if val_data is not None and len(val_data) > 0:
+                # Temporarily attach current model for retrieval-based eval.
+                self.model = model
+                self.is_fitted = True
+                val_metrics = self._evaluate_split(val_data, k=min(10, self.top_k))
+                val_recall = val_metrics["recall"]
+                log_msg += f", val_Recall@{min(10, self.top_k)}: {val_recall:.4f}, val_NDCG: {val_metrics['ndcg']:.4f}"
+
+                if val_recall > best_val_recall:
+                    best_val_recall = val_recall
+                    best_state = deepcopy(model.state_dict())
+                    log_msg += " [BEST]"
+
+            print(log_msg)
+
+        # Load best model (by validation recall) if we have one.
+        if best_state is not None:
+            model.load_state_dict(best_state)
 
         self.model = model
         self.is_fitted = True
+
+    def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> Dict[str, float]:
+        """Compute average Recall@K and NDCG@K for a given split.
+
+        Used for per-epoch validation during training.
+        """
+        users = sorted(split.keys())
+        recalls, ndcgs = [], []
+
+        for u in users:
+            gt_items = split.get(u, [])
+            if not gt_items:
+                continue
+            recs = self.retrieve(u)
+            if not recs:
+                continue
+            recalls.append(recall_at_k(recs, gt_items, k))
+            ndcgs.append(ndcg_at_k(recs, gt_items, k))
+
+        if not recalls:
+            return {"recall": 0.0, "ndcg": 0.0, "num_users": 0}
+
+        return {
+            "recall": float(sum(recalls) / len(recalls)),
+            "ndcg": float(sum(ndcgs) / len(ndcgs)),
+            "num_users": len(recalls),
+        }
 
     def retrieve(self, user_id: int, exclude_items: Set[int] = None) -> List[int]:
         self._validate_fitted()

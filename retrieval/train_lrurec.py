@@ -166,9 +166,10 @@ def main() -> None:
 
     # 3) Build & fit retriever
     RetrieverCls = get_retriever_class(RETRIEVAL_METHOD)
-    retriever = RetrieverCls(top_k=RETRIEVAL_TOP_K)
+    retriever = RetrieverCls(top_k=RETRIEVAL_TOP_K, num_epochs=arg.retrieval_epochs)
     # Neural LRURecRetriever cần biết tổng số item để khởi tạo embedding.
-    retriever.fit(train, item_count=item_count)
+    # Truyền thêm `val` để retriever có thể validation sau mỗi epoch và chọn best model.
+    retriever.fit(train, item_count=item_count, val_data=val)
 
     # 4) Evaluate on val / test (baseline Stage 1)
     val_metrics = _evaluate_split(retriever, val, METRIC_K)
