@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+from evaluation.metrics import recall_at_k, ndcg_at_k
 from retrieval.base import BaseRetriever
 from retrieval.models.mmgcn import Net
 
@@ -101,6 +102,37 @@ class MMGCNRetriever(BaseRetriever):
         self.user_count: int | None = None
         self.item_count: int | None = None
 
+    def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> Dict[str, float]:
+        """Đánh giá nhanh Recall/NDCG@k trên 1 split, dùng current model.
+
+        Giống logic trong `train_mmgcn._evaluate_split` nhưng đóng gói trong retriever
+        để dùng cho validation mỗi epoch.
+        """
+
+        users = sorted(split.keys())
+        recalls, ndcgs = [], []
+
+        for u in users:
+            gt_items = split.get(u, [])
+            if not gt_items:
+                continue
+            recs = self.retrieve(u)
+            if not recs:
+                continue
+            r = recall_at_k(recs, gt_items, k)
+            n = ndcg_at_k(recs, gt_items, k)
+            recalls.append(r)
+            ndcgs.append(n)
+
+        if not recalls:
+            return {"recall": 0.0, "ndcg": 0.0, "num_users": 0}
+
+        return {
+            "recall": float(sum(recalls) / len(recalls)),
+            "ndcg": float(sum(ndcgs) / len(ndcgs)),
+            "num_users": len(recalls),
+        }
+
     def fit(self, train_data: Dict[int, List[int]], **kwargs) -> None:
         """Train MMGCN model.
 
@@ -109,6 +141,10 @@ class MMGCNRetriever(BaseRetriever):
         - train_edge: edge_index [2, E]
         - v_feat, t_feat
         - user_item_dict: Dict[int, Set[int]]
+
+        Optional kwargs for validation mỗi epoch:
+        - val_data: Dict[int, List[int]] (validation interactions)
+        - metric_k: int (cutoff cho Recall@K, NDCG@K), default = 10
         """
 
         item_count = kwargs.get("item_count")
@@ -117,6 +153,8 @@ class MMGCNRetriever(BaseRetriever):
         v_feat = kwargs.get("v_feat")
         t_feat = kwargs.get("t_feat")
         user_item_dict: Dict[int, Set[int]] | None = kwargs.get("user_item_dict")
+        val_data: Dict[int, List[int]] | None = kwargs.get("val_data")
+        metric_k: int = int(kwargs.get("metric_k", 10))
 
         if item_count is None or user_count is None:
             raise ValueError("MMGCNRetriever.fit requires 'item_count' and 'user_count'")
@@ -187,6 +225,9 @@ class MMGCNRetriever(BaseRetriever):
 
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
 
+        best_state_dict = None
+        best_val_recall = -1.0
+
         model.train()
         for epoch in range(self.num_epochs):
             total_loss = 0.0
@@ -207,6 +248,40 @@ class MMGCNRetriever(BaseRetriever):
 
             avg_loss = total_loss / max(1, seen)
             print(f"[MMGCNRetriever] Epoch {epoch+1}/{self.num_epochs} - loss: {avg_loss:.4f}")
+
+            # Validation sau mỗi epoch nếu có val_data
+            if val_data is not None:
+                with torch.no_grad():
+                    model.eval()
+                    _ = model.forward()
+
+                    # tạm thời gán model hiện tại vào retriever để dùng `retrieve`
+                    prev_model = self.model
+                    prev_flag = self.is_fitted
+                    self.model = model
+                    self.is_fitted = True
+
+                    val_metrics = self._evaluate_split(val_data, metric_k)
+                    print(
+                        f"[MMGCNRetriever]   Val users: {val_metrics['num_users']}, "
+                        f"Recall@{metric_k}: {val_metrics['recall']:.4f}, "
+                        f"NDCG@{metric_k}: {val_metrics['ndcg']:.4f}"
+                    )
+
+                    # Lưu best model theo Recall@K
+                    if val_metrics["recall"] > best_val_recall:
+                        best_val_recall = val_metrics["recall"]
+                        best_state_dict = {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+                    # restore trạng thái cũ
+                    self.model = prev_model
+                    self.is_fitted = prev_flag
+
+                model.train()
+
+        # Sau training: dùng best model nếu có validation, ngược lại dùng model cuối
+        if best_state_dict is not None:
+            model.load_state_dict(best_state_dict)
 
         with torch.no_grad():
             model.eval()

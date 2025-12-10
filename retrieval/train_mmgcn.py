@@ -11,6 +11,9 @@ from pytorch_lightning import seed_everything
 
 # Load trực tiếp config.py ở project root để tránh đụng retrieval/config.py
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 CONFIG_PATH = os.path.join(ROOT_DIR, "config.py")
 spec = importlib.util.spec_from_file_location("root_config", CONFIG_PATH)
 if spec is None or spec.loader is None:
@@ -21,6 +24,7 @@ spec.loader.exec_module(_config)
 
 arg = _config.arg
 EXPERIMENT_ROOT = _config.EXPERIMENT_ROOT
+
 from datasets import dataset_factory
 from evaluation.metrics import recall_at_k, ndcg_at_k
 from retrieval.registry import get_retriever_class
@@ -193,6 +197,8 @@ def main() -> None:
         v_feat=v_feat,
         t_feat=t_feat,
         user_item_dict=user_item_dict,
+        val_data=val,
+        metric_k=METRIC_K,
     )
 
     # 4) Evaluate on val / test (giống flow của LRURec)

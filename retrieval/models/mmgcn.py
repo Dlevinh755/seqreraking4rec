@@ -21,6 +21,8 @@ class BaseModel(nn.Module):
         nn.init.xavier_normal_(self.weight)
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        # Đảm bảo edge_index nằm trên cùng device với x
+        edge_index = edge_index.to(x.device)
         row, col = edge_index  # row: target, col: source
         messages = x[col] @ self.weight  # [E, out_dim]
         out = torch.zeros(x.size(0), messages.size(1), device=x.device, dtype=messages.dtype)
@@ -43,7 +45,8 @@ class GCN(torch.nn.Module):
         self.has_id = has_id
 
         if self.dim_latent:
-            self.preference = nn.init.xavier_normal_(torch.rand((num_user, self.dim_latent), requires_grad=True)).cuda()
+            pref = torch.rand((num_user, self.dim_latent), requires_grad=True)
+            self.preference = nn.init.xavier_normal_(pref)
             self.MLP = nn.Linear(self.dim_feat, self.dim_latent)
             self.conv_embed_1 = BaseModel(self.dim_latent, self.dim_latent, aggr=self.aggr_mode)
             nn.init.xavier_normal_(self.conv_embed_1.weight)
@@ -53,7 +56,8 @@ class GCN(torch.nn.Module):
             nn.init.xavier_normal_(self.g_layer1.weight) 
 
         else:
-            self.preference = nn.init.xavier_normal_(torch.rand((num_user, self.dim_feat), requires_grad=True)).cuda()
+            pref = torch.rand((num_user, self.dim_feat), requires_grad=True)
+            self.preference = nn.init.xavier_normal_(pref)
             self.conv_embed_1 = BaseModel(self.dim_feat, self.dim_feat, aggr=self.aggr_mode)
             nn.init.xavier_normal_(self.conv_embed_1.weight)
             self.linear_layer1 = nn.Linear(self.dim_feat, self.dim_id)
@@ -77,9 +81,11 @@ class GCN(torch.nn.Module):
         temp_features = self.MLP(features) if self.dim_latent else features
 
         # Ghép user preference + item features thành một tensor node features
-        x = torch.cat((self.preference, temp_features), dim=0)
-        # Đưa về đúng device và chuẩn hoá, tránh NaN/Inf
-        x = x.to(id_embedding.device)
+        device = id_embedding.device
+        pref = self.preference.to(device)
+        temp_features = temp_features.to(device)
+        x = torch.cat((pref, temp_features), dim=0)
+        # Chuẩn hoá, tránh NaN/Inf
         x = F.normalize(x, p=2.0, dim=1, eps=1e-12)
         x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
