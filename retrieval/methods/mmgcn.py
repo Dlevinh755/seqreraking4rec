@@ -73,13 +73,13 @@ class MMGCNRetriever(BaseRetriever):
         top_k: int = 50,
         batch_size: int = 256,
         num_epochs: int = 10,
-        lr: float = 1e-3,
+        lr: float = 1e-4,
         reg_weight: float = 1e-4,
-        num_workers: int = 0,
+        num_workers: int = 4,
         dim_x: int = 64,
         aggr_mode: str = "add",
         concate: bool = True,
-        num_layer: int = 3,
+        num_layer: int = 2,
         has_id: bool = True,
     ) -> None:
         super().__init__(top_k=top_k)
@@ -304,7 +304,7 @@ class MMGCNRetriever(BaseRetriever):
             print(f"[MMGCNRetriever] Epoch {cur_epoch}/{self.num_epochs} - loss: {avg_loss:.4f}")
 
             # Validation định kỳ nếu có val_data: 3 epoch 1 lần (và luôn eval epoch cuối)
-            if val_data is not None and (cur_epoch % 3 == 0 or cur_epoch == self.num_epochs):
+            if val_data is not None and (cur_epoch % 2 == 0 or cur_epoch == self.num_epochs):
                 with torch.no_grad():
                     model.eval()
                     _ = model.forward()
