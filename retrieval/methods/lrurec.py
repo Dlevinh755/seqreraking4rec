@@ -130,6 +130,7 @@ class LRURecRetriever(BaseRetriever):
         best_state = None
         best_val_recall = -1.0
         epochs_no_improve = 0
+        best_epoch = 0
 
         model.train()
         for epoch in range(self.num_epochs):
@@ -168,6 +169,7 @@ class LRURecRetriever(BaseRetriever):
                     best_state = deepcopy(model.state_dict())
                     log_msg += " [BEST]"
                     epochs_no_improve = 0
+                    best_epoch = epoch + 1
                 else:
                     epochs_no_improve += 1
 
@@ -185,7 +187,7 @@ class LRURecRetriever(BaseRetriever):
 
         self.model = model
         self.is_fitted = True
-        self.best_state = best_state
+        self.best_state = best_epoch
 
     def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> Dict[str, float]:
         """Compute average Recall@K and NDCG@K for a given split.
