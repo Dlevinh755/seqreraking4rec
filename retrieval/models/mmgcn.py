@@ -76,8 +76,12 @@ class GCN(torch.nn.Module):
     def forward(self, features, id_embedding):
         temp_features = self.MLP(features) if self.dim_latent else features
 
-        x = torch.cat((self.preference, temp_features),dim=0)
-        x = F.normalize(x).cuda()
+        # Ghép user preference + item features thành một tensor node features
+        x = torch.cat((self.preference, temp_features), dim=0)
+        # Đưa về đúng device và chuẩn hoá, tránh NaN/Inf
+        x = x.to(id_embedding.device)
+        x = F.normalize(x, p=2.0, dim=1, eps=1e-12)
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
         h = F.leaky_relu(self.conv_embed_1(x, self.edge_index))#equation 1
         x_hat = F.leaky_relu(self.linear_layer1(x)) + id_embedding if self.has_id else F.leaky_relu(self.linear_layer1(x))#equation 5 
@@ -103,16 +107,21 @@ class Net(torch.nn.Module):
         self.aggr_mode = aggr_mode
         self.concate = concate
         self.user_item_dict = user_item_dict
-        self.weight = torch.tensor([[1.0],[-1.0]]).cuda()
+        # Trọng số cho BPR: [pos, neg] -> pos-neg
+        self.weight = torch.tensor([[1.0],[-1.0]])
         self.reg_weight = reg_weight
         
         # edge_index được truyền vào dạng [2, E]
-        self.edge_index = torch.tensor(edge_index, dtype=torch.long).contiguous().cuda()
+        self.edge_index = torch.tensor(edge_index, dtype=torch.long).contiguous()
         # Làm đồ thị vô hướng: thêm cạnh đảo chiều [v, u] cho mỗi [u, v]
         self.edge_index = torch.cat((self.edge_index, self.edge_index[[1, 0]]), dim=1)
         self.num_modal = 0
 
-        self.v_feat = torch.tensor(v_feat, dtype=torch.float).cuda()
+        # Chuẩn hoá và làm sạch CLIP visual features
+        v_tensor = torch.tensor(v_feat, dtype=torch.float32)
+        v_tensor = torch.nan_to_num(v_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+        v_tensor = F.normalize(v_tensor, p=2.0, dim=1, eps=1e-12)
+        self.v_feat = v_tensor
         self.v_gcn = GCN(
             self.edge_index,
             batch_size,
@@ -127,7 +136,11 @@ class Net(torch.nn.Module):
             dim_latent=256,
         )
 
-        self.t_feat = torch.tensor(t_feat, dtype=torch.float).cuda()
+        # Chuẩn hoá và làm sạch CLIP text features
+        t_tensor = torch.tensor(t_feat, dtype=torch.float32)
+        t_tensor = torch.nan_to_num(t_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+        t_tensor = F.normalize(t_tensor, p=2.0, dim=1, eps=1e-12)
+        self.t_feat = t_tensor
         self.t_gcn = GCN(
             self.edge_index,
             batch_size,
@@ -146,20 +159,35 @@ class Net(torch.nn.Module):
         # nn.init.xavier_normal_(self.word_embedding.weight) 
         # self.t_gcn = GCN(self.edge_index, batch_size, num_user, num_item, 128, dim_x, self.aggr_mode, self.concate, num_layer=num_layer, has_id=has_id)
 
-        self.id_embedding = nn.init.xavier_normal_(torch.rand((num_user+num_item, dim_x), requires_grad=True)).cuda()
-        self.result = nn.init.xavier_normal_(torch.rand((num_user+num_item, dim_x))).cuda()
+        # Các embedding id & kết quả cuối, để đúng device trong forward
+        self.id_embedding = nn.init.xavier_normal_(
+            torch.rand((num_user + num_item, dim_x), requires_grad=True)
+        )
+        self.result = nn.init.xavier_normal_(
+            torch.rand((num_user + num_item, dim_x))
+        )
 
 
     def forward(self):
+        device = next(self.parameters()).device
+
+        # Đảm bảo mọi thứ ở đúng device
+        self.edge_index = self.edge_index.to(device)
+        self.v_feat = self.v_feat.to(device)
+        self.t_feat = self.t_feat.to(device)
+        self.id_embedding = self.id_embedding.to(device)
+
         # Visual branch
         v_rep = self.v_gcn(self.v_feat, self.id_embedding)
 
-        # Text branch
-        # self.t_feat có thể là CLIP text embedding hoặc embedding trung bình từ words_tensor
+        # Text branch: CLIP text embedding
         t_rep = self.t_gcn(self.t_feat, self.id_embedding)
 
         # Chỉ dùng 2 modality: visual + text
         representation = (v_rep + t_rep) / 2.0
+
+        # Loại bỏ mọi NaN/Inf nếu có
+        representation = torch.nan_to_num(representation, nan=0.0, posinf=0.0, neginf=0.0)
 
         self.result = representation
         return representation
@@ -171,10 +199,15 @@ class Net(torch.nn.Module):
         user_score = out[user_tensor]
         item_score = out[item_tensor]
         score = torch.sum(user_score*item_score, dim=1).view(-1, 2)
-        loss = -torch.mean(torch.log(torch.sigmoid(torch.matmul(score, self.weight))))
+        # BPR-style loss với công thức ổn định số hơn:
+        # -log(sigmoid(x)) = softplus(-x)
+        self.weight = self.weight.to(score.device)
+        logits = torch.matmul(score, self.weight)  # [B, 1]
+        base_loss = torch.nn.functional.softplus(-logits).mean()
         reg_embedding_loss = (self.id_embedding[user_tensor]**2 + self.id_embedding[item_tensor]**2).mean()+(self.v_gcn.preference**2).mean()
         reg_loss = self.reg_weight * (reg_embedding_loss)
-        return loss+reg_loss, reg_loss, loss, reg_embedding_loss, reg_embedding_loss
+        loss = base_loss + reg_loss
+        return loss, reg_loss, base_loss, reg_embedding_loss, reg_embedding_loss
 
     def accuracy(self, step=2000, topk=10):
         user_tensor = self.result[:self.num_user]

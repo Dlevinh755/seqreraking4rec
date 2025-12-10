@@ -1,4 +1,6 @@
 import os
+import sys
+import importlib.util
 import pickle
 from pathlib import Path
 from typing import Dict, List
@@ -7,7 +9,18 @@ import numpy as np
 import torch
 from pytorch_lightning import seed_everything
 
-from config import arg, EXPERIMENT_ROOT
+# Load trực tiếp config.py ở project root để tránh đụng retrieval/config.py
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_PATH = os.path.join(ROOT_DIR, "config.py")
+spec = importlib.util.spec_from_file_location("root_config", CONFIG_PATH)
+if spec is None or spec.loader is None:
+    raise ImportError(f"Cannot load root config from {CONFIG_PATH}")
+_config = importlib.util.module_from_spec(spec)
+sys.modules["root_config"] = _config
+spec.loader.exec_module(_config)
+
+arg = _config.arg
+EXPERIMENT_ROOT = _config.EXPERIMENT_ROOT
 from datasets import dataset_factory
 from evaluation.metrics import recall_at_k, ndcg_at_k
 from retrieval.registry import get_retriever_class
