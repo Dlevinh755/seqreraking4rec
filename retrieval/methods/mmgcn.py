@@ -102,22 +102,75 @@ class MMGCNRetriever(BaseRetriever):
         self.user_count: int | None = None
         self.item_count: int | None = None
 
-    def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> Dict[str, float]:
-        """Đánh giá nhanh Recall/NDCG@k trên 1 split, dùng current model.
+    def _batch_retrieve(self, users: List[int]) -> Dict[int, List[int]]:
+        """Trả về top-K candidates cho nhiều user cùng lúc, tận dụng GPU.
 
-        Giống logic trong `train_mmgcn._evaluate_split` nhưng đóng gói trong retriever
-        để dùng cho validation mỗi epoch.
+        Dùng embedding đã tính sẵn trong `self.model.result`:
+        - user_embs: [num_user, dim]
+        - item_embs: [num_item, dim]
         """
 
-        users = sorted(split.keys())
-        recalls, ndcgs = [], []
+        self._validate_fitted()
+        if self.model is None or self.user_count is None or self.item_count is None:
+            raise RuntimeError("MMGCNRetriever model not initialized")
 
-        for u in users:
+        if not users:
+            return {}
+
+        device = next(self.model.parameters()).device
+        user_embs = self.model.result[: self.user_count].to(device)
+        item_embs = self.model.result[self.user_count : self.user_count + self.item_count].to(device)
+
+        k = min(self.top_k, self.item_count)
+        batch_size = max(1, self.batch_size)
+        results: Dict[int, List[int]] = {}
+
+        for start in range(0, len(users), batch_size):
+            batch_users = users[start : start + batch_size]
+            # Chuyển user_id (1-based) sang index 0-based
+            u_idx = torch.tensor([u - 1 for u in batch_users], device=device, dtype=torch.long)
+            u_vecs = user_embs[u_idx]  # [B, dim]
+
+            scores = torch.matmul(u_vecs, item_embs.t())  # [B, num_item]
+
+            # Mask history (train interactions) giống hàm retrieve()
+            for row, u in enumerate(batch_users):
+                history = self.user_history.get(u, [])
+                for item in history:
+                    if 1 <= item <= self.item_count:
+                        scores[row, item - 1] = -1e9
+
+            _, top_idx = torch.topk(scores, k, dim=1)
+            top_idx = top_idx.cpu()
+
+            for row, u in enumerate(batch_users):
+                # +1 để chuyển về item_id 1-based
+                results[u] = (top_idx[row] + 1).tolist()
+
+        return results
+
+    def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> Dict[str, float]:
+        """Đánh giá Recall@k / NDCG@k trên 1 split bằng batch scoring.
+
+        Thay vì gọi `retrieve` từng user (rất chậm), hàm này:
+        - Lấy embedding user/item từ `self.model.result`.
+        - Tính score cho nhiều user cùng lúc trên GPU.
+        - Gọi lại `recall_at_k`, `ndcg_at_k` cho từng user (nhưng phần nặng là matmul)."""
+
+        users = sorted(split.keys())
+        # Chỉ giữ user có ground-truth
+        eval_users = [u for u in users if split.get(u)]
+        if not eval_users:
+            return {"recall": 0.0, "ndcg": 0.0, "num_users": 0}
+
+        # Top-K candidates cho tất cả user trong split
+        user_to_cands = self._batch_retrieve(eval_users)
+
+        recalls, ndcgs = [], []
+        for u in eval_users:
             gt_items = split.get(u, [])
-            if not gt_items:
-                continue
-            recs = self.retrieve(u)
-            if not recs:
+            recs = user_to_cands.get(u, [])
+            if not recs or not gt_items:
                 continue
             r = recall_at_k(recs, gt_items, k)
             n = ndcg_at_k(recs, gt_items, k)
@@ -303,16 +356,8 @@ class MMGCNRetriever(BaseRetriever):
         if not (0 <= u_idx < self.user_count):
             return []
 
+        # Tận dụng hàm batch cho 1 user để dùng lại code
         with torch.no_grad():
-            user_vec = self.model.result[u_idx]
-            item_embs = self.model.result[self.user_count : self.user_count + self.item_count]
-            scores = torch.matmul(item_embs, user_vec)
+            cands_dict = self._batch_retrieve([user_id])
 
-        scores = scores.clone()
-        for item in blocked:
-            if 1 <= item <= self.item_count:
-                scores[item - 1] = -1e9
-
-        k = min(self.top_k, self.item_count)
-        _, top_idx = torch.topk(scores, k)
-        return [int(i.item()) + 1 for i in top_idx]
+        return cands_dict.get(user_id, [])

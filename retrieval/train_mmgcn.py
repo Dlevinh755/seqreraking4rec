@@ -41,6 +41,19 @@ def _evaluate_split(
     split: Dict[int, List[int]],
     k: int,
 ) -> Dict[str, float]:
+    """Đánh giá split.
+
+    Nếu retriever có hàm `_evaluate_split` tối ưu (như MMGCN), dùng trực tiếp.
+    Ngược lại fallback về vòng lặp chậm hơn.
+    """
+
+    if hasattr(retriever, "_evaluate_split"):
+        try:
+            return retriever._evaluate_split(split, k)  # type: ignore[attr-defined]
+        except Exception:
+            # Nếu có lỗi thì fallback cách cũ để an toàn
+            pass
+
     users = sorted(split.keys())
     recalls, ndcgs = [], []
 
@@ -122,13 +135,27 @@ def _build_retrieved_matrices(
     probs: List[List[float]] = []
     labels: List[int] = []
 
-    for u in users:
+    # Chỉ giữ user có ground-truth
+    eval_users = [u for u in users if split.get(u)]
+
+    # Nếu retriever hỗ trợ batch (MMGCN), dùng để sinh candidates nhanh hơn
+    user_to_cands = {}
+    if hasattr(retriever, "_batch_retrieve"):
+        try:
+            user_to_cands = retriever._batch_retrieve(eval_users)  # type: ignore[attr-defined]
+        except Exception:
+            # fallback: sẽ dùng retrieve từng user ở dưới
+            user_to_cands = {}
+
+    for u in eval_users:
         gt_items = split.get(u, [])
         if not gt_items:
             continue
         label = gt_items[0]
 
-        cands = retriever.retrieve(u)
+        cands = user_to_cands.get(u)
+        if cands is None:
+            cands = retriever.retrieve(u)
         # Khởi tạo tất cả = -1e9, giống cách LlamaRec mask padding/history
         scores = torch.full((item_count + 1,), -1e9, dtype=torch.float32)
         # Gán điểm giảm dần cho candidates (vị trí đầu có score cao nhất)
