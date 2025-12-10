@@ -63,6 +63,8 @@ class LRURecRetriever(BaseRetriever):
         dropout: float = 0.1,
         attn_dropout: float = 0.1,
         batch_size: int = 128,
+        patience: int | None = None,
+        num_workers: int = 0,
         num_epochs: int = 3,
         lr: float = 1e-3,
         weight_decay: float = 0.0,
@@ -75,6 +77,8 @@ class LRURecRetriever(BaseRetriever):
         self.dropout = dropout
         self.attn_dropout = attn_dropout
         self.batch_size = batch_size
+        self.patience = patience
+        self.num_workers = num_workers
         self.num_epochs = num_epochs
         self.lr = lr
         self.weight_decay = weight_decay
@@ -119,12 +123,13 @@ class LRURecRetriever(BaseRetriever):
             train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=0,
+            num_workers=self.num_workers,
             pin_memory=True,
         )
 
         best_state = None
         best_val_recall = -1.0
+        epochs_no_improve = 0
 
         model.train()
         for epoch in range(self.num_epochs):
@@ -162,6 +167,15 @@ class LRURecRetriever(BaseRetriever):
                     best_val_recall = val_recall
                     best_state = deepcopy(model.state_dict())
                     log_msg += " [BEST]"
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+
+                # Early stopping nếu không cải thiện sau `patience` epoch.
+                if self.patience is not None and epochs_no_improve >= self.patience:
+                    print(f"[LRURecRetriever] Early stopping at epoch {epoch+1} (no improvement for {self.patience} epochs)")
+                    print(log_msg)
+                    break
 
             print(log_msg)
 
@@ -171,6 +185,7 @@ class LRURecRetriever(BaseRetriever):
 
         self.model = model
         self.is_fitted = True
+        self.best_state = best_state
 
     def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> Dict[str, float]:
         """Compute average Recall@K and NDCG@K for a given split.

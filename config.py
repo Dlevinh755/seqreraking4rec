@@ -19,6 +19,12 @@ parser.add_argument('--use_text', action='store_true', default=False, help='Filt
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--retrieval_epochs', type=int, default=10,
 					help='Number of training epochs for Stage-1 retrieval models (e.g., neural LRURec).')
+parser.add_argument('--batch_size_retrieval', type=int, default=128,
+					help='Batch size for Stage-1 retrieval model training.')
+parser.add_argument('--num_workers_retrieval', type=int, default=0,
+					help='Number of DataLoader workers for Stage-1 retrieval model.')
+parser.add_argument('--retrieval_patience', type=int, default=5,
+					help='Early stopping patience (epochs without val improvement) for Stage-1 retrieval.')
 arg = parser.parse_args()
 
 

@@ -166,13 +166,22 @@ def main() -> None:
 
     # 3) Build & fit retriever
     RetrieverCls = get_retriever_class(RETRIEVAL_METHOD)
-    retriever = RetrieverCls(top_k=RETRIEVAL_TOP_K, num_epochs=arg.retrieval_epochs)
+    retriever = RetrieverCls(
+        top_k=RETRIEVAL_TOP_K,
+        num_epochs=arg.retrieval_epochs,
+        batch_size=arg.batch_size_retrieval,
+        num_workers=arg.num_workers_retrieval,
+        patience=arg.retrieval_patience,
+    )
     # Neural LRURecRetriever cần biết tổng số item để khởi tạo embedding.
     # Truyền thêm `val` để retriever có thể validation sau mỗi epoch và chọn best model.
     retriever.fit(train, item_count=item_count, val_data=val)
 
     # 4) Evaluate on val / test (baseline Stage 1)
-    val_metrics = _evaluate_split(retriever, val, METRIC_K)
+    print("\n" + "=" * 80)
+    print(f"Load best model state from training: epoch {retriever.best_state}")
+    print("=" * 80 + "\n")
+    print("Evaluating Stage 1 Retrieval on test set...")
     test_metrics = _evaluate_split(retriever, test, METRIC_K)
 
     print("=" * 80)
@@ -184,7 +193,6 @@ def main() -> None:
     print(f"Retrieval K : {RETRIEVAL_TOP_K}")
     print(f"Metric K    : {METRIC_K}")
     print("-" * 80)
-    print(f"VAL  - users: {val_metrics['num_users']}, Recall@{METRIC_K}: {val_metrics['recall']:.4f}, NDCG@{METRIC_K}: {val_metrics['ndcg']:.4f}")
     print(f"TEST - users: {test_metrics['num_users']}, Recall@{METRIC_K}: {test_metrics['recall']:.4f}, NDCG@{METRIC_K}: {test_metrics['ndcg']:.4f}")
     print("=" * 80)
 
