@@ -4,8 +4,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Parameter
-from BaseModel import BaseModel
 from torch_geometric.utils import scatter_
+
+
+class BaseModel(nn.Module):
+    """Đơn giản hoá GCN layer dùng scatter_ (thay cho BaseModel gốc).
+
+    - x: [N, in_dim]
+    - edge_index: [2, E]
+    - Trả về: [N, out_dim] sau khi aggregate neighbor messages.
+    """
+
+    def __init__(self, in_dim: int, out_dim: int, aggr: str = "add") -> None:
+        super().__init__()
+        self.aggr = aggr
+        self.weight = nn.Parameter(torch.empty(in_dim, out_dim))
+        nn.init.xavier_normal_(self.weight)
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        row, col = edge_index  # row: target, col: source
+        messages = x[col] @ self.weight
+        out = scatter_(self.aggr, messages, row, dim_size=x.size(0))
+        return out
 
 class GCN(torch.nn.Module):
     def __init__(self, edge_index, batch_size, num_user, num_item, dim_feat, dim_id, aggr_mode, concate, num_layer, has_id, dim_latent=None):
