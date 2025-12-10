@@ -192,18 +192,58 @@ class LRURecRetriever(BaseRetriever):
 
         Used for per-epoch validation during training.
         """
-        users = sorted(split.keys())
+        users = [u for u in sorted(split.keys()) if split.get(u)]
         recalls, ndcgs = [], []
 
-        for u in users:
-            gt_items = split.get(u, [])
-            if not gt_items:
+        if not users:
+            return {"recall": 0.0, "ndcg": 0.0, "num_users": 0}
+
+        batch_size = max(1, self.batch_size)
+
+        for start in range(0, len(users), batch_size):
+            batch_users = users[start : start + batch_size]
+
+            seq_batch = []
+            hist_batch = []
+            for u in batch_users:
+                seq = self.user_history.get(u, [])
+                if not seq:
+                    # Không có history thì bỏ user này khỏi batch
+                    continue
+                seq_tokens = seq[-self.max_len :]
+                pad_len = self.max_len - len(seq_tokens)
+                seq_tokens = [0] * pad_len + seq_tokens
+
+                seq_batch.append(seq_tokens)
+                hist_batch.append(seq)
+
+            if not seq_batch:
                 continue
-            recs = self.retrieve(u)
-            if not recs:
-                continue
-            recalls.append(recall_at_k(recs, gt_items, k))
-            ndcgs.append(ndcg_at_k(recs, gt_items, k))
+
+            inputs = torch.LongTensor(seq_batch).to(self.device)
+            with torch.no_grad():
+                self.model.eval()
+                scores_batch = self.model(inputs)[:, -1, :]  # [B, num_items+1]
+
+            for i, u in enumerate(batch_users[: len(seq_batch)]):
+                gt_items = split.get(u, [])
+                if not gt_items:
+                    continue
+
+                scores = scores_batch[i].clone()
+
+                # Mask history and padding index 0 giống retrieve()
+                for item in hist_batch[i]:
+                    if 0 < item <= self.item_count:
+                        scores[item] = -1e9
+                scores[0] = -1e9
+
+                topk_k = min(self.top_k, self.item_count)
+                _, indices = torch.topk(scores, k=topk_k)
+                recs = [int(idx.item()) for idx in indices]
+
+                recalls.append(recall_at_k(recs, gt_items, k))
+                ndcgs.append(ndcg_at_k(recs, gt_items, k))
 
         if not recalls:
             return {"recall": 0.0, "ndcg": 0.0, "num_users": 0}
