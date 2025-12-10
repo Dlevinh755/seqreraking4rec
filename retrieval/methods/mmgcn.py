@@ -122,7 +122,7 @@ class MMGCNRetriever(BaseRetriever):
         item_embs = self.model.result[self.user_count : self.user_count + self.item_count].to(device)
 
         k = min(self.top_k, self.item_count)
-        batch_size = max(1, self.batch_size)
+        batch_size = max(1, self.batch_size * 4)
         results: Dict[int, List[int]] = {}
 
         for start in range(0, len(users), batch_size):
