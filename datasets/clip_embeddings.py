@@ -40,7 +40,7 @@ from tqdm import tqdm
 
 CLIP_MODEL_NAME = "ViT-B-32"  # open_clip model name
 CLIP_PRETRAINED = "openai"
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 
 
 def _load_clip_model(device: torch.device):

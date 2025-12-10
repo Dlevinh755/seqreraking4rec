@@ -146,17 +146,18 @@ def main() -> None:
     preprocessed_folder = dataset._get_preprocessed_folder_path()
     clip_path = preprocessed_folder / "clip_embeddings.pt"
     payload = torch.load(clip_path)
-    v_feat = payload["image_embs"]
-    t_feat = payload["text_embs"]
+    # Bỏ index 0 (padding) để chỉ giữ đúng num_item embedding
+    v_feat = payload["image_embs"][1:]
+    t_feat = payload["text_embs"][1:]
 
     user_ids = []
     item_ids = []
 
     for u, items in train.items():
         for i in items:
-            # nếu MMGCN dùng index 0..U-1 và 0..I-1 thì trừ 1
+            # User node: 0..user_count-1, Item node: user_count..user_count+item_count-1
             user_ids.append(u - 1)
-            item_ids.append(i - 1)
+            item_ids.append(user_count + i - 1)
 
     train_edge = torch.tensor([user_ids, item_ids], dtype=torch.long)
     

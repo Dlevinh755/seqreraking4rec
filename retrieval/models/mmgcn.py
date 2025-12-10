@@ -106,8 +106,10 @@ class Net(torch.nn.Module):
         self.weight = torch.tensor([[1.0],[-1.0]]).cuda()
         self.reg_weight = reg_weight
         
-        self.edge_index = torch.tensor(edge_index).t().contiguous().cuda()
-        self.edge_index = torch.cat((self.edge_index, self.edge_index[[1,0]]), dim=1)
+        # edge_index được truyền vào dạng [2, E]
+        self.edge_index = torch.tensor(edge_index, dtype=torch.long).contiguous().cuda()
+        # Làm đồ thị vô hướng: thêm cạnh đảo chiều [v, u] cho mỗi [u, v]
+        self.edge_index = torch.cat((self.edge_index, self.edge_index[[1, 0]]), dim=1)
         self.num_modal = 0
 
         self.v_feat = torch.tensor(v_feat, dtype=torch.float).cuda()
