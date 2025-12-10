@@ -300,10 +300,11 @@ class MMGCNRetriever(BaseRetriever):
                 total_loss += float(loss.item()) * bsz
 
             avg_loss = total_loss / max(1, seen)
-            print(f"[MMGCNRetriever] Epoch {epoch+1}/{self.num_epochs} - loss: {avg_loss:.4f}")
+            cur_epoch = epoch + 1
+            print(f"[MMGCNRetriever] Epoch {cur_epoch}/{self.num_epochs} - loss: {avg_loss:.4f}")
 
-            # Validation sau mỗi epoch nếu có val_data
-            if val_data is not None:
+            # Validation định kỳ nếu có val_data: 3 epoch 1 lần (và luôn eval epoch cuối)
+            if val_data is not None and (cur_epoch % 3 == 0 or cur_epoch == self.num_epochs):
                 with torch.no_grad():
                     model.eval()
                     _ = model.forward()
