@@ -213,6 +213,13 @@ def main() -> None:
         num_epochs=arg.retrieval_epochs,
         batch_size=arg.batch_size_retrieval,
         num_workers=arg.num_workers_retrieval,
+        lr=arg.mmgcn_lr,
+        reg_weight=arg.mmgcn_reg_weight,
+        dim_x=arg.mmgcn_dim_x,
+        aggr_mode=arg.mmgcn_aggr_mode,
+        concate=bool(arg.mmgcn_concate),
+        num_layer=arg.mmgcn_num_layer,
+        has_id=bool(arg.mmgcn_has_id),
     )
 
     # MMGCNRetriever cần biết tổng số user, item và graph + CLIP features.
