@@ -715,7 +715,7 @@ def build_vip5_training_sample(
     can_t = " \n ".join(candidate_parts)
 
     # Ký tự output tương ứng vị trí của label trong candidates
-    if label not in candidates:
+    if label not in candidates and label != -1:
         # Behavior controlled by args / global config: either append label or raise
         append_flag = getattr(args, 'append_label_if_missing', False)
         # fall back to global config if args doesn't have the flag
@@ -730,7 +730,11 @@ def build_vip5_training_sample(
             candidates = list(candidates) + [label]
         else:
             raise ValueError("Label item_id must exist in candidates for VIP5 sample.")
-    output_letter = chr(ord("A") + candidates.index(label))
+    
+    if label == -1:
+        output_letter = 'A'  # dummy
+    else:
+        output_letter = chr(ord("A") + candidates.index(label))
 
     # Câu lệnh hướng dẫn tương tự LLMRec nhưng có thể thay đổi sau
     system_prompt = (

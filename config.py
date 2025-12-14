@@ -116,9 +116,9 @@ parser.add_argument('--vip5_warmup_ratio', type=float, default=0.05,
 					help='Warmup ratio for VIP5 learning rate scheduler.')
 parser.add_argument('--vip5_batch_size', type=int, default=16,
 					help='Batch size for VIP5 training.')
-parser.add_argument('--vip5_append_label_if_missing', action='store_true',
+parser.add_argument('--vip5_append_label_if_missing', action='store_true', default=False,
                     help='If set, append ground-truth label to candidates when missing (fallback).')
-parser.add_argument('--vip5_zero_metrics_if_missing', action='store_true',
+parser.add_argument('--vip5_zero_metrics_if_missing', action='store_true', default=True,
                     help='If set, treat missing ground-truth during validation as Recall/NDCG=0.0.')
 arg = parser.parse_args()
 

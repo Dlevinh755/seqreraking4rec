@@ -189,6 +189,13 @@ class VIP5EvalDataset(Dataset):
             history = self.train[user] + self.val[user]
             label = self.test[user][0]
 
+        zero_flag = getattr(self.vip5_args, 'zero_metrics_if_missing', False)
+        if label not in cands:
+            if zero_flag:
+                label = -1
+            else:
+                raise ValueError("Label item_id must exist in candidates for VIP5 sample.")
+
         seq = history[- self.vip5_args.max_text_length :]
 
         sample = build_vip5_training_sample(
