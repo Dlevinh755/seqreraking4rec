@@ -429,102 +429,19 @@ class VIP5Trainer(TrainerBase):
         if self.val_loader is None or self.model is None:
             return float("inf")
 
-        return self._evaluate_loader(self.val_loader)
+        return self._evaluate_loader(self.val_loader, name="val")
 
-        def _evaluate_loader(self, loader, name: str = "val") -> float:
-            """Generic evaluation over a DataLoader that computes loss, Recall@K and NDCG@K.
+    def _evaluate_loader(self, loader, name: str = "val") -> float:
+        """Generic evaluation over a DataLoader that computes loss, Recall@K and NDCG@K.
 
-            Returns average loss (or inf if not computable).
-            Prints metrics when `self.verbose`.
-            """
-            if loader is None or self.model is None:
-                return float("inf")
+        Returns average loss (or inf if not computable).
+        Prints metrics when `self.verbose`.
+        """
+        if loader is None or self.model is None:
+            return float("inf")
 
-            self.model.eval()
-            total_loss = 0.0
-            steps = 0
-            from evaluation.metrics import recall_at_k, ndcg_at_k
-
-            recalls = []
-            ndcgs = []
-            K = 10
-
-            with torch.no_grad():
-                for batch in loader:
-                    batch = self._move_batch_to_device(batch)
-
-                    # compute validation loss if model provides valid_step
-                    try:
-                        outputs = self.model.valid_step(batch)
-                        loss = self._compute_loss_from_outputs(outputs)
-                        total_loss += float(loss.item())
-                    except Exception:
-                        # skip loss if valid_step not implemented
-                        pass
-
-                    # compute ranking metrics by scoring each candidate via the model
-                    bsize = batch["input_ids"].size(0)
-                    for i in range(bsize):
-                        cands = batch.get("candidates", [])[i]
-                        if not cands:
-                            continue
-                        label = int(batch.get("label_id", -1)[i].item()) if batch.get("label_id", None) is not None else -1
-
-                        enc_input = batch["input_ids"][i].unsqueeze(0)
-                        enc_attn = batch["attention_mask"][i].unsqueeze(0)
-
-                        scores = []
-                        for j, _ in enumerate(cands):
-                            letter = chr(ord("A") + j)
-                            try:
-                                dec = self.tokenizer(letter, return_tensors="pt")
-                                dec_input = dec["input_ids"].to(self.device)
-                            except Exception:
-                                dec_input = torch.tensor(self.tokenizer.encode(letter)).unsqueeze(0).to(self.device)
-
-                            try:
-                                out = self.model.forward(input_ids=enc_input.to(self.device), attention_mask=enc_attn.to(self.device), labels=dec_input)
-                                if isinstance(out, dict):
-                                    l = out.get("loss", None)
-                                else:
-                                    l = getattr(out, "loss", None)
-                                if l is None:
-                                    l = out[0] if isinstance(out, (list, tuple)) else None
-                                score = -float(l.item()) if l is not None else 0.0
-                            except Exception:
-                                score = 0.0
-                            scores.append(score)
-
-                        ranked = [c for _, c in sorted(zip(scores, cands), key=lambda x: x[0], reverse=True)]
-                        if label != -1:
-                            recalls.append(recall_at_k(ranked, [label], K))
-                            ndcgs.append(ndcg_at_k(ranked, [label], K))
-                        else:
-                            zero_flag = getattr(self.args, 'zero_metrics_if_missing', False)
-                            try:
-                                from config import arg as global_arg
-                                zero_flag = zero_flag or getattr(global_arg, 'vip5_zero_metrics_if_missing', False)
-                            except Exception:
-                                pass
-                            if zero_flag:
-                                recalls.append(0.0)
-                                ndcgs.append(0.0)
-
-                    steps += 1
-
-            avg_loss = total_loss / max(1, steps)
-            if recalls:
-                avg_rec = float(sum(recalls) / len(recalls))
-                avg_ndcg = float(sum(ndcgs) / len(ndcgs))
-            else:
-                avg_rec = 0.0
-                avg_ndcg = 0.0
-
-            if self.verbose:
-                print(f"           {name}_loss   = {avg_loss:.4f}")
-                print(f"           Recall@{K} = {avg_rec:.4f}, NDCG@{K} = {avg_ndcg:.4f}")
-
-            return avg_loss
+        self.model.eval()
+        total_loss = 0.0
         steps = 0
         from evaluation.metrics import recall_at_k, ndcg_at_k
 
@@ -533,8 +450,7 @@ class VIP5Trainer(TrainerBase):
         K = 10
 
         with torch.no_grad():
-            for batch in self.val_loader:
-                # move tensors to device
+            for batch in loader:
                 batch = self._move_batch_to_device(batch)
 
                 # compute validation loss if model provides valid_step
@@ -547,7 +463,6 @@ class VIP5Trainer(TrainerBase):
                     pass
 
                 # compute ranking metrics by scoring each candidate via the model
-                # batch['candidates'] is List[List[item_id]]; batch['label_id'] is tensor [B]
                 bsize = batch["input_ids"].size(0)
                 for i in range(bsize):
                     cands = batch.get("candidates", [])[i]
@@ -555,7 +470,6 @@ class VIP5Trainer(TrainerBase):
                         continue
                     label = int(batch.get("label_id", -1)[i].item()) if batch.get("label_id", None) is not None else -1
 
-                    # prepare encoder inputs for this sample
                     enc_input = batch["input_ids"][i].unsqueeze(0)
                     enc_attn = batch["attention_mask"][i].unsqueeze(0)
 
@@ -563,14 +477,11 @@ class VIP5Trainer(TrainerBase):
                     for j, _ in enumerate(cands):
                         letter = chr(ord("A") + j)
                         try:
-                            # tokenize target letter
                             dec = self.tokenizer(letter, return_tensors="pt")
                             dec_input = dec["input_ids"].to(self.device)
                         except Exception:
-                            # fallback: use ascii letter token id via tokenizer.convert_tokens_to_ids
                             dec_input = torch.tensor(self.tokenizer.encode(letter)).unsqueeze(0).to(self.device)
 
-                        # run model forward with labels to get loss -> use negative loss as score
                         try:
                             out = self.model.forward(input_ids=enc_input.to(self.device), attention_mask=enc_attn.to(self.device), labels=dec_input)
                             if isinstance(out, dict):
@@ -578,20 +489,17 @@ class VIP5Trainer(TrainerBase):
                             else:
                                 l = getattr(out, "loss", None)
                             if l is None:
-                                # try first element
                                 l = out[0] if isinstance(out, (list, tuple)) else None
                             score = -float(l.item()) if l is not None else 0.0
                         except Exception:
                             score = 0.0
                         scores.append(score)
 
-                    # rank candidates by score (desc)
                     ranked = [c for _, c in sorted(zip(scores, cands), key=lambda x: x[0], reverse=True)]
                     if label != -1:
                         recalls.append(recall_at_k(ranked, [label], K))
                         ndcgs.append(ndcg_at_k(ranked, [label], K))
                     else:
-                        # behavior: optionally treat missing ground-truth as zero metrics
                         zero_flag = getattr(self.args, 'zero_metrics_if_missing', False)
                         try:
                             from config import arg as global_arg
@@ -612,9 +520,8 @@ class VIP5Trainer(TrainerBase):
             avg_rec = 0.0
             avg_ndcg = 0.0
 
-        # print metrics
         if self.verbose:
-            print(f"           val_loss   = {avg_loss:.4f}")
+            print(f"           {name}_loss   = {avg_loss:.4f}")
             print(f"           Recall@{K} = {avg_rec:.4f}, NDCG@{K} = {avg_ndcg:.4f}")
 
         return avg_loss
