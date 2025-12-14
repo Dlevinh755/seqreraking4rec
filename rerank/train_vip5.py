@@ -16,6 +16,7 @@ from pytorch_lightning import seed_everything
 from config import arg, EXPERIMENT_ROOT
 from rerank.registry import get_reranker_class
 from rerank.methods.vip5 import Args as VIP5Args
+from rerank.vip5_dataloader import build_vip5_dataloaders_from_retrieved
 
 
 RERANK_METHOD = "vip5"
@@ -60,8 +61,7 @@ def main() -> None:
     )
     print("=" * 80)
 
-    # 3) Khởi tạo VIP5Reranker với cấu hình mặc định (có thể chỉnh trong VIP5Args)
-    RerankerCls = get_reranker_class(RERANK_METHOD)
+    # 3) Khởi tạo VIP5Args từ config
     vip5_args = VIP5Args(
         distributed=arg.vip5_distributed,
         gpu=arg.vip5_gpu,
@@ -92,15 +92,25 @@ def main() -> None:
         gradient_accumulation_steps=arg.vip5_gradient_accumulation_steps,
         epoch=arg.vip5_epoch,
         warmup_ratio=arg.vip5_warmup_ratio,
+        append_label_if_missing=arg.vip5_append_label_if_missing,
+        zero_metrics_if_missing=arg.vip5_zero_metrics_if_missing,
     )
+
+    # 4) Xây dựng DataLoader cho VIP5 từ retrieved.pkl + dataset
+    train_loader, val_loader, test_loader, trainer_stub = build_vip5_dataloaders_from_retrieved(
+        vip5_args=vip5_args,
+        retrieved_payload=payload,
+        batch_size=arg.vip5_batch_size,
+        num_workers=arg.num_workers_retrieval,
+    )
+
+    # 5) Khởi tạo VIP5Reranker và train bằng DataLoader
+    RerankerCls = get_reranker_class(RERANK_METHOD)
     reranker = RerankerCls(top_k=50, args=vip5_args)  # type: ignore[arg-type]
 
-    # 4) (SKELETON) Fit reranker
-    # Hiện tại chưa có dataset rerank chi tiết, nên truyền train_data rỗng
-    # và payload qua kwargs để thuận tiện implement sau.
     train_data: Dict[int, List[int]] = {}
-    reranker.fit(train_data, retrieved_payload=payload)
-    print(f"Initialized and (pseudo-)fitted {reranker.get_name()}.")
+    reranker.fit(train_data, train_loader=train_loader, val_loader=val_loader, test_loader=test_loader)
+    print(f"Finished training {reranker.get_name()} on VIP5 rerank dataset.")
 
     # TODO:
     # - Xây dựng dataset rerank từ val/test + metadata (text/image).

@@ -261,7 +261,8 @@ class TrainerBase(object):
 
         lr_scheduler = None
 
-        from transformers.optimization import AdamW, get_linear_schedule_with_warmup
+        from torch.optim import AdamW
+        from transformers.optimization import get_linear_schedule_with_warmup
 
         no_decay = ["bias", "LayerNorm.weight"]
 
@@ -390,6 +391,9 @@ class Args:
     gradient_accumulation_steps: int = 1
     epoch: int = 3
     warmup_ratio: float = 0.05
+    # behavior toggles
+    append_label_if_missing: bool = False
+    zero_metrics_if_missing: bool = False
 
 
 class VIP5Trainer(TrainerBase):
@@ -425,18 +429,195 @@ class VIP5Trainer(TrainerBase):
         if self.val_loader is None or self.model is None:
             return float("inf")
 
-        self.model.eval()
-        total_loss = 0.0
+        return self._evaluate_loader(self.val_loader)
+
+        def _evaluate_loader(self, loader, name: str = "val") -> float:
+            """Generic evaluation over a DataLoader that computes loss, Recall@K and NDCG@K.
+
+            Returns average loss (or inf if not computable).
+            Prints metrics when `self.verbose`.
+            """
+            if loader is None or self.model is None:
+                return float("inf")
+
+            self.model.eval()
+            total_loss = 0.0
+            steps = 0
+            from evaluation.metrics import recall_at_k, ndcg_at_k
+
+            recalls = []
+            ndcgs = []
+            K = 10
+
+            with torch.no_grad():
+                for batch in loader:
+                    batch = self._move_batch_to_device(batch)
+
+                    # compute validation loss if model provides valid_step
+                    try:
+                        outputs = self.model.valid_step(batch)
+                        loss = self._compute_loss_from_outputs(outputs)
+                        total_loss += float(loss.item())
+                    except Exception:
+                        # skip loss if valid_step not implemented
+                        pass
+
+                    # compute ranking metrics by scoring each candidate via the model
+                    bsize = batch["input_ids"].size(0)
+                    for i in range(bsize):
+                        cands = batch.get("candidates", [])[i]
+                        if not cands:
+                            continue
+                        label = int(batch.get("label_id", -1)[i].item()) if batch.get("label_id", None) is not None else -1
+
+                        enc_input = batch["input_ids"][i].unsqueeze(0)
+                        enc_attn = batch["attention_mask"][i].unsqueeze(0)
+
+                        scores = []
+                        for j, _ in enumerate(cands):
+                            letter = chr(ord("A") + j)
+                            try:
+                                dec = self.tokenizer(letter, return_tensors="pt")
+                                dec_input = dec["input_ids"].to(self.device)
+                            except Exception:
+                                dec_input = torch.tensor(self.tokenizer.encode(letter)).unsqueeze(0).to(self.device)
+
+                            try:
+                                out = self.model.forward(input_ids=enc_input.to(self.device), attention_mask=enc_attn.to(self.device), labels=dec_input)
+                                if isinstance(out, dict):
+                                    l = out.get("loss", None)
+                                else:
+                                    l = getattr(out, "loss", None)
+                                if l is None:
+                                    l = out[0] if isinstance(out, (list, tuple)) else None
+                                score = -float(l.item()) if l is not None else 0.0
+                            except Exception:
+                                score = 0.0
+                            scores.append(score)
+
+                        ranked = [c for _, c in sorted(zip(scores, cands), key=lambda x: x[0], reverse=True)]
+                        if label != -1:
+                            recalls.append(recall_at_k(ranked, [label], K))
+                            ndcgs.append(ndcg_at_k(ranked, [label], K))
+                        else:
+                            zero_flag = getattr(self.args, 'zero_metrics_if_missing', False)
+                            try:
+                                from config import arg as global_arg
+                                zero_flag = zero_flag or getattr(global_arg, 'vip5_zero_metrics_if_missing', False)
+                            except Exception:
+                                pass
+                            if zero_flag:
+                                recalls.append(0.0)
+                                ndcgs.append(0.0)
+
+                    steps += 1
+
+            avg_loss = total_loss / max(1, steps)
+            if recalls:
+                avg_rec = float(sum(recalls) / len(recalls))
+                avg_ndcg = float(sum(ndcgs) / len(ndcgs))
+            else:
+                avg_rec = 0.0
+                avg_ndcg = 0.0
+
+            if self.verbose:
+                print(f"           {name}_loss   = {avg_loss:.4f}")
+                print(f"           Recall@{K} = {avg_rec:.4f}, NDCG@{K} = {avg_ndcg:.4f}")
+
+            return avg_loss
         steps = 0
+        from evaluation.metrics import recall_at_k, ndcg_at_k
+
+        recalls = []
+        ndcgs = []
+        K = 10
+
         with torch.no_grad():
             for batch in self.val_loader:
-                # VIP5Tuning đã tự move tensor sang device bên trong valid_step
-                outputs = self.model.valid_step(batch)
-                loss = self._compute_loss_from_outputs(outputs)
-                total_loss += float(loss.item())
+                # move tensors to device
+                batch = self._move_batch_to_device(batch)
+
+                # compute validation loss if model provides valid_step
+                try:
+                    outputs = self.model.valid_step(batch)
+                    loss = self._compute_loss_from_outputs(outputs)
+                    total_loss += float(loss.item())
+                except Exception:
+                    # skip loss if valid_step not implemented
+                    pass
+
+                # compute ranking metrics by scoring each candidate via the model
+                # batch['candidates'] is List[List[item_id]]; batch['label_id'] is tensor [B]
+                bsize = batch["input_ids"].size(0)
+                for i in range(bsize):
+                    cands = batch.get("candidates", [])[i]
+                    if not cands:
+                        continue
+                    label = int(batch.get("label_id", -1)[i].item()) if batch.get("label_id", None) is not None else -1
+
+                    # prepare encoder inputs for this sample
+                    enc_input = batch["input_ids"][i].unsqueeze(0)
+                    enc_attn = batch["attention_mask"][i].unsqueeze(0)
+
+                    scores = []
+                    for j, _ in enumerate(cands):
+                        letter = chr(ord("A") + j)
+                        try:
+                            # tokenize target letter
+                            dec = self.tokenizer(letter, return_tensors="pt")
+                            dec_input = dec["input_ids"].to(self.device)
+                        except Exception:
+                            # fallback: use ascii letter token id via tokenizer.convert_tokens_to_ids
+                            dec_input = torch.tensor(self.tokenizer.encode(letter)).unsqueeze(0).to(self.device)
+
+                        # run model forward with labels to get loss -> use negative loss as score
+                        try:
+                            out = self.model.forward(input_ids=enc_input.to(self.device), attention_mask=enc_attn.to(self.device), labels=dec_input)
+                            if isinstance(out, dict):
+                                l = out.get("loss", None)
+                            else:
+                                l = getattr(out, "loss", None)
+                            if l is None:
+                                # try first element
+                                l = out[0] if isinstance(out, (list, tuple)) else None
+                            score = -float(l.item()) if l is not None else 0.0
+                        except Exception:
+                            score = 0.0
+                        scores.append(score)
+
+                    # rank candidates by score (desc)
+                    ranked = [c for _, c in sorted(zip(scores, cands), key=lambda x: x[0], reverse=True)]
+                    if label != -1:
+                        recalls.append(recall_at_k(ranked, [label], K))
+                        ndcgs.append(ndcg_at_k(ranked, [label], K))
+                    else:
+                        # behavior: optionally treat missing ground-truth as zero metrics
+                        zero_flag = getattr(self.args, 'zero_metrics_if_missing', False)
+                        try:
+                            from config import arg as global_arg
+                            zero_flag = zero_flag or getattr(global_arg, 'vip5_zero_metrics_if_missing', False)
+                        except Exception:
+                            pass
+                        if zero_flag:
+                            recalls.append(0.0)
+                            ndcgs.append(0.0)
+
                 steps += 1
 
-        return total_loss / max(1, steps)
+        avg_loss = total_loss / max(1, steps)
+        if recalls:
+            avg_rec = float(sum(recalls) / len(recalls))
+            avg_ndcg = float(sum(ndcgs) / len(ndcgs))
+        else:
+            avg_rec = 0.0
+            avg_ndcg = 0.0
+
+        # print metrics
+        if self.verbose:
+            print(f"           val_loss   = {avg_loss:.4f}")
+            print(f"           Recall@{K} = {avg_rec:.4f}, NDCG@{K} = {avg_ndcg:.4f}")
+
+        return avg_loss
 
     def train(self) -> None:
         if self.train_loader is None:
@@ -463,8 +644,14 @@ class VIP5Trainer(TrainerBase):
 
         for epoch in range(self.args.epoch):
             self.model.train()
+            # initialize epoch loss counter
             epoch_loss = 0.0
-            for step, batch in enumerate(self.train_loader):
+            # Show progress bar in terminal when verbose
+            if self.verbose:
+                loader_iter = tqdm(self.train_loader, desc=f"[Epoch {epoch+1}/{self.args.epoch}]", total=len(self.train_loader))
+            else:
+                loader_iter = self.train_loader
+            for step, batch in enumerate(loader_iter):
                 # VIP5Tuning.train_step trả về dict có khóa 'loss'
                 outputs = self.model.train_step(batch)
                 loss = self._compute_loss_from_outputs(outputs)
@@ -491,6 +678,23 @@ class VIP5Trainer(TrainerBase):
                 best_val_loss = val_loss
                 # lưu checkpoint tốt nhất
                 self.save("vip5_best")
+
+        # After training, if test_loader present and a best checkpoint exists, evaluate on test set
+        try:
+            if self.test_loader is not None:
+                # load best checkpoint
+                best_path = os.path.join(self.args.output, "vip5_best")
+                if os.path.isfile(best_path + ".pth"):
+                    if self.verbose:
+                        print('Loading best checkpoint for test evaluation...')
+                    self.load(best_path)
+                    # evaluate on test set and print metrics
+                    self._evaluate_loader(self.test_loader, name="test")
+                else:
+                    if self.verbose:
+                        print('No best checkpoint found to evaluate on test set.')
+        except Exception as e:
+            print('Error during post-train test evaluation:', e)
 
 
 class VIP5Reranker(BaseReranker):
@@ -550,6 +754,117 @@ class VIP5Reranker(BaseReranker):
             (item_id, float(len(candidates) - idx))
             for idx, item_id in enumerate(candidates[: self.top_k])
         ]
+
+def build_vip5_training_sample(
+    args: Args,
+    seq: List[int],
+    candidates: List[int],
+    label: int,
+    text_dict: Dict[int, Dict[str, Any]],
+    tokenizer,
+    task: str = "rec",
+    max_title_len: int = 32,
+) -> Dict[str, Any]:
+    """Xây dựng sample train cho VIP5 tương tự seq_to_token_ids của LLM.
+
+    - seq: lịch sử user (danh sách item id theo thứ tự thời gian).
+    - candidates: danh sách item id ứng viên.
+    - label: item id đúng (phải nằm trong candidates).
+    - text_dict: map item_id -> meta dict with 'title', 'text', etc.
+    - tokenizer: tokenizer T5/P5 đã load sẵn.
+
+    Hàm trả về dict gồm input cho encoder (input_ids, attention_mask)
+    và target_ids cho decoder (chuỗi ký tự A/B/C... ứng với item đúng).
+
+    Phần ghép thêm whole_word_ids, category_ids, vis_feats sẽ được
+    xử lý ở bước collate/batch builder cho VIP5.
+    """
+
+    def truncate_title(title: str) -> str:
+        try:
+            tokens = tokenizer.tokenize(title)[:max_title_len]
+            return tokenizer.convert_tokens_to_string(tokens)
+        except Exception as e:
+            print(f"Error tokenizing title: {repr(title)}, error: {e}")
+            return title[:max_title_len]  # fallback to simple truncation
+
+    # Chuẩn bị text lịch sử người dùng
+    history_parts: List[str] = []
+    for idx, item_id in enumerate(seq):
+        item_meta = text_dict.get(item_id, {})
+        title = item_meta.get('title', '')
+        if not title:
+            continue
+        history_parts.append(f"({idx + 1}) " + truncate_title(title))
+    seq_t = " \n ".join(history_parts) if history_parts else "(no history)"
+
+    # Chuẩn bị text cho candidate pool
+    candidate_parts: List[str] = []
+    for idx, item_id in enumerate(candidates):
+        item_meta = text_dict.get(item_id, {})
+        title = item_meta.get('title', '')
+        letter = chr(ord("A") + idx)
+        candidate_parts.append(f"({letter}) " + truncate_title(title))
+    can_t = " \n ".join(candidate_parts)
+
+    # Ký tự output tương ứng vị trí của label trong candidates
+    if label not in candidates:
+        # Behavior controlled by args / global config: either append label or raise
+        append_flag = getattr(args, 'append_label_if_missing', False)
+        # fall back to global config if args doesn't have the flag
+        try:
+            from config import arg as global_arg
+            append_flag = append_flag or getattr(global_arg, 'vip5_append_label_if_missing', False)
+        except Exception:
+            pass
+
+        if append_flag:
+            print(f"Warning: label {label} not in candidates {candidates}, appending label to candidates.")
+            candidates = list(candidates) + [label]
+        else:
+            raise ValueError("Label item_id must exist in candidates for VIP5 sample.")
+    output_letter = chr(ord("A") + candidates.index(label))
+
+    # Câu lệnh hướng dẫn tương tự LLMRec nhưng có thể thay đổi sau
+    system_prompt = (
+        "Given user history in chronological order, "
+        "recommend an item from the candidate pool with its index letter."
+    )
+    input_text = f"User history: {seq_t}; \n Candidate pool: {can_t}"
+
+    # Encoder input cho VIP5 (nguồn)
+    encoder_text = system_prompt + "\n" + input_text
+    enc = tokenizer(
+        encoder_text,
+        truncation=True,
+        max_length=args.max_text_length,
+        padding=False,
+        return_tensors=None,
+    )
+
+    # Decoder target: chỉ cần ký tự A/B/C... biểu diễn lựa chọn đúng
+    dec = tokenizer(
+        output_letter,
+        truncation=True,
+        max_length=8,
+        padding=False,
+        return_tensors=None,
+    )
+
+    sample: Dict[str, Any] = {
+        "input_ids": enc["input_ids"],
+        "attention_mask": enc["attention_mask"],
+        # VIP5Tuning.train_step mong đợi trường "target_ids" cho decoder labels
+        "target_ids": dec["input_ids"],
+        # candidates list và label id để collate_fn ghép visual features
+        "candidates": candidates,
+        "label_id": int(label),
+        "task": task,
+        # loss_weights sẽ được đưa về tensor [B] ở collate_fn, mặc định = 1.0
+        "loss_weights": 1.0,
+    }
+
+    return sample
 
 
 from transformers import T5Tokenizer, PreTrainedTokenizer

@@ -12,14 +12,14 @@ parser = argparse.ArgumentParser(description='Configuration for the project.')
 ## Data filltering arguments
 parser.add_argument('--dataset_code', type=str, default='beauty')
 parser.add_argument('--min_rating', type=int, default=3)
-parser.add_argument('--min_uc', type=int, default=20)   # min rating/user
-parser.add_argument('--min_sc', type=int, default=20)   # min rating/item
+parser.add_argument('--min_uc', type=int, default=5)   # min rating/user
+parser.add_argument('--min_sc', type=int, default=5)   # min rating/item
 parser.add_argument('--use_image', action='store_true', default=False, help='Filter out items without image')
 parser.add_argument('--use_text', action='store_true', default=False, help='Filter out items without text')
 parser.add_argument('--seed', type=int, default=42)
 
 # Generic Stage-1 retrieval training hyperparameters
-parser.add_argument('--retrieval_epochs', type=int, default=3,
+parser.add_argument('--retrieval_epochs', type=int, default=100,
 					help='Number of training epochs for Stage-1 retrieval models.')
 parser.add_argument('--batch_size_retrieval', type=int, default=128,
 					help='Batch size for Stage-1 retrieval model training.')
@@ -114,6 +114,12 @@ parser.add_argument('--vip5_epoch', type=int, default=3,
 					help='Number of training epochs for VIP5.')
 parser.add_argument('--vip5_warmup_ratio', type=float, default=0.05,
 					help='Warmup ratio for VIP5 learning rate scheduler.')
+parser.add_argument('--vip5_batch_size', type=int, default=16,
+					help='Batch size for VIP5 training.')
+parser.add_argument('--vip5_append_label_if_missing', action='store_true',
+                    help='If set, append ground-truth label to candidates when missing (fallback).')
+parser.add_argument('--vip5_zero_metrics_if_missing', action='store_true',
+                    help='If set, treat missing ground-truth during validation as Recall/NDCG=0.0.')
 arg = parser.parse_args()
 
 

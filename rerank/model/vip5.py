@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from transformers.models.t5.modeling_t5 import (
-    T5LayerNorm, T5DenseReluDense, T5DenseGatedGeluDense, 
+    T5LayerNorm, T5DenseActDense, T5DenseGatedActDense, 
     T5PreTrainedModel, T5ForConditionalGeneration
 )
 from transformers.models.t5.configuration_t5 import T5Config
@@ -17,10 +17,11 @@ import copy
 import math
 
 from transformers.modeling_outputs import ModelOutput, BaseModelOutput, BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions, Seq2SeqLMOutput, Seq2SeqModelOutput
-from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer
+from transformers.modeling_utils import PreTrainedModel
+from transformers.models.t5.modeling_t5 import find_pruneable_heads_and_indices, prune_linear_layer
 from transformers.utils import logging
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
-from transformers import BeamScorer, BeamSearchScorer
+from transformers import BeamScorer, T5Tokenizer
 
 from adapters import (
     AdapterController,
@@ -78,9 +79,9 @@ class T5LayerFF(nn.Module):
     def __init__(self, config):
         super().__init__()
         if config.feed_forward_proj == "relu":
-            self.DenseReluDense = T5DenseReluDense(config)
+            self.DenseReluDense = T5DenseActDense(config)
         elif config.feed_forward_proj == "gated-gelu":
-            self.DenseReluDense = T5DenseGatedGeluDense(config)
+            self.DenseReluDense = T5DenseGatedActDense(config)
         else:
             raise ValueError(
                 f"{self.config.feed_forward_proj} is not supported. Choose between `relu` and `gated-gelu`"
