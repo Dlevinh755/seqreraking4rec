@@ -1,16 +1,11 @@
-import pandas as pd
-import pandas as pd
 import random
 import string
 from collections import defaultdict
 from .model.llm import LLMModel
-
-
-LETTERS = list(string.ascii_uppercase[:20])  # A-T
-
+import pandas as pd
 import torch.nn.functional as F
 
-
+LETTERS = list(string.ascii_uppercase[:20])  # A-T
 
 
 def build_training_samples(user2items, all_items, max_history=10):
@@ -101,13 +96,13 @@ def to_unsloth_format(samples):
 
     return data
 
-
-
-
-
-
-
 def main():
+    import pandas as pd
+    import random
+    import string
+    from collections import defaultdict
+    from .model.llm import LLMModel
+    
     df = pd.read_csv("data/preprocessed/beauty_min_rating3-min_uc20-min_sc20/dataset_single_export.csv")
 
     df_train = df[df["split"] == "train"]
@@ -123,23 +118,20 @@ def main():
 
     train_samples = build_training_samples(user2items, all_items)
     train_data = to_unsloth_format(train_samples)
-    model = LLMModel(train_data=train_data, model_name="qwen/Qwen-7B-Chat")
+    model = LLMModel(train_data=train_data, model_name="unsloth/Qwen3-0.6B-Base-bnb-4bit")
     model.load_model()
     model.train()
-
-
-    import pandas as pd
 
     df_can = pd.read_csv("experiments/retrieval/lrurec/beauty/seed42/retrieved.csv")
     df_val = df_can[df_can["split"] == "val"]
     df_test = df_can[df_can["split"] == "test"]
 
     # item_id -> text
-    item_df = pd.read_csv("interactions.csv")[["item_new_id", "item_text"]].drop_duplicates()
+    item_df = pd.read_csv("data/preprocessed/beauty_min_rating3-min_uc20-min_sc20/dataset_single_export.csv")[["item_new_id", "item_text"]].drop_duplicates()
     item_id2text = dict(zip(item_df.item_new_id, item_df.item_text))
     from collections import defaultdict
 
-    df_inter = pd.read_csv("interactions.csv")
+    df_inter = pd.read_csv("data/preprocessed/beauty_min_rating3-min_uc20-min_sc20/dataset_single_export.csv")
 
     user2history = defaultdict(list)
 

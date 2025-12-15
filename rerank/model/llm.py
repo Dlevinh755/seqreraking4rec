@@ -4,6 +4,7 @@ from transformers import Trainer, TrainingArguments
 from transformers import TrainingArguments
 import torch.nn.functional as F
 import string
+import pandas as pd
 LETTERS = list(string.ascii_uppercase[:20])  # A-T
 import ast
 
@@ -53,14 +54,14 @@ def ndcg_at_k(ranked_items, gt_item, k):
     return 1.0 / math.log2(rank + 1)
 
 class LLMModel:
-    def __init__(self, train_data=None):
-            self.model_name = "Qwen/Qwen3-0.6B"
+    def __init__(self, train_data=None, model_name=None):
+            self.model_name = model_name or "Qwen/Qwen3-0.6B"
             self.train_data = train_data
 
     def load_model(self):
         self.model, self.tokenizer = FastLanguageModel.from_pretrained(
             model_name = self.model_name,
-            max_seq_length = 1024,
+            max_seq_length = 2048,
             dtype = torch.float16,
             load_in_4bit = True,
         )
@@ -74,27 +75,27 @@ class LLMModel:
             bias = "none",
             use_gradient_checkpointing = True,
         )
-        def train(self):
+    def train(self):
 
-            from datasets import Dataset
+        from datasets import Dataset
 
-            hf_train_dataset = Dataset.from_list(self.train_data)
-            hf_train_dataset = hf_train_dataset.map(
-                self.tokenize_response_only,
-                remove_columns=hf_train_dataset.column_names,
-            )
-
-            training_args = TrainingArguments(
-            output_dir="./qwen_rerank",
-            per_device_train_batch_size=8,
-            gradient_accumulation_steps=4,
-            learning_rate=2e-5,
-            num_train_epochs=2,
-            logging_steps=50,
-            save_steps=500,
-            report_to="none",
-            bf16=True,
+        hf_train_dataset = Dataset.from_list(self.train_data)
+        hf_train_dataset = hf_train_dataset.map(
+            self.tokenize_response_only,
+            remove_columns=hf_train_dataset.column_names,
         )
+
+        training_args = TrainingArguments(
+        output_dir="./qwen_rerank",
+        per_device_train_batch_size=8,
+        gradient_accumulation_steps=4,
+        learning_rate=2e-5,
+        num_train_epochs=2,
+        logging_steps=50,
+        save_steps=500,
+        report_to="none",
+      #  bf16=True,
+    )
 
         trainer = Trainer(
             model=self.model,

@@ -1,5 +1,5 @@
-from datasets import *
-from datasets.clip_embeddings import maybe_extract_clip_embeddings
+from dataset import *
+from dataset.clip_embeddings import maybe_extract_clip_embeddings
 from config import *
 from pytorch_lightning import seed_everything
 import torch
