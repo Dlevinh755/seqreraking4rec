@@ -1,0 +1,405 @@
+"""Qwen3-VL model wrapper for reranking with different prompt modes.
+
+Supports 4 modes:
+1. raw_image: Use raw images directly in prompt
+2. caption: Use image captions
+3. semantic_summary: Use image semantic summaries
+4. semantic_summary_small: Use semantic summaries with smaller text model
+"""
+
+import os
+import torch
+from typing import Dict, List, Optional, Tuple, Any
+from PIL import Image
+import numpy as np
+
+try:
+    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+    from unsloth import FastLanguageModel
+    QWEN3VL_AVAILABLE = True
+except ImportError:
+    QWEN3VL_AVAILABLE = False
+
+
+class Qwen3VLModel:
+    """Qwen3-VL model wrapper for reranking.
+    
+    Supports multiple prompt modes for different input types.
+    """
+    
+    def __init__(
+        self,
+        mode: str = "raw_image",
+        model_name: Optional[str] = None,
+        device: Optional[torch.device] = None,
+    ):
+        """
+        Args:
+            mode: Prompt mode - "raw_image", "caption", "semantic_summary", "semantic_summary_small"
+            model_name: Model name (auto-selected based on mode if None)
+            device: Device to run on (auto if None)
+        """
+        if not QWEN3VL_AVAILABLE:
+            raise ImportError(
+                "Qwen3-VL dependencies not available. Install with:\n"
+                "pip install transformers unsloth\n"
+                "pip install git+https://github.com/huggingface/transformers"
+            )
+        
+        self.mode = mode.lower()
+        if self.mode not in ["raw_image", "caption", "semantic_summary", "semantic_summary_small"]:
+            raise ValueError(
+                f"Invalid mode: {mode}. Must be one of: "
+                "raw_image, caption, semantic_summary, semantic_summary_small"
+            )
+        
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Select model based on mode
+        if self.mode == "semantic_summary_small":
+            # Use smaller text-only model for semantic summaries
+            self.model_name = model_name or "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
+            self._load_text_model()
+        else:
+            # Use Qwen3-VL for image-based modes
+            self.model_name = model_name or "unsloth/Qwen3-VL-2B-Instruct"
+            self._load_vl_model()
+    
+    def _load_vl_model(self):
+        """Load Qwen3-VL model for image processing."""
+        print(f"Loading Qwen3-VL model: {self.model_name}")
+        try:
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_name,
+                trust_remote_code=True
+            )
+            self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+                self.model_name,
+                dtype="auto" if self.device.type == "cuda" else torch.float32,
+                device_map="auto" if self.device.type == "cuda" else None,
+                trust_remote_code=True,
+            )
+            if self.device.type == "cpu":
+                self.model = self.model.to(self.device)
+            self.model.eval()
+            print(f"Qwen3-VL model loaded on {self.device}")
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load Qwen3-VL model: {e}\n"
+                f"Note: Qwen3-VL requires latest transformers. Install with:\n"
+                f"pip install git+https://github.com/huggingface/transformers"
+            )
+    
+    def _load_text_model(self):
+        """Load smaller text-only model for semantic summaries."""
+        print(f"Loading Qwen text model: {self.model_name}")
+        try:
+            self.model, self.tokenizer = FastLanguageModel.from_pretrained(
+                model_name=self.model_name,
+                max_seq_length=2048,
+                dtype=torch.float16,
+                load_in_4bit=True,
+            )
+            self.model = FastLanguageModel.get_peft_model(
+                self.model,
+                r=8,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                lora_alpha=16,
+                lora_dropout=0.05,
+                bias="none",
+                use_gradient_checkpointing=True,
+            )
+            self.processor = None  # Text model uses tokenizer, not processor
+            print(f"Qwen text model loaded on {self.device}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load Qwen text model: {e}")
+    
+    def predict_probs(
+        self,
+        user_history: List[str],
+        candidates: List[int],
+        item_meta: Dict[int, Dict[str, Any]],
+        num_candidates: Optional[int] = None,
+    ) -> np.ndarray:
+        """Predict probabilities for candidates.
+        
+        Args:
+            user_history: List of item texts/images in user history
+            candidates: List of candidate item IDs
+            item_meta: Dict {item_id: {image_path, caption, semantic_summary, text}}
+            num_candidates: Number of candidates (for validation)
+            
+        Returns:
+            numpy array of probabilities [num_candidates]
+        """
+        if num_candidates is None:
+            num_candidates = len(candidates)
+        
+        if self.mode == "raw_image":
+            return self._predict_probs_raw_image(user_history, candidates, item_meta, num_candidates)
+        elif self.mode == "caption":
+            return self._predict_probs_caption(user_history, candidates, item_meta, num_candidates)
+        elif self.mode == "semantic_summary":
+            return self._predict_probs_semantic_summary_vl(user_history, candidates, item_meta, num_candidates)
+        else:  # semantic_summary_small
+            return self._predict_probs_semantic_summary_text(user_history, candidates, item_meta, num_candidates)
+    
+    def _build_rerank_prompt(self, user_history: List[str], candidate_texts: List[str]) -> str:
+        """Build reranking prompt from user history and candidate texts."""
+        history_text = "\n".join([f"- {h}" for h in user_history]) if user_history else "No previous interactions."
+        
+        cand_text = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
+        num_candidates = len(candidate_texts)
+        answer_format = f"Answer with only one number (1-{num_candidates})." if num_candidates > 1 else "Answer with only one number (1)."
+        
+        prompt = f"""You are a recommendation ranking assistant.
+
+Choose exactly ONE item the user is most likely to interact with next.
+
+User history:
+{history_text}
+
+Candidate items:
+{cand_text}
+
+{answer_format}
+""".strip()
+        
+        return prompt
+    
+    def _predict_probs_raw_image(
+        self,
+        user_history: List[str],
+        candidates: List[int],
+        item_meta: Dict[int, Dict[str, Any]],
+        num_candidates: int,
+    ) -> np.ndarray:
+        """Predict using raw images in prompt."""
+        # Build candidate images and texts
+        candidate_images = []
+        candidate_texts = []
+        
+        for item_id in candidates:
+            meta = item_meta.get(item_id, {})
+            text = meta.get("text", f"item_{item_id}")
+            image_path = meta.get("image_path") or meta.get("image")
+            
+            if image_path and os.path.isfile(image_path):
+                try:
+                    img = Image.open(image_path).convert("RGB")
+                    candidate_images.append(img)
+                    candidate_texts.append(text)
+                except Exception:
+                    candidate_images.append(None)
+                    candidate_texts.append(text)
+            else:
+                candidate_images.append(None)
+                candidate_texts.append(text)
+        
+        # Build prompt with images
+        history_text = "\n".join([f"- {h}" for h in user_history]) if user_history else "No previous interactions."
+        
+        # Create messages with images (Qwen3-VL format)
+        content = [
+            {"type": "text", "text": f"""You are a recommendation ranking assistant.
+
+Choose exactly ONE item the user is most likely to interact with next.
+
+User history:
+{history_text}
+
+Candidate items:"""}
+        ]
+        
+        # Add candidate images and text
+        for i, (text, img) in enumerate(zip(candidate_texts, candidate_images)):
+            if img is not None:
+                content.append({"type": "image", "image": img})
+            content.append({"type": "text", "text": f"{i+1}. {text}"})
+        
+        content.append({
+            "type": "text",
+            "text": f"\nAnswer with only one number (1-{num_candidates})."
+        })
+        
+        messages = [{"role": "user", "content": content}]
+        
+        # Process and generate
+        with torch.no_grad():
+            inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt"
+            )
+            inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+            
+            # Extract probabilities for numbers 1 to num_candidates from logits
+            logits = self.model(**inputs).logits[:, -1]  # [vocab_size]
+            
+            # Get token IDs for numbers
+            prob_array = np.zeros(num_candidates)
+            for i in range(1, num_candidates + 1):
+                num_str = str(i)
+                token_id = self.processor.tokenizer.convert_tokens_to_ids(num_str)
+                if token_id != self.processor.tokenizer.unk_token_id:
+                    # Get probability for this token
+                    prob = torch.softmax(logits, dim=-1)[0, token_id].item()
+                    prob_array[i - 1] = prob
+            
+            # Normalize
+            if prob_array.sum() > 0:
+                prob_array = prob_array / prob_array.sum()
+            else:
+                # Fallback: uniform distribution
+                prob_array = np.ones(num_candidates) / num_candidates
+            
+            return prob_array
+    
+    def _predict_probs_caption(
+        self,
+        user_history: List[str],
+        candidates: List[int],
+        item_meta: Dict[int, Dict[str, Any]],
+        num_candidates: int,
+    ) -> np.ndarray:
+        """Predict using image captions."""
+        candidate_texts = []
+        for item_id in candidates:
+            meta = item_meta.get(item_id, {})
+            caption = meta.get("caption")
+            text = meta.get("text", f"item_{item_id}")
+            
+            if caption:
+                candidate_texts.append(f"{text} (Image: {caption})")
+            else:
+                candidate_texts.append(text)
+        
+        prompt = self._build_rerank_prompt(user_history, candidate_texts)
+        
+        # Use VL model but with text-only input
+        messages = [{"role": "user", "content": prompt}]
+        
+        with torch.no_grad():
+            inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt"
+            )
+            inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+            
+            logits = self.model(**inputs).logits[:, -1]  # [vocab_size]
+            
+            # Extract probabilities for numbers
+            prob_array = np.zeros(num_candidates)
+            for i in range(1, num_candidates + 1):
+                num_str = str(i)
+                token_id = self.processor.tokenizer.convert_tokens_to_ids(num_str)
+                if token_id != self.processor.tokenizer.unk_token_id:
+                    prob = torch.softmax(logits, dim=-1)[0, token_id].item()
+                    prob_array[i - 1] = prob
+            
+            if prob_array.sum() > 0:
+                prob_array = prob_array / prob_array.sum()
+            else:
+                # Fallback: uniform distribution
+                prob_array = np.ones(num_candidates) / num_candidates
+            
+            return prob_array
+    
+    def _predict_probs_semantic_summary_vl(
+        self,
+        user_history: List[str],
+        candidates: List[int],
+        item_meta: Dict[int, Dict[str, Any]],
+        num_candidates: int,
+    ) -> np.ndarray:
+        """Predict using semantic summaries with VL model."""
+        candidate_texts = []
+        for item_id in candidates:
+            meta = item_meta.get(item_id, {})
+            semantic_summary = meta.get("semantic_summary")
+            text = meta.get("text", f"item_{item_id}")
+            
+            if semantic_summary:
+                candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+            else:
+                candidate_texts.append(text)
+        
+        prompt = self._build_rerank_prompt(user_history, candidate_texts)
+        
+        messages = [{"role": "user", "content": prompt}]
+        
+        with torch.no_grad():
+            inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt"
+            )
+            inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+            
+            logits = self.model(**inputs).logits[:, -1]
+            
+            prob_array = np.zeros(num_candidates)
+            for i in range(1, num_candidates + 1):
+                num_str = str(i)
+                token_id = self.processor.tokenizer.convert_tokens_to_ids(num_str)
+                if token_id != self.processor.tokenizer.unk_token_id:
+                    prob = torch.softmax(logits, dim=-1)[0, token_id].item()
+                    prob_array[i - 1] = prob
+            
+            if prob_array.sum() > 0:
+                prob_array = prob_array / prob_array.sum()
+            else:
+                # Fallback: uniform distribution
+                prob_array = np.ones(num_candidates) / num_candidates
+            
+            return prob_array
+    
+    def _predict_probs_semantic_summary_text(
+        self,
+        user_history: List[str],
+        candidates: List[int],
+        item_meta: Dict[int, Dict[str, Any]],
+        num_candidates: int,
+    ) -> np.ndarray:
+        """Predict using semantic summaries with smaller text model."""
+        candidate_texts = []
+        for item_id in candidates:
+            meta = item_meta.get(item_id, {})
+            semantic_summary = meta.get("semantic_summary")
+            text = meta.get("text", f"item_{item_id}")
+            
+            if semantic_summary:
+                candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+            else:
+                candidate_texts.append(text)
+        
+        prompt = self._build_rerank_prompt(user_history, candidate_texts)
+        
+        with torch.no_grad():
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            
+            logits = self.model(**inputs).logits[:, -1]
+            
+            prob_array = np.zeros(num_candidates)
+            for i in range(1, num_candidates + 1):
+                num_str = str(i)
+                token_id = self.tokenizer.convert_tokens_to_ids(num_str)
+                if token_id != self.tokenizer.unk_token_id:
+                    prob = torch.softmax(logits, dim=-1)[0, token_id].item()
+                    prob_array[i - 1] = prob
+            
+            if prob_array.sum() > 0:
+                prob_array = prob_array / prob_array.sum()
+            else:
+                # Fallback: uniform distribution
+                prob_array = np.ones(num_candidates) / num_candidates
+            
+            return prob_array
+

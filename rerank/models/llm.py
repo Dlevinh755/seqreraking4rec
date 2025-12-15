@@ -5,38 +5,38 @@ from transformers import TrainingArguments
 import torch.nn.functional as F
 import string
 import pandas as pd
-LETTERS = list(string.ascii_uppercase[:20])  # A-T
 import ast
+import numpy as np
+
+# Legacy: Keep for backward compatibility, but now we use numbers
+LETTERS = list(string.ascii_uppercase[:20])  # A-T (for backward compatibility)
 
 
-def build_prompt_from_candidates(user_history, candidate_ids, item_id2text):
+def build_prompt_from_candidates(user_history, candidate_ids, item_id2text, max_candidates=None):
     """Build prompt for LLM reranking.
     
     Args:
         user_history: List of item texts in user history
-        candidate_ids: List of candidate item IDs (max 20)
+        candidate_ids: List of candidate item IDs
         item_id2text: Mapping from item_id to item text
+        max_candidates: Maximum number of candidates (None = no limit, uses all)
         
     Returns:
-        Formatted prompt string
-        
-    Raises:
-        ValueError: If len(candidate_ids) > 20
+        Formatted prompt string with candidate labels (1, 2, 3, ...)
     """
-    MAX_CANDIDATES = len(LETTERS)  # 20
-    
-    if len(candidate_ids) > MAX_CANDIDATES:
-        raise ValueError(
-            f"Too many candidates: {len(candidate_ids)} > {MAX_CANDIDATES}. "
-            f"LLM reranker only supports up to {MAX_CANDIDATES} candidates (A-T)."
-        )
+    if max_candidates is not None and len(candidate_ids) > max_candidates:
+        candidate_ids = candidate_ids[:max_candidates]
     
     history_text = "\n".join([f"- {h}" for h in user_history])
 
     candidates = [item_id2text.get(cid, f"item_{cid}") for cid in candidate_ids]
+    # Use numbers instead of letters for flexibility
     cand_text = "\n".join(
-        [f"{LETTERS[i]}. {c}" for i, c in enumerate(candidates)]
+        [f"{i+1}. {c}" for i, c in enumerate(candidates)]
     )
+
+    num_candidates = len(candidates)
+    answer_format = f"Answer with only one number (1-{num_candidates})." if num_candidates > 1 else "Answer with only one number (1)."
 
     prompt = f"""
 You are a recommendation ranking assistant.
@@ -49,7 +49,7 @@ User history:
 Candidate items:
 {cand_text}
 
-Answer with only one letter (A-T).
+{answer_format}
 """.strip()
 
     return prompt
@@ -145,28 +145,99 @@ class LLMModel:
 
 
 
-    def predict_prob(self, prompt):
+    def predict_prob(self, prompt, num_candidates=None):
+        """Predict probabilities for candidates (legacy method, uses letters).
+        
+        Args:
+            prompt: Input prompt
+            num_candidates: Number of candidates (for backward compatibility)
+        """
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
         with torch.no_grad():
             outputs = self.model(**inputs)
             logits = outputs.logits[:, -1]
 
-        token_ids = self.tokenizer.convert_tokens_to_ids(LETTERS)
+        # Use letters for backward compatibility
+        max_letters = num_candidates if num_candidates and num_candidates <= 20 else 20
+        letters = list(string.ascii_uppercase[:max_letters])
+        token_ids = self.tokenizer.convert_tokens_to_ids(letters)
         probs = F.softmax(logits[:, token_ids], dim=-1)
 
-        return dict(zip(LETTERS, probs[0].tolist()))
-    def predict_probs(self, prompt):
+        return dict(zip(letters, probs[0].tolist()))
+    
+    def predict_probs(self, prompt, num_candidates=None):
+        """Predict probabilities for candidates using numbers (1, 2, 3, ...).
+        
+        Args:
+            prompt: Input prompt
+            num_candidates: Number of candidates (if None, infers from prompt)
+            
+        Returns:
+            numpy array of probabilities [num_candidates]
+        """
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
         with torch.no_grad():
             outputs = self.model(**inputs)
 
-        logits = outputs.logits[:, -1]
-        token_ids = self.tokenizer.convert_tokens_to_ids(LETTERS)
+        logits = outputs.logits[:, -1]  # [vocab_size]
+        
+        # Infer num_candidates from prompt if not provided
+        if num_candidates is None:
+            # Count "Candidate items:" section in prompt
+            if "Candidate items:" in prompt:
+                candidates_section = prompt.split("Candidate items:")[1].split("Answer")[0]
+                num_candidates = candidates_section.strip().count("\n") + 1
+            else:
+                # Fallback: try to infer from answer format
+                if "Answer with only one number" in prompt:
+                    # Extract range like "1-50"
+                    import re
+                    match = re.search(r'\((\d+)-(\d+)\)', prompt)
+                    if match:
+                        num_candidates = int(match.group(2))
+                    else:
+                        num_candidates = 20  # Default fallback
+                else:
+                    num_candidates = 20  # Default fallback
+        
+        # Get token IDs for numbers 1 to num_candidates
+        # Convert numbers to string tokens
+        number_tokens = []
+        for i in range(1, num_candidates + 1):
+            # Try to get token ID for number as string
+            num_str = str(i)
+            token_id = self.tokenizer.convert_tokens_to_ids(num_str)
+            if token_id != self.tokenizer.unk_token_id:
+                number_tokens.append((i, token_id))
+        
+        if not number_tokens:
+            # Fallback: use letters if numbers don't work
+            max_letters = min(num_candidates, 20)
+            letters = list(string.ascii_uppercase[:max_letters])
+            token_ids = self.tokenizer.convert_tokens_to_ids(letters)
+            probs = F.softmax(logits[:, token_ids], dim=-1)
+            # Pad to num_candidates if needed
+            probs_np = probs[0].cpu().numpy()
+            if len(probs_np) < num_candidates:
+                # Pad with zeros
+                padded = np.zeros(num_candidates)
+                padded[:len(probs_np)] = probs_np
+                return padded
+            return probs_np[:num_candidates]
+        
+        # Extract probabilities for number tokens
+        token_ids = [tid for _, tid in number_tokens]
         probs = F.softmax(logits[:, token_ids], dim=-1)
-
-        return probs[0].cpu().numpy()
+        
+        # Map back to candidate indices (1-indexed)
+        prob_array = np.zeros(num_candidates)
+        for idx, (cand_num, token_id) in enumerate(number_tokens):
+            if cand_num <= num_candidates:
+                prob_array[cand_num - 1] = probs[0, idx].item()
+        
+        return prob_array
     def evaluate(self,df, user2history, item_id2text):
         recalls = {1: [], 5: [], 10: []}
         ndcgs = {5: [], 10: []}

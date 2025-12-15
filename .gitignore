@@ -1,4 +1,7 @@
 venv/
+data/*
+experiments/*
+readme/*
 
 # Markdown documentation files
 *.md

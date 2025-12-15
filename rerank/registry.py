@@ -3,18 +3,17 @@
 from typing import Dict, Type
 
 from rerank.base import BaseReranker
-from rerank.methods.identity import IdentityReranker
-from rerank.methods.random_reranker import RandomReranker
 from rerank.methods.qwen_reranker import QwenReranker
+from rerank.methods.qwen3vl_reranker import Qwen3VLReranker
 from rerank.methods.vip5_reranker import VIP5Reranker
+from rerank.methods.bert4rec_reranker import BERT4RecReranker
 
 
 RERANKER_REGISTRY: Dict[str, Type[BaseReranker]] = {
-    "identity": IdentityReranker,
-    "random": RandomReranker,
     "qwen": QwenReranker,
+    "qwen3vl": Qwen3VLReranker,
     "vip5": VIP5Reranker,
-    # Sau này có thể thêm: "vip4", "bert4rec", "gpt4rec", ...
+    "bert4rec": BERT4RecReranker,
 }
 
 

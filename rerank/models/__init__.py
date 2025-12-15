@@ -3,9 +3,11 @@
 Currently includes:
 - LLMModel: Qwen-based LLM model for reranking candidates.
 - VIP5: VIP5 multimodal model from original repository.
+- BERT4Rec: BERT-based sequential recommendation model.
 """
 
 from .llm import LLMModel, build_prompt_from_candidates, rank_candidates
+from .bert4rec import BERT4Rec
 
 # VIP5 imports - from original implementation
 try:
@@ -26,6 +28,7 @@ __all__ = [
     "LLMModel",
     "build_prompt_from_candidates",
     "rank_candidates",
+    "BERT4Rec",
 ]
 
 if VIP5_AVAILABLE:

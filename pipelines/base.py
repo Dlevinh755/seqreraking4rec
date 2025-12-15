@@ -12,10 +12,17 @@ from typing import Dict, List, Optional
 class RetrievalConfig:
     """Configuration for Stage 1 retrieval.
     
+    Available methods:
+        - "lrurec": Neural LRU-based sequential recommender
+        - "mmgcn": Multimodal Graph Convolutional Network (requires CLIP embeddings)
+        - "vbpr": Visual Bayesian Personalized Ranking (requires CLIP image embeddings)
+        - "bm3": Bootstrap Latent Representations for Multi-modal Recommendation (requires CLIP embeddings)
+    
     Note:
         - `top_k` determines how many candidates are passed to Stage 2
-        - If using Qwen reranker, recommend setting `top_k <= 20` (LLM limit)
-        - Default 200 is suitable for other rerankers (VIP5, identity, etc.)
+        - For Qwen reranker: candidates are automatically adjusted (can use all from retrieval)
+        - Default 200 is suitable for all rerankers
+        - MMGCN and VBPR require visual features from CLIP embeddings
     """
     method: str = "lrurec"
     top_k: int = 200
@@ -25,13 +32,25 @@ class RetrievalConfig:
 class RerankConfig:
     """Configuration for Stage 2 reranking.
     
+    Args:
+        method: Rerank method name (qwen, vip5, bert4rec)
+        top_k: Final number of recommendations returned
+        mode: Rerank mode
+            - "retrieval": Use candidates from Stage 1 (default)
+            - "ground_truth": Use ground truth + 19 random negatives (for rerank quality evaluation)
+        num_negatives: Number of random negatives for ground_truth mode (default: 19)
+    
     Note:
         - `top_k` is the final number of recommendations returned
-        - For Qwen reranker: input candidates are limited to 20 (A-T letters)
-        - If retrieval stage returns > 20 candidates, Qwen will truncate to 20
+        - For Qwen reranker: candidates are automatically adjusted from retrieval stage
+        - Max candidates for Qwen can be configured via `--qwen_max_candidates` in config.py
+        - ground_truth mode: Creates candidates = [gt_item] + 19 random negatives
+          This mode is useful for evaluating rerank quality independently from retrieval
     """
-    method: str = "identity"
+    method: str = "qwen"
     top_k: int = 50
+    mode: str = "retrieval"  # "retrieval" or "ground_truth"
+    num_negatives: int = 19  # For ground_truth mode
 
 
 @dataclass
@@ -61,13 +80,28 @@ class TwoStagePipeline:
         
         # Stage 2: Optional (can be disabled for retrieval-only)
         rerank_method = (cfg.rerank.method or "").lower()
-        if rerank_method in ("", "none", "identity"):
+        if rerank_method in ("", "none"):
             self.reranker = None
         else:
             from rerank.registry import get_reranker_class
+            from config import arg
             
             RerankerCls = get_reranker_class(cfg.rerank.method)
-            self.reranker = RerankerCls(top_k=cfg.rerank.top_k)
+            
+            # For Qwen rerankers, pass max_candidates from config
+            reranker_kwargs = {"top_k": cfg.rerank.top_k}
+            if rerank_method == "qwen":
+                # Use qwen_max_candidates from config, or default to retrieval_top_k
+                max_candidates = arg.qwen_max_candidates if hasattr(arg, 'qwen_max_candidates') and arg.qwen_max_candidates is not None else cfg.retrieval.top_k
+                reranker_kwargs["max_candidates"] = max_candidates
+            elif rerank_method == "qwen3vl":
+                # For Qwen3-VL, pass mode and max_candidates
+                qwen3vl_mode = getattr(arg, 'qwen3vl_mode', 'raw_image') if hasattr(arg, 'qwen3vl_mode') else 'raw_image'
+                reranker_kwargs["mode"] = qwen3vl_mode
+                max_candidates = arg.qwen_max_candidates if hasattr(arg, 'qwen_max_candidates') and arg.qwen_max_candidates is not None else cfg.retrieval.top_k
+                reranker_kwargs["max_candidates"] = max_candidates
+            
+            self.reranker = RerankerCls(**reranker_kwargs)
         
         self.cfg = cfg
     
@@ -90,52 +124,147 @@ class TwoStagePipeline:
     def recommend(
         self,
         user_id: int,
-        exclude_items: Optional[List[int]] = None
+        exclude_items: Optional[List[int]] = None,
+        ground_truth: Optional[List[int]] = None
     ) -> List[int]:
         """Generate recommendations for a user.
         
         Args:
             user_id: ID of the user
             exclude_items: Items to exclude from recommendations
+            ground_truth: Ground truth items (for ground_truth rerank mode)
             
         Returns:
             List[int]: Recommended item IDs (sorted by score descending)
         """
-        # Stage 1: Retrieve candidates
-        exclude_set = set(exclude_items) if exclude_items else set()
-        candidates = self.retriever.retrieve(user_id, exclude_items=exclude_set)
+        # Stage 2: Rerank (if enabled)
+        if self.reranker is None:
+            # No reranker: just return Stage 1 candidates
+            exclude_set = set(exclude_items) if exclude_items else set()
+            candidates = self.retriever.retrieve(user_id, exclude_items=exclude_set)
+            return candidates
+        
+        # Determine rerank mode
+        rerank_mode = self.cfg.rerank.mode.lower()
+        
+        if rerank_mode == "ground_truth":
+            # Mode 2: Ground truth + random negatives
+            if ground_truth is None or len(ground_truth) == 0:
+                # Fallback to retrieval mode if no ground truth
+                exclude_set = set(exclude_items) if exclude_items else set()
+                candidates = self.retriever.retrieve(user_id, exclude_items=exclude_set)
+            else:
+                candidates = self._build_ground_truth_candidates(
+                    user_id, ground_truth, exclude_items
+                )
+        else:
+            # Mode 1: Use candidates from Stage 1 (default)
+            exclude_set = set(exclude_items) if exclude_items else set()
+            candidates = self.retriever.retrieve(user_id, exclude_items=exclude_set)
         
         if not candidates:
             return []
         
-        # Stage 2: Rerank (if enabled)
-        if self.reranker is None:
-            return candidates
-        
         scored = self.reranker.rerank(user_id, candidates)
         return [item_id for item_id, _ in scored]
+    
+    def _build_ground_truth_candidates(
+        self,
+        user_id: int,
+        ground_truth: List[int],
+        exclude_items: Optional[List[int]] = None
+    ) -> List[int]:
+        """Build candidates for ground_truth mode: gt + random negatives.
+        
+        Args:
+            user_id: ID of the user
+            ground_truth: Ground truth items (usually 1 item)
+            exclude_items: Items to exclude (user's history)
+            
+        Returns:
+            List[int]: Candidates = [gt_item] + num_negatives random negatives
+        """
+        import random
+        
+        # Get user's interaction history to exclude
+        exclude_set = set(exclude_items) if exclude_items else set()
+        if hasattr(self.retriever, 'user_history'):
+            user_history = self.retriever.user_history.get(user_id, [])
+            exclude_set.update(user_history)
+        
+        # Get all items from retriever
+        # Try different attributes that different retrievers might have
+        all_items = None
+        if hasattr(self.retriever, 'item_count') and self.retriever.item_count:
+            all_items = set(range(1, self.retriever.item_count + 1))
+        elif hasattr(self.retriever, 'num_item') and self.retriever.num_item:
+            all_items = set(range(1, self.retriever.num_item + 1))
+        elif hasattr(self.retriever, 'num_items') and self.retriever.num_items:
+            all_items = set(range(1, self.retriever.num_items + 1))
+        
+        if all_items is None:
+            # Fallback: retrieve all candidates and use them as pool
+            # This is not ideal but works as fallback
+            try:
+                all_candidates = self.retriever.retrieve(user_id, exclude_items=set())
+                # Estimate item_count from max candidate
+                if all_candidates:
+                    max_item = max(all_candidates)
+                    all_items = set(range(1, max_item + 1))
+                else:
+                    raise ValueError("Cannot determine item_count for ground_truth mode")
+            except Exception:
+                raise ValueError(
+                    "Cannot determine item_count for ground_truth mode. "
+                    "Please ensure retriever has item_count, num_item, or num_items attribute."
+                )
+        
+        # Remove excluded items
+        candidate_pool = all_items - exclude_set - set(ground_truth)
+        
+        # Sample random negatives
+        num_negatives = self.cfg.rerank.num_negatives
+        num_negatives = min(num_negatives, len(candidate_pool))
+        
+        if num_negatives > 0:
+            negatives = random.sample(list(candidate_pool), num_negatives)
+        else:
+            negatives = []
+        
+        # Combine: ground truth + negatives
+        candidates = list(ground_truth) + negatives
+        
+        # Shuffle to avoid position bias
+        random.shuffle(candidates)
+        
+        return candidates
     
     def recommend_batch(
         self,
         user_ids: List[int],
-        exclude_items: Optional[Dict[int, List[int]]] = None
+        exclude_items: Optional[Dict[int, List[int]]] = None,
+        ground_truth: Optional[Dict[int, List[int]]] = None
     ) -> Dict[int, List[int]]:
         """Generate recommendations for multiple users.
         
         Args:
             user_ids: List of user IDs
             exclude_items: Dict {user_id: [item_ids]} to exclude
+            ground_truth: Dict {user_id: [item_ids]} - ground truth items (for ground_truth rerank mode)
             
         Returns:
             Dict[int, List[int]]: {user_id: [recommended_item_ids]}
         """
         if exclude_items is None:
             exclude_items = {}
+        if ground_truth is None:
+            ground_truth = {}
         
         results = {}
         for user_id in user_ids:
             exclude = exclude_items.get(user_id, [])
-            results[user_id] = self.recommend(user_id, exclude_items=exclude)
+            gt = ground_truth.get(user_id)
+            results[user_id] = self.recommend(user_id, exclude_items=exclude, ground_truth=gt)
         
         return results
 

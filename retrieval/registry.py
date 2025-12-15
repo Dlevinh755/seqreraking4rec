@@ -5,11 +5,15 @@ from typing import Dict, Type
 from retrieval.base import BaseRetriever
 from retrieval.methods.lrurec import LRURecRetriever
 from retrieval.methods.mmgcn import MMGCNRetriever
+from retrieval.methods.vbpr import VBPRRetriever
+from retrieval.methods.bm3 import BM3Retriever
 
 
 RETRIEVER_REGISTRY: Dict[str, Type[BaseRetriever]] = {
     "lrurec": LRURecRetriever,
     "mmgcn": MMGCNRetriever,
+    "vbpr": VBPRRetriever,
+    "bm3": BM3Retriever,
 }
 
 

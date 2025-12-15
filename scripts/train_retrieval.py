@@ -193,8 +193,8 @@ def main() -> None:
         "--retrieval_method",
         type=str,
         default="lrurec",
-        choices=["lrurec", "mmgcn"],
-        help="Retrieval method to use (default: lrurec)"
+        choices=["lrurec", "mmgcn", "vbpr", "bm3"],
+        help="Retrieval method to use (lrurec, mmgcn, vbpr) (default: lrurec)"
     )
     args = parser.parse_args()
     retrieval_method = args.retrieval_method
@@ -223,14 +223,16 @@ def main() -> None:
     RetrieverCls = get_retriever_class(retrieval_method)
     
     # Prepare retriever kwargs based on method
+    # Standardize hyperparameters for fair comparison
     retriever_kwargs = {
         "top_k": RETRIEVAL_TOP_K,
         "num_epochs": arg.retrieval_epochs,
         "batch_size": arg.batch_size_retrieval,
         "patience": arg.retrieval_patience,
+        "lr": arg.retrieval_lr,  # Standardize learning rate across all methods
     }
     
-    # For MMGCN, we need additional dependencies
+    # For MMGCN and VBPR, we need additional dependencies
     fit_kwargs = {
         "item_count": item_count,
         "val_data": val,
@@ -261,6 +263,64 @@ def main() -> None:
             "v_feat": v_feat,
             "t_feat": t_feat,
             "edge_index": edge_index,
+        })
+    
+    elif retrieval_method == "vbpr":
+        print("Loading CLIP embeddings for VBPR...")
+        v_feat, t_feat = _load_clip_embeddings(
+            arg.dataset_code,
+            arg.min_rating,
+            arg.min_uc,
+            arg.min_sc,
+            num_items
+        )
+        
+        if v_feat is None:
+            raise ValueError("VBPR requires image embeddings (v_feat), but image_embs is None")
+        
+        # Convert to torch.Tensor (VBPR expects torch.Tensor)
+        import torch
+        visual_features = torch.from_numpy(v_feat).float()
+        
+        fit_kwargs.update({
+            "num_user": num_users,
+            "num_item": num_items,
+            "visual_features": visual_features,
+            "dataset_code": arg.dataset_code,
+            "min_rating": arg.min_rating,
+            "min_uc": arg.min_uc,
+            "min_sc": arg.min_sc,
+        })
+    
+    elif retrieval_method == "bm3":
+        print("Loading CLIP embeddings for BM3...")
+        v_feat, t_feat = _load_clip_embeddings(
+            arg.dataset_code,
+            arg.min_rating,
+            arg.min_uc,
+            arg.min_sc,
+            num_items
+        )
+        
+        if v_feat is None:
+            raise ValueError("BM3 requires image embeddings (v_feat), but image_embs is None")
+        if t_feat is None:
+            raise ValueError("BM3 requires text embeddings (t_feat), but text_embs is None")
+        
+        # Convert to torch.Tensor (BM3 expects torch.Tensor)
+        import torch
+        visual_features = torch.from_numpy(v_feat).float()
+        text_features = torch.from_numpy(t_feat).float()
+        
+        fit_kwargs.update({
+            "num_user": num_users,
+            "num_item": num_items,
+            "visual_features": visual_features,
+            "text_features": text_features,
+            "dataset_code": arg.dataset_code,
+            "min_rating": arg.min_rating,
+            "min_uc": arg.min_uc,
+            "min_sc": arg.min_sc,
         })
     
     retriever = RetrieverCls(**retriever_kwargs)

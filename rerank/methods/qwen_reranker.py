@@ -11,22 +11,26 @@ class QwenReranker(BaseReranker):
     
     Wrapper cho LLMModel để implement BaseReranker interface.
     
-    ⚠️ **Giới hạn quan trọng**: LLM reranker chỉ hỗ trợ tối đa 20 candidates (A-T).
+    **Tính năng**:
+    - Số lượng candidates tự động điều chỉnh theo input từ retrieval stage
+    - Sử dụng số (1, 2, 3, ...) thay vì chữ cái để hỗ trợ nhiều candidates
+    - Max candidates có thể được cấu hình qua `--qwen_max_candidates` trong config.py
     
     **Mối quan hệ với Retrieval Stage**:
     - Số lượng candidates phụ thuộc vào `retrieval_top_k` từ Stage 1
-    - Nếu `retrieval_top_k > 20`, sẽ tự động truncate về 20 candidates đầu tiên
-    - **Khuyến nghị**: Set `retrieval_top_k <= 20` khi dùng Qwen reranker để tránh mất mát thông tin
+    - Nếu `qwen_max_candidates` được set, sẽ truncate nếu cần
+    - Nếu `qwen_max_candidates` là None, sử dụng tất cả candidates từ retrieval
     
     **Ví dụ**:
     ```python
-    # Tốt: retrieval_top_k = 20
-    retrieval_cfg = RetrievalConfig(method="lrurec", top_k=20)
-    rerank_cfg = RerankConfig(method="qwen", top_k=10)
-    
-    # Cũng OK nhưng sẽ truncate: retrieval_top_k = 200
+    # Sử dụng tất cả candidates từ retrieval
     retrieval_cfg = RetrievalConfig(method="lrurec", top_k=200)
-    rerank_cfg = RerankConfig(method="qwen", top_k=10)  # Chỉ dùng 20 đầu tiên
+    rerank_cfg = RerankConfig(method="qwen", top_k=50)
+    # → Qwen sẽ xử lý 200 candidates
+    
+    # Giới hạn số candidates
+    # Set --qwen_max_candidates 50 trong config.py
+    # → Qwen sẽ chỉ xử lý 50 candidates đầu tiên
     ```
     """
 
@@ -35,21 +39,24 @@ class QwenReranker(BaseReranker):
         top_k: int = 50,
         model_name: Optional[str] = None,
         max_history: int = 10,
+        max_candidates: Optional[int] = None,
     ) -> None:
         """
         Args:
-            top_k: Số lượng items trả về sau rerank (không liên quan đến giới hạn 20)
+            top_k: Số lượng items trả về sau rerank
             model_name: Tên model (default: "Qwen/Qwen3-0.6B")
             max_history: Số lượng items trong history để dùng cho prompt
+            max_candidates: Maximum number of candidates to process (None = no limit, uses all from retrieval)
             
         Note:
-            - `top_k` ở đây là số items cuối cùng trả về (có thể < 20)
-            - Giới hạn 20 candidates áp dụng cho input từ retrieval stage
-            - Nếu retrieval trả về > 20 candidates, sẽ truncate về 20 đầu tiên
+            - `top_k` là số items cuối cùng trả về sau rerank
+            - `max_candidates` giới hạn số candidates được xử lý (None = tự động theo retrieval_top_k)
+            - Nếu `max_candidates` được set, sẽ truncate candidates nếu cần
         """
         super().__init__(top_k=top_k)
         self.model_name = model_name or "Qwen/Qwen3-0.6B"
         self.max_history = max_history
+        self.max_candidates = max_candidates
         self.llm_model: Optional[LLMModel] = None
         
         # Data structures cần thiết cho rerank
@@ -110,10 +117,9 @@ class QwenReranker(BaseReranker):
             List[Tuple[int, float]]: [(item_id, score)] đã sort giảm dần
             
         Note:
-            - LLM reranker chỉ hỗ trợ tối đa 20 candidates (A-T)
-            - Nếu có > 20 candidates, sẽ truncate về 20 đầu tiên và có warning
-            - **Khuyến nghị**: Điều chỉnh `retrieval_top_k <= 20` trong pipeline config
-              để tránh mất mát thông tin từ retrieval stage
+            - Số lượng candidates tự động điều chỉnh theo input từ retrieval stage
+            - Nếu `max_candidates` được set, sẽ truncate nếu cần
+            - Prompt format sử dụng số (1, 2, 3, ...) thay vì chữ cái để hỗ trợ nhiều candidates
         """
         self._validate_fitted()
         
@@ -123,30 +129,26 @@ class QwenReranker(BaseReranker):
         if not candidates:
             return []
         
-        # LLM chỉ hỗ trợ tối đa 20 candidates (A-T)
-        MAX_CANDIDATES = 20
+        # Apply max_candidates limit if set
         original_count = len(candidates)
-        if original_count > MAX_CANDIDATES:
-            import warnings
-            warnings.warn(
-                f"Truncating {original_count} candidates to {MAX_CANDIDATES} "
-                f"(LLM reranker limit). Consider using fewer candidates from retrieval stage."
-            )
-            candidates = candidates[:MAX_CANDIDATES]
+        if self.max_candidates is not None and original_count > self.max_candidates:
+            candidates = candidates[:self.max_candidates]
         
         # Lấy user history
         history = self.user_history.get(user_id, [])
         history = history[-self.max_history:]  # Chỉ lấy max_history items gần nhất
         
-        # Build prompt
+        # Build prompt (sử dụng số thay vì chữ cái)
         prompt = build_prompt_from_candidates(
             history,
             candidates,
-            self.item_id2text
+            self.item_id2text,
+            max_candidates=self.max_candidates
         )
         
         # Predict probabilities
-        probs = self.llm_model.predict_probs(prompt)
+        num_candidates = len(candidates)
+        probs = self.llm_model.predict_probs(prompt, num_candidates=num_candidates)
         
         # Validate: probs phải có đúng số lượng với candidates
         if len(probs) != len(candidates):

@@ -16,6 +16,10 @@ parser.add_argument('--min_uc', type=int, default=20)   # min rating/user
 parser.add_argument('--min_sc', type=int, default=20)   # min rating/item
 parser.add_argument('--use_image', action='store_true', default=False, help='Filter out items without image')
 parser.add_argument('--use_text', action='store_true', default=False, help='Filter out items without text')
+parser.add_argument('--generate_caption', action='store_true', default=False, 
+                    help='Generate BLIP2 captions for images and save to CSV')
+parser.add_argument('--generate_semantic_summary', action='store_true', default=False,
+                    help='Generate Qwen3 VL semantic summaries for images and save to CSV')
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--retrieval_epochs', type=int, default=10,
 					help='Number of training epochs for Stage-1 retrieval models (e.g., neural LRURec).')
@@ -25,6 +29,21 @@ parser.add_argument('--num_workers_retrieval', type=int, default=0,
 					help='Number of DataLoader workers for Stage-1 retrieval model.')
 parser.add_argument('--retrieval_patience', type=int, default=5,
 					help='Early stopping patience (epochs without val improvement) for Stage-1 retrieval.')
+parser.add_argument('--retrieval_lr', type=float, default=1e-3,
+					help='Learning rate for all retrieval methods (default: 1e-3). Note: VBPR paper uses 5e-4, but we standardize to 1e-3 for fair comparison.')
+parser.add_argument('--rerank_epochs', type=int, default=10,
+					help='Number of training epochs for rerank models (e.g., BERT4Rec).')
+parser.add_argument('--rerank_batch_size', type=int, default=32,
+					help='Batch size for rerank model training.')
+parser.add_argument('--rerank_lr', type=float, default=1e-4,
+					help='Learning rate for rerank models (default: 1e-4).')
+parser.add_argument('--rerank_patience', type=int, default=5,
+					help='Early stopping patience (epochs without val improvement) for rerank models.')
+parser.add_argument('--qwen_max_candidates', type=int, default=None,
+					help='Maximum number of candidates for Qwen reranker. If None, uses retrieval_top_k from pipeline config.')
+parser.add_argument('--qwen3vl_mode', type=str, default='raw_image',
+					choices=['raw_image', 'caption', 'semantic_summary', 'semantic_summary_small'],
+					help='Prompt mode for Qwen3-VL reranker: raw_image, caption, semantic_summary, semantic_summary_small')
 arg = parser.parse_args()
 
 

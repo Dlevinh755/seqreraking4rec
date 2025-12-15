@@ -50,6 +50,29 @@ def ndcg_at_k(recommended: List[int], ground_truth: Iterable[int], k: int) -> fl
     return dcg / idcg
 
 
+def hit_at_k(recommended: List[int], ground_truth: Iterable[int], k: int) -> float:
+    """Compute Hit Rate@K for a single user.
+    
+    Hit Rate@K = 1 if at least one relevant item is in top-K, else 0.
+    Also known as Precision@K > 0 or Recall@K > 0.
+    
+    Args:
+        recommended: ranked list of item_ids.
+        ground_truth: iterable of relevant item_ids.
+        k: cutoff.
+        
+    Returns:
+        Hit rate: 1.0 if hit, 0.0 otherwise.
+    """
+    if k <= 0:
+        return 0.0
+    gt = set(ground_truth)
+    if not gt:
+        return 0.0
+    rec_k = recommended[:k]
+    return 1.0 if len(gt.intersection(rec_k)) > 0 else 0.0
+
+
 def absolute_recall_mrr_ndcg_for_ks(
     scores: torch.Tensor,
     labels: torch.Tensor,

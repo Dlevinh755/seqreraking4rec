@@ -4,7 +4,7 @@ This module provides common functions used across training and evaluation script
 """
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from evaluation.metrics import recall_at_k, ndcg_at_k
 from dataset import dataset_factory
@@ -14,22 +14,34 @@ def evaluate_split(
     recommend_fn,
     split: Dict[int, List[int]],
     k: int = 10,
+    ground_truth_mode: bool = False,
+    ks: Optional[List[int]] = None,
 ) -> Dict[str, float]:
     """Evaluate recommendations on a split.
     
     Generic evaluation function that works with any recommendation function.
     
     Args:
-        recommend_fn: Function that takes user_id and returns List[int] recommendations
+        recommend_fn: Function that takes user_id and optionally ground_truth, returns List[int] recommendations
                       Can be: retriever.retrieve, pipeline.recommend, etc.
         split: Dict {user_id: [item_ids]} - ground truth
-        k: Cutoff for metrics
+        k: Cutoff for metrics (used if ks is None)
+        ground_truth_mode: If True, pass ground_truth to recommend_fn (for rerank ground_truth mode)
+        ks: List of K values to evaluate (e.g., [5, 10, 20]). If None, uses [k]
         
     Returns:
-        Dict with keys: recall, ndcg, num_users
+        Dict with keys: recall@K, ndcg@K, hit@K for each K in ks (or just k if ks is None)
+        Also includes "num_users" key.
     """
+    from evaluation.metrics import hit_at_k
+    
+    if ks is None:
+        ks = [k]
+    
     users = sorted(split.keys())
-    recalls, ndcgs = [], []
+    
+    # Initialize lists for each K
+    metrics_by_k = {k_val: {"recalls": [], "ndcgs": [], "hits": []} for k_val in ks}
     
     for user_id in users:
         gt_items = split.get(user_id, [])
@@ -37,24 +49,44 @@ def evaluate_split(
             continue
         
         # Get recommendations
-        recs = recommend_fn(user_id)
+        if ground_truth_mode:
+            # For ground_truth mode, pass ground_truth to recommend_fn
+            recs = recommend_fn(user_id, ground_truth=gt_items)
+        else:
+            recs = recommend_fn(user_id)
+        
         if not recs:
             continue
         
-        # Compute metrics
-        r = recall_at_k(recs, gt_items, k)
-        n = ndcg_at_k(recs, gt_items, k)
-        recalls.append(r)
-        ndcgs.append(n)
+        # Compute metrics for each K
+        for k_val in ks:
+            r = recall_at_k(recs, gt_items, k_val)
+            n = ndcg_at_k(recs, gt_items, k_val)
+            h = hit_at_k(recs, gt_items, k_val)
+            
+            metrics_by_k[k_val]["recalls"].append(r)
+            metrics_by_k[k_val]["ndcgs"].append(n)
+            metrics_by_k[k_val]["hits"].append(h)
     
-    if not recalls:
-        return {"recall": 0.0, "ndcg": 0.0, "num_users": 0}
+    # Aggregate results
+    result = {"num_users": len(users)}
     
-    return {
-        "recall": float(sum(recalls) / len(recalls)),
-        "ndcg": float(sum(ndcgs) / len(ndcgs)),
-        "num_users": len(recalls),
-    }
+    for k_val in ks:
+        if metrics_by_k[k_val]["recalls"]:
+            result[f"recall@{k_val}"] = float(sum(metrics_by_k[k_val]["recalls"]) / len(metrics_by_k[k_val]["recalls"]))
+            result[f"ndcg@{k_val}"] = float(sum(metrics_by_k[k_val]["ndcgs"]) / len(metrics_by_k[k_val]["ndcgs"]))
+            result[f"hit@{k_val}"] = float(sum(metrics_by_k[k_val]["hits"]) / len(metrics_by_k[k_val]["hits"]))
+        else:
+            result[f"recall@{k_val}"] = 0.0
+            result[f"ndcg@{k_val}"] = 0.0
+            result[f"hit@{k_val}"] = 0.0
+    
+    # Backward compatibility: also include "recall" and "ndcg" for the first K
+    if len(ks) > 0:
+        result["recall"] = result.get(f"recall@{ks[0]}", 0.0)
+        result["ndcg"] = result.get(f"ndcg@{ks[0]}", 0.0)
+    
+    return result
 
 
 def load_dataset_from_csv(
@@ -113,7 +145,14 @@ def load_dataset_from_csv(
     for item_new_id, row in meta_df.iterrows():
         text = row.get("item_text") if not pd.isna(row.get("item_text")) else None
         image_path = row.get("item_image_path") if not pd.isna(row.get("item_image_path")) else None
-        meta[int(item_new_id)] = {"text": text, "image_path": image_path}
+        caption = row.get("item_caption") if not pd.isna(row.get("item_caption")) else None
+        semantic_summary = row.get("item_semantic_summary") if not pd.isna(row.get("item_semantic_summary")) else None
+        meta[int(item_new_id)] = {
+            "text": text,
+            "image_path": image_path,
+            "caption": caption,
+            "semantic_summary": semantic_summary
+        }
     
     # Build smap
     smap = {}

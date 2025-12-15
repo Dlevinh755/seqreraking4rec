@@ -1,5 +1,7 @@
 from dataset import *
 from dataset.clip_embeddings import maybe_extract_clip_embeddings
+from dataset.blip2_captions import maybe_generate_blip2_captions
+from dataset.qwen3vl_semantic_summary import maybe_generate_semantic_summaries
 from config import *
 from pytorch_lightning import seed_everything
 import torch
@@ -13,10 +15,18 @@ def main(args):
     dataset = dataset_factory(args)
     data = dataset.load_dataset()
     maybe_extract_clip_embeddings(dataset, data, args)
+    
+    # Generate BLIP2/BLIP captions if enabled
+    # Captions will be saved directly to CSV (no need for separate .pt file)
+    captions = maybe_generate_blip2_captions(dataset, data, args)
+    
+    # Generate Qwen3 VL semantic summaries if enabled
+    # Semantic summaries will be saved directly to CSV
+    semantic_summaries = maybe_generate_semantic_summaries(dataset, data, args)
 
     # Export a single CSV with columns:
     # {Item_id, user_id, item_new_id, item_text, item_image_embedding,
-    #  item_text_embedding, item_image_path, split}
+    #  item_text_embedding, item_image_path, item_caption, item_semantic_summary, split}
     preproc_folder = Path(dataset._get_preprocessed_folder_path())
     clip_path = preproc_folder.joinpath("clip_embeddings.pt")
 
@@ -44,6 +54,16 @@ def main(args):
                 info = meta.get(item, {})
                 text = info.get("text") if info else None
                 image_path = info.get("image_path") or info.get("image") if info else None
+                
+                # Get caption if available
+                caption = None
+                if captions is not None:
+                    caption = captions.get(item)
+                
+                # Get semantic summary if available
+                semantic_summary = None
+                if semantic_summaries is not None:
+                    semantic_summary = semantic_summaries.get(item)
 
                 img_emb = None
                 txt_emb = None
@@ -64,6 +84,8 @@ def main(args):
                     "item_image_embedding": json.dumps(img_emb) if img_emb is not None else "",
                     "item_text_embedding": json.dumps(txt_emb) if txt_emb is not None else "",
                     "item_image_path": image_path or "",
+                    "item_caption": caption or "",
+                    "item_semantic_summary": semantic_summary or "",
                     "split": split_name,
                 })
 
