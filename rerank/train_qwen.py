@@ -125,7 +125,7 @@ def main():
     train_data = to_unsloth_format(train_samples)
     model = LLMModel(train_data=train_data, model_name="qwen/Qwen-7B-Chat")
     model.load_model()
-    model.trainer.train()
+    model.train()
 
 
     import pandas as pd

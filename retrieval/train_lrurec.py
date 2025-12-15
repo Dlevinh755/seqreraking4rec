@@ -7,7 +7,7 @@ import torch
 from pytorch_lightning import seed_everything
 import torch.nn.functional as F
 from config import arg, EXPERIMENT_ROOT
-from datasets import dataset_factory
+from dataset import dataset_factory
 from evaluation.metrics import recall_at_k, ndcg_at_k
 from retrieval.registry import get_retriever_class
 import pandas as pd

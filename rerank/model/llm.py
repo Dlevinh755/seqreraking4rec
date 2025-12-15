@@ -1,6 +1,6 @@
 from unsloth import FastLanguageModel
 import torch
-from unsloth import SFTTrainer
+from transformers import Trainer, TrainingArguments
 from transformers import TrainingArguments
 import torch.nn.functional as F
 import string
@@ -74,27 +74,34 @@ class LLMModel:
             bias = "none",
             use_gradient_checkpointing = True,
         )
+        def train(self):
 
+            from datasets import Dataset
 
-        self.trainer = SFTTrainer(
-        model=self.model,
-        tokenizer=self.tokenizer,
-        train_dataset= self.train_data,
-        dataset_text_field="messages",
-        max_seq_length=2048,
-        packing=False,
-        args=TrainingArguments(
+            hf_train_dataset = Dataset.from_list(self.train_data)
+            hf_train_dataset = hf_train_dataset.map(
+                self.tokenize_response_only,
+                remove_columns=hf_train_dataset.column_names,
+            )
+
+            training_args = TrainingArguments(
+            output_dir="./qwen_rerank",
             per_device_train_batch_size=8,
             gradient_accumulation_steps=4,
             learning_rate=2e-5,
             num_train_epochs=2,
             logging_steps=50,
             save_steps=500,
-            output_dir="./qwen_rec_lora",
-            report_to="none"
-        ),
-        train_on_prompt=False   # ⭐ RESPONSE-ONLY
-    )
+            report_to="none",
+            bf16=True,
+        )
+
+        trainer = Trainer(
+            model=self.model,
+            args=training_args,
+            train_dataset=hf_train_dataset,
+            tokenizer=self.tokenizer,
+        )
 
 
 
@@ -145,6 +152,34 @@ class LLMModel:
             **{f"Recall@{k}": sum(v)/len(v) for k, v in recalls.items()},
             **{f"NDCG@{k}": sum(v)/len(v) for k, v in ndcgs.items()}
         }
+    def tokenize_response_only(self, example):
+        messages = example["messages"]
+
+        prompt = ""
+        for m in messages[:-1]:
+            prompt += f"{m['role'].upper()}: {m['content']}\n"
+
+        response = messages[-1]["content"]
+
+        full_text = prompt + response
+
+        tokenized = self.tokenizer(
+            full_text,
+            truncation=True,
+            max_length=2048,
+        )
+
+        labels = tokenized["input_ids"].copy()
+
+        prompt_len = len(
+            self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        )
+
+        labels[:prompt_len] = [-100] * prompt_len
+        tokenized["labels"] = labels
+
+        return tokenized
+
 
 
 
