@@ -1,17 +1,3 @@
-"""Stage 1 training & evaluation script for LRURec retrieval.
-
-Features:
-- Uses the existing preprocessing pipeline (dataset.pkl via `datasets` + `config`).
-- Uses the simple `LRURecRetriever` (reverse-chronological heuristic) as Stage 1 model.
-- Computes Recall@K and NDCG@K on val / test splits.
-- Generates a `retrieved.pkl` file (LlamaRec-compatible) containing per-item scores
-    for val/test users, so Stage 2 rerankers (LLM, VIP4, ...) có thể sử dụng lại
-    mà không phải chạy lại Stage 1.
-
-Lưu ý: đây là bản đơn giản, không phải bản LRURec neural đầy đủ của LlamaRec,
-nhưng format của `retrieved.pkl` giống với `LlamaRec/trainer/lru.py`.
-"""
-
 import os
 import pickle
 from pathlib import Path
@@ -19,17 +5,20 @@ from typing import Dict, List
 
 import torch
 from pytorch_lightning import seed_everything
-
+import torch.nn.functional as F
 from config import arg, EXPERIMENT_ROOT
 from datasets import dataset_factory
 from evaluation.metrics import recall_at_k, ndcg_at_k
 from retrieval.registry import get_retriever_class
+import pandas as pd
+import json
 
 
 RETRIEVAL_METHOD = "lrurec"
 RETRIEVAL_TOP_K = 200  # how many items to retrieve per user
 METRIC_K = 10          # cutoff for Recall@K, NDCG@K
 METRIC_KS_FOR_RETRIEVED = [1, 5, 10, 20, 50]
+RETRIEVAL_SAVE_TOP_K = 20  # how many top candidate scores to store per user
 
 
 def _evaluate_split(
@@ -37,13 +26,6 @@ def _evaluate_split(
     split: Dict[int, List[int]],
     k: int,
 ) -> Dict[str, float]:
-    """Compute average Recall@K and NDCG@K for a given split.
-
-    Args:
-        retriever: fitted retriever with `retrieve(user_id)` method.
-        split: dict {user_id: [item_ids]} for val or test.
-        k: cutoff K.
-    """
     users = sorted(split.keys())
     recalls, ndcgs = [], []
 
@@ -70,14 +52,6 @@ def _evaluate_split(
 
 
 def absolute_recall_mrr_ndcg_for_ks(scores: torch.Tensor, labels: torch.Tensor, ks) -> Dict[str, float]:
-    """Compute Recall, MRR, NDCG cho nhiều K (giống LlamaRec.trainer.utils).
-
-    Args:
-        scores: tensor [B, N] điểm cho từng item.
-        labels: tensor [B] chứa item_id đúng.
-        ks: iterable các giá trị K.
-    """
-    import torch.nn.functional as F
 
     metrics: Dict[str, float] = {}
     one_hot = F.one_hot(labels, num_classes=scores.size(1))
@@ -118,18 +92,9 @@ def _build_retrieved_matrices(
     split: Dict[int, List[int]],
     item_count: int,
 ) -> Dict[str, List]:
-    """Build score matrices & labels cho val/test giống LlamaRec LRUTrainer.
-
-    - Với mỗi user có ground-truth trong split:
-      - Lấy danh sách candidates từ retriever (top-K).
-      - Tạo vector scores dài (item_count+1):
-        * index 0 = -1e9 (padding).
-        * các item trong candidates được gán điểm giảm dần theo thứ hạng.
-        * các item khác giữ -1e9.
-    - Trả về dict với `probs` (list[list[float]]) và `labels` (list[int]).
-    """
     users = sorted(split.keys())
-    probs: List[List[float]] = []
+    # We'll store only the top-`RETRIEVAL_SAVE_TOP_K` candidate IDs and their scores
+    probs: List[dict] = []
     labels: List[int] = []
 
     for u in users:
@@ -139,32 +104,83 @@ def _build_retrieved_matrices(
         label = gt_items[0]
 
         cands = retriever.retrieve(u)
-        # Khởi tạo tất cả = -1e9, giống cách LlamaRec mask padding/history
-        scores = torch.full((item_count + 1,), -1e9, dtype=torch.float32)
-        # Gán điểm giảm dần cho candidates (vị trí đầu có score cao nhất)
+        top_ids: List[int] = []
+        top_scores: List[float] = []
+
+        # Assign descending scores based on candidate rank and keep only top-K
         for rank, item_id in enumerate(cands):
             if 0 < item_id <= item_count:
-                scores[item_id] = float(len(cands) - rank)
+                score = float(len(cands) - rank)
+                if len(top_ids) < RETRIEVAL_SAVE_TOP_K:
+                    top_ids.append(int(item_id))
+                    top_scores.append(score)
+                else:
+                    break
 
-        probs.append(scores.tolist())
+        probs.append({"ids": top_ids, "scores": top_scores})
         labels.append(int(label))
 
     return {"probs": probs, "labels": labels}
 
 
 def main() -> None:
-    # 1) Seed
+
     seed_everything(arg.seed)
 
-    # 2) Ensure dataset is preprocessed and load dataset.pkl
     dataset = dataset_factory(arg)
-    data = dataset.load_dataset()
-    train: Dict[int, List[int]] = data["train"]
-    val: Dict[int, List[int]] = data["val"]
-    test: Dict[int, List[int]] = data["test"]
-    item_count: int = len(data["smap"])
+    # Require CSV export (produced by `data_prepare.py`) and use it for training
+    preproc_folder = Path(dataset._get_preprocessed_folder_path())
+    csv_path = preproc_folder.joinpath("dataset_single_export.csv")
+    if csv_path.exists():
+        df = pd.read_csv(csv_path)
+        # Vectorized reconstruction: preserve file order, group by (split,user)
+        import numpy as np
 
-    # 3) Build & fit retriever
+        df = df.reset_index(drop=False).rename(columns={"index": "row_order"})
+
+        # Aggregate item lists per (split, user) preserving original row order
+        grouped = (
+            df.sort_values("row_order")
+              .groupby(["split", "user_id"]) ["item_new_id"]
+              .apply(lambda s: s.astype(int).tolist())
+        )
+
+        train, val, test = {}, {}, {}
+        for (split, user), items in grouped.items():
+            user = int(user)
+            if split == "train":
+                train[user] = items
+            elif split == "val":
+                val[user] = items
+            else:
+                test[user] = items
+
+        # Build meta by taking first occurrence per item_new_id
+        meta_df = df.drop_duplicates(subset=["item_new_id"]).set_index("item_new_id")
+        meta = {}
+        for item_new_id, row in meta_df.iterrows():
+            text = row.get("item_text") if not pd.isna(row.get("item_text")) else None
+            image_path = row.get("item_image_path") if not pd.isna(row.get("item_image_path")) else None
+            meta[int(item_new_id)] = {"text": text, "image_path": image_path}
+
+        # Build smap (original_id -> new_id) from rows where Item_id present
+        smap = {}
+        map_df = df[~df["Item_id"].isna()].drop_duplicates(subset=["Item_id"]).copy()
+        for _, row in map_df.iterrows():
+            try:
+                orig = row["Item_id"]
+                new = int(row["item_new_id"])
+                smap[orig] = new
+            except Exception:
+                continue
+
+        data = {"train": train, "val": val, "test": test, "meta": meta, "smap": smap}
+        item_count = max(meta.keys()) if meta else 0
+    else:
+        raise FileNotFoundError(
+            f"CSV export not found at {csv_path}. Run data_prepare.py to create dataset_single_export.csv"
+        )
+
     RetrieverCls = get_retriever_class(RETRIEVAL_METHOD)
     retriever = RetrieverCls(
         top_k=RETRIEVAL_TOP_K,
@@ -173,8 +189,6 @@ def main() -> None:
         num_workers=arg.num_workers_retrieval,
         patience=arg.retrieval_patience,
     )
-    # Neural LRURecRetriever cần biết tổng số item để khởi tạo embedding.
-    # Truyền thêm `val` để retriever có thể validation sau mỗi epoch và chọn best model.
     retriever.fit(train, item_count=item_count, val_data=val)
 
     # 4) Evaluate on val / test (baseline Stage 1)
@@ -205,9 +219,27 @@ def main() -> None:
     test_pack = _build_retrieved_matrices(retriever, test, item_count)
 
     if val_pack["probs"] and test_pack["probs"]:
-        val_scores = torch.tensor(val_pack["probs"], dtype=torch.float32)
+        # Reconstruct full-size score tensors from the compact top-K lists for evaluation
+        val_n = len(val_pack["probs"])
+        test_n = len(test_pack["probs"])
+
+        val_scores = torch.full((val_n, item_count + 1), -1e9, dtype=torch.float32)
+        for i, p in enumerate(val_pack["probs"]):
+            ids = p.get("ids", [])
+            scores = p.get("scores", [])
+            for iid, sc in zip(ids, scores):
+                if 0 < iid <= item_count:
+                    val_scores[i, iid] = float(sc)
+
+        test_scores = torch.full((test_n, item_count + 1), -1e9, dtype=torch.float32)
+        for i, p in enumerate(test_pack["probs"]):
+            ids = p.get("ids", [])
+            scores = p.get("scores", [])
+            for iid, sc in zip(ids, scores):
+                if 0 < iid <= item_count:
+                    test_scores[i, iid] = float(sc)
+
         val_labels = torch.tensor(val_pack["labels"], dtype=torch.long).view(-1)
-        test_scores = torch.tensor(test_pack["probs"], dtype=torch.float32)
         test_labels = torch.tensor(test_pack["labels"], dtype=torch.long).view(-1)
 
         val_metrics_full = absolute_recall_mrr_ndcg_for_ks(val_scores, val_labels, METRIC_KS_FOR_RETRIEVED)
@@ -216,19 +248,37 @@ def main() -> None:
         val_metrics_full = {}
         test_metrics_full = {}
 
-    retrieved_payload = {
-        "val_probs": val_pack["probs"],
-        "val_labels": val_pack["labels"],
+    # Export retrieved candidates to CSV (one file) and metrics to JSON
+    rows = []
+    for split_name, pack in [("val", val_pack), ("test", test_pack)]:
+        probs = pack.get("probs", [])
+        labels = pack.get("labels", [])
+        for i, p in enumerate(probs):
+            ids = p.get("ids", [])
+            scores = p.get("scores", [])
+            label = labels[i] if i < len(labels) else None
+            rows.append({
+                "split": split_name,
+                "user_index": i,
+                "label": int(label) if label is not None else None,
+                "candidate_ids": json.dumps(ids, ensure_ascii=False),
+                "candidate_scores": json.dumps(scores, ensure_ascii=False),
+            })
+
+    df_out = pd.DataFrame(rows)
+    csv_out = export_root / "retrieved.csv"
+    df_out.to_csv(csv_out, index=False)
+
+    metrics = {
         "val_metrics": val_metrics_full,
-        "test_probs": test_pack["probs"],
-        "test_labels": test_pack["labels"],
         "test_metrics": test_metrics_full,
     }
+    metrics_out = export_root / "retrieved_metrics.json"
+    with metrics_out.open("w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
 
-    with retrieved_path.open("wb") as f:
-        pickle.dump(retrieved_payload, f)
-
-    print(f"Saved retrieved candidates to: {retrieved_path}")
+    print(f"Saved retrieved candidates to: {csv_out}")
+    print(f"Saved retrieved metrics to: {metrics_out}")
 
 
 if __name__ == "__main__":

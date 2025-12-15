@@ -58,7 +58,103 @@ class AbstractDataset(metaclass=ABCMeta):
         pass
 
     def load_dataset(self):
+        preproc_folder = self._get_preprocessed_folder_path()
+        csv_path = preproc_folder.joinpath('dataset_single_export.csv')
+
+        # If CSV already exists, skip preprocessing and load it
+        if csv_path.is_file():
+            try:
+                import pandas as pd
+            except Exception:
+                raise
+
+            df = pd.read_csv(csv_path)
+            # Reconstruct train/val/test, meta, smap. umap cannot be recovered from CSV.
+            df = df.reset_index(drop=False).rename(columns={"index": "row_order"})
+            grouped = (
+                df.sort_values("row_order")
+                  .groupby(["split", "user_id"])["item_new_id"]
+                  .apply(lambda s: s.astype(int).tolist())
+            )
+
+            train, val, test = {}, {}, {}
+            for (split, user), items in grouped.items():
+                user = int(user)
+                if split == "train":
+                    train[user] = items
+                elif split == "val":
+                    val[user] = items
+                else:
+                    test[user] = items
+
+            meta_df = df.drop_duplicates(subset=["item_new_id"]).set_index("item_new_id")
+            meta = {}
+            for item_new_id, row in meta_df.iterrows():
+                text = row.get("item_text") if not pd.isna(row.get("item_text")) else None
+                image_path = row.get("item_image_path") if not pd.isna(row.get("item_image_path")) else None
+                meta[int(item_new_id)] = {"text": text, "image_path": image_path}
+
+            smap = {}
+            map_df = df[~df["Item_id"].isna()].drop_duplicates(subset=["Item_id"]).copy()
+            for _, row in map_df.iterrows():
+                try:
+                    orig = row["Item_id"]
+                    new = int(row["item_new_id"])
+                    smap[orig] = new
+                except Exception:
+                    continue
+
+            return {"train": train, "val": val, "test": test, "meta": meta, "umap": {}, "smap": smap}
+
+        # Otherwise run preprocessing and then load (either CSV or legacy pickle)
         self.preprocess()
+        preproc_folder = self._get_preprocessed_folder_path()
+        csv_path = preproc_folder.joinpath('dataset_single_export.csv')
+        if csv_path.is_file():
+            try:
+                import pandas as pd
+            except Exception:
+                raise
+
+            df = pd.read_csv(csv_path)
+            # Reconstruct train/val/test, meta, smap. umap cannot be recovered from CSV.
+            df = df.reset_index(drop=False).rename(columns={"index": "row_order"})
+            grouped = (
+                df.sort_values("row_order")
+                  .groupby(["split", "user_id"])["item_new_id"]
+                  .apply(lambda s: s.astype(int).tolist())
+            )
+
+            train, val, test = {}, {}, {}
+            for (split, user), items in grouped.items():
+                user = int(user)
+                if split == "train":
+                    train[user] = items
+                elif split == "val":
+                    val[user] = items
+                else:
+                    test[user] = items
+
+            meta_df = df.drop_duplicates(subset=["item_new_id"]).set_index("item_new_id")
+            meta = {}
+            for item_new_id, row in meta_df.iterrows():
+                text = row.get("item_text") if not pd.isna(row.get("item_text")) else None
+                image_path = row.get("item_image_path") if not pd.isna(row.get("item_image_path")) else None
+                meta[int(item_new_id)] = {"text": text, "image_path": image_path}
+
+            smap = {}
+            map_df = df[~df["Item_id"].isna()].drop_duplicates(subset=["Item_id"]).copy()
+            for _, row in map_df.iterrows():
+                try:
+                    orig = row["Item_id"]
+                    new = int(row["item_new_id"])
+                    smap[orig] = new
+                except Exception:
+                    continue
+
+            return {"train": train, "val": val, "test": test, "meta": meta, "umap": {}, "smap": smap}
+
+        # fallback to pickle for compatibility
         dataset_path = self._get_preprocessed_dataset_path()
         dataset = pickle.load(dataset_path.open('rb'))
         return dataset

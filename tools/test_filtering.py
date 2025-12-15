@@ -30,13 +30,10 @@ print()
 # Construct path to preprocessed data
 preprocessed_root = Path('data/preprocessed')
 folder_name = f'{args.dataset_code}_min_rating{args.min_rating}-min_uc{args.min_uc}-min_sc{args.min_sc}'
-dataset_path = preprocessed_root.joinpath(folder_name).joinpath('dataset.pkl')
 
-if dataset_path.exists():
-    print(f"Loading dataset from: {dataset_path}\n")
-    
-    with open(dataset_path, 'rb') as f:
-        dataset = pickle.load(f)
+# Load via dataset factory (will prefer CSV if present)
+from datasets import dataset_factory
+dataset = dataset_factory(args).load_dataset()
     
     print("-" * 80)
     print("DATASET STATISTICS")

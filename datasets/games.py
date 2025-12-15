@@ -116,14 +116,43 @@ class GamesDataset(AbstractDataset):
                 print(f'Final items after image filtering: {len(smap)}')
         train, val, test = self.split_df(df, len(umap))
         meta = {smap[k]: v for k, v in meta_raw.items() if k in smap}
+        # Export CSV and keep in-memory dataset for compatibility
+        preproc_folder = dataset_path.parent
+        rows = []
+        inv_smap = {v: k for k, v in smap.items()}
+
+        def add_rows(split_name, split_dict):
+            for user, items in split_dict.items():
+                for item in items:
+                    orig_item = inv_smap.get(item, None)
+                    info = meta.get(item, {})
+                    text = info.get('text') if info else None
+                    image_path = info.get('image_path') or info.get('image') if info else None
+                    rows.append({
+                        'Item_id': orig_item,
+                        'user_id': int(user),
+                        'item_new_id': int(item),
+                        'item_text': text,
+                        'item_image_embedding': '',
+                        'item_text_embedding': '',
+                        'item_image_path': image_path or '',
+                        'split': split_name,
+                    })
+
+        add_rows('train', train)
+        add_rows('val', val)
+        add_rows('test', test)
+
+        df_out = pd.DataFrame(rows)
+        out_csv = preproc_folder.joinpath('dataset_single_export.csv')
+        df_out.to_csv(out_csv, index=False)
+
         dataset = {'train': train,
                    'val': val,
                    'test': test,
                    'meta': meta,
                    'umap': umap,
                    'smap': smap}
-        with dataset_path.open('wb') as f:
-            pickle.dump(dataset, f)
 
     def load_ratings_df(self):
         folder_path = self._get_rawdata_folder_path()

@@ -4,17 +4,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pickle
 from config import arg
+from datasets import dataset_factory
 
-# Đường dẫn tới file pickle
-preprocessed_root = Path('data/preprocessed')
-folder_name = f'{arg.dataset_code}_min_rating{arg.min_rating}-min_uc{arg.min_uc}-min_sc{arg.min_sc}'
-dataset_path = preprocessed_root.joinpath(folder_name).joinpath('dataset.pkl')
-
-if dataset_path.exists():
-    print(f"Loading dataset from: {dataset_path}\n")
-    
-    with open(dataset_path, 'rb') as f:
-        dataset = pickle.load(f)
+# Load via dataset factory (will prefer CSV if present)
+dataset = dataset_factory(arg).load_dataset()
     
     print("=" * 80)
     print("DATASET STRUCTURE")

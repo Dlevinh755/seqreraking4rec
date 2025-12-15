@@ -1,7 +1,0 @@
-retrieval:
-  method: lrurec
-  top_k: 200
-
-rerank:
-  method: identity
-  top_k: 50

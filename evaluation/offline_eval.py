@@ -29,18 +29,15 @@ def load_dataset(
 
     Thư mục: data/preprocessed/{code}_min_rating{min_rating}-min_uc{min_uc}-min_sc{min_sc}/dataset.pkl
     """
-    preprocessed_root = Path("data/preprocessed")
-    folder_name = f"{dataset_code}_min_rating{min_rating}-min_uc{min_uc}-min_sc{min_sc}"
-    dataset_path = preprocessed_root.joinpath(folder_name, "dataset.pkl")
-
-    if not dataset_path.exists():
-        raise FileNotFoundError(
-            f"dataset.pkl not found at {dataset_path}. "
-            "Hãy chạy data_prepare.py với cùng tham số dataset/filter trước."
-        )
-
-    with dataset_path.open("rb") as f:
-        dataset = pickle.load(f)
+    # Prefer CSV loader via dataset_factory
+    from datasets import dataset_factory
+    args = type("X", (), {
+        "dataset_code": dataset_code,
+        "min_rating": min_rating,
+        "min_uc": min_uc,
+        "min_sc": min_sc,
+    })
+    dataset = dataset_factory(args).load_dataset()
     return dataset
 
 
