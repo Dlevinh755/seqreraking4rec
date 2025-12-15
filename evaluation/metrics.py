@@ -1,7 +1,10 @@
-"""Ranking metrics: Recall@K and NDCG@K."""
+"""Ranking metrics: Recall@K, NDCG@K, MRR@K, and batch evaluation utilities."""
 
 from math import log2
-from typing import Iterable, List
+from typing import Dict, Iterable, List
+
+import torch
+import torch.nn.functional as F
 
 
 def recall_at_k(recommended: List[int], ground_truth: Iterable[int], k: int) -> float:
@@ -45,3 +48,55 @@ def ndcg_at_k(recommended: List[int], ground_truth: Iterable[int], k: int) -> fl
     if idcg == 0.0:
         return 0.0
     return dcg / idcg
+
+
+def absolute_recall_mrr_ndcg_for_ks(
+    scores: torch.Tensor,
+    labels: torch.Tensor,
+    ks: List[int]
+) -> Dict[str, float]:
+    """Compute Recall@K, MRR@K, and NDCG@K for multiple K values from score tensors.
+    
+    This function is useful for batch evaluation when you have score matrices
+    and ground truth labels as tensors.
+    
+    Args:
+        scores: Tensor of shape [batch_size, num_items] - prediction scores
+        labels: Tensor of shape [batch_size] - ground truth item IDs
+        ks: List of K values to compute metrics for
+        
+    Returns:
+        Dict with keys like "Recall@1", "Recall@5", "NDCG@10", "MRR@10", etc.
+    """
+    metrics: Dict[str, float] = {}
+    one_hot = F.one_hot(labels, num_classes=scores.size(1))
+    answer_count = one_hot.sum(1)
+    
+    labels_float = one_hot.float()
+    rank = (-scores).argsort(dim=1)
+    
+    cut = rank
+    device = scores.device
+    for k in sorted(ks, reverse=True):
+        cut = cut[:, :k]
+        hits = labels_float.gather(1, cut)
+        
+        # Recall@K
+        denom = torch.min(torch.tensor([k], device=device), labels_float.sum(1).float())
+        metrics[f"Recall@{k}"] = (hits.sum(1) / denom).mean().cpu().item()
+        
+        # MRR@K
+        positions = torch.arange(1, k + 1, device=device).unsqueeze(0)
+        metrics[f"MRR@{k}"] = (hits / positions).sum(1).mean().cpu().item()
+        
+        # NDCG@K
+        position = torch.arange(2, 2 + k, device=device)
+        weights = 1.0 / torch.log2(position.float())
+        dcg = (hits * weights.to(device)).sum(1)
+        idcg = torch.tensor([
+            weights[: int(min(int(n.item()), k))].sum().item() for n in answer_count
+        ], device=device)
+        ndcg = (dcg / idcg).mean()
+        metrics[f"NDCG@{k}"] = ndcg.cpu().item()
+    
+    return metrics

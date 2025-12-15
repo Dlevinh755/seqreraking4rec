@@ -1,14 +1,21 @@
+"""Training script for rerank models (Stage 2).
+
+This script trains rerank models (e.g., Qwen) on candidates from Stage 1 retrieval.
+"""
+
 import random
 import string
 from collections import defaultdict
-from .model.llm import LLMModel
+from pathlib import Path
+
 import pandas as pd
-import torch.nn.functional as F
+from rerank.models.llm import LLMModel
 
 LETTERS = list(string.ascii_uppercase[:20])  # A-T
 
 
 def build_training_samples(user2items, all_items, max_history=10):
+    """Build training samples for LLM reranking."""
     samples = []
 
     for user, interactions in user2items.items():
@@ -47,7 +54,9 @@ def build_training_samples(user2items, all_items, max_history=10):
 
     return samples
 
+
 def build_prompt(sample):
+    """Build prompt for training sample."""
     history_text = "\n".join(
         [f"- {h}" for h in sample["history"]]
     )
@@ -74,6 +83,7 @@ Answer with only one letter (A-T).
 
 
 def to_unsloth_format(samples):
+    """Convert samples to Unsloth training format."""
     data = []
 
     for s in samples:
@@ -96,63 +106,81 @@ def to_unsloth_format(samples):
 
     return data
 
+
 def main():
-    import pandas as pd
-    import random
-    import string
-    from collections import defaultdict
-    from .model.llm import LLMModel
+    from config import arg
+    from dataset.paths import get_preprocessed_csv_path, get_retrieved_csv_path
+    from evaluation.utils import load_dataset_from_csv
     
-    df = pd.read_csv("data/preprocessed/beauty_min_rating3-min_uc20-min_sc20/dataset_single_export.csv")
+    # Load dataset using config
+    dataset_path = get_preprocessed_csv_path(
+        arg.dataset_code,
+        arg.min_rating,
+        arg.min_uc,
+        arg.min_sc
+    )
+    if not dataset_path.exists():
+        print(f"Dataset not found at {dataset_path}")
+        print("Please run data_prepare.py first!")
+        return
+    
+    df = pd.read_csv(dataset_path)
 
     df_train = df[df["split"] == "train"]
     user2items = defaultdict(list)
 
     for _, row in df_train.iterrows():
         user2items[row["user_id"]].append(row)
-        all_items = (
+    
+    all_items = (
         df_train[["item_new_id", "item_text"]]
         .drop_duplicates()
         .to_dict("records")
-        )
+    )
 
+    # Build training samples
     train_samples = build_training_samples(user2items, all_items)
     train_data = to_unsloth_format(train_samples)
+    
+    # Train model
     model = LLMModel(train_data=train_data, model_name="unsloth/Qwen3-0.6B-Base-bnb-4bit")
     model.load_model()
     model.train()
 
-    df_can = pd.read_csv("experiments/retrieval/lrurec/beauty/seed42/retrieved.csv")
+    # Evaluate - Load retrieved candidates using config
+    # TODO: Make retrieval method configurable via args
+    retrieval_method = "lrurec"  # Default, should be from config/args
+    retrieved_path = get_retrieved_csv_path(retrieval_method, arg.dataset_code, arg.seed)
+    if not retrieved_path.exists():
+        print(f"Retrieved candidates not found at {retrieved_path}")
+        print("Please run scripts/train_retrieval.py first!")
+        return
+    
+    df_can = pd.read_csv(retrieved_path)
     df_val = df_can[df_can["split"] == "val"]
     df_test = df_can[df_can["split"] == "test"]
 
     # item_id -> text
-    item_df = pd.read_csv("data/preprocessed/beauty_min_rating3-min_uc20-min_sc20/dataset_single_export.csv")[["item_new_id", "item_text"]].drop_duplicates()
+    item_df = pd.read_csv(dataset_path)[["item_new_id", "item_text"]].drop_duplicates()
     item_id2text = dict(zip(item_df.item_new_id, item_df.item_text))
-    from collections import defaultdict
 
-    df_inter = pd.read_csv("data/preprocessed/beauty_min_rating3-min_uc20-min_sc20/dataset_single_export.csv")
-
+    df_inter = pd.read_csv(dataset_path)
     user2history = defaultdict(list)
 
     for _, row in df_inter.iterrows():
         user2history[row["user_id"]].append(row["item_text"])
 
     val_metrics = model.evaluate(df_val, user2history, item_id2text)
-    test_metrics = model.evaluate(df_test, user2history, item_id2text )
+    test_metrics = model.evaluate(df_test, user2history, item_id2text)
 
+    print("=" * 80)
+    print("Rerank Evaluation Results")
+    print("=" * 80)
     print("VAL:", val_metrics)
     print("TEST:", test_metrics)
-
-
-
-        
-
-
-
-
-
+    print("=" * 80)
 
 
 if __name__ == "__main__":
     main()
+

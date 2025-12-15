@@ -4,10 +4,12 @@ from typing import Dict, Type
 
 from retrieval.base import BaseRetriever
 from retrieval.methods.lrurec import LRURecRetriever
+from retrieval.methods.mmgcn import MMGCNRetriever
 
 
 RETRIEVER_REGISTRY: Dict[str, Type[BaseRetriever]] = {
     "lrurec": LRURecRetriever,
+    "mmgcn": MMGCNRetriever,
 }
 
 

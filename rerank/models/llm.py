@@ -10,9 +10,30 @@ import ast
 
 
 def build_prompt_from_candidates(user_history, candidate_ids, item_id2text):
+    """Build prompt for LLM reranking.
+    
+    Args:
+        user_history: List of item texts in user history
+        candidate_ids: List of candidate item IDs (max 20)
+        item_id2text: Mapping from item_id to item text
+        
+    Returns:
+        Formatted prompt string
+        
+    Raises:
+        ValueError: If len(candidate_ids) > 20
+    """
+    MAX_CANDIDATES = len(LETTERS)  # 20
+    
+    if len(candidate_ids) > MAX_CANDIDATES:
+        raise ValueError(
+            f"Too many candidates: {len(candidate_ids)} > {MAX_CANDIDATES}. "
+            f"LLM reranker only supports up to {MAX_CANDIDATES} candidates (A-T)."
+        )
+    
     history_text = "\n".join([f"- {h}" for h in user_history])
 
-    candidates = [item_id2text[cid] for cid in candidate_ids]
+    candidates = [item_id2text.get(cid, f"item_{cid}") for cid in candidate_ids]
     cand_text = "\n".join(
         [f"{LETTERS[i]}. {c}" for i, c in enumerate(candidates)]
     )
@@ -34,6 +55,24 @@ Answer with only one letter (A-T).
     return prompt
 
 def rank_candidates(probs, candidate_ids):
+    """Rank candidates by probabilities.
+    
+    Args:
+        probs: Array of probabilities (one per candidate)
+        candidate_ids: List of candidate item IDs
+        
+    Returns:
+        List of candidate IDs sorted by probability (descending)
+        
+    Raises:
+        ValueError: If len(probs) != len(candidate_ids)
+    """
+    if len(probs) != len(candidate_ids):
+        raise ValueError(
+            f"Mismatch: {len(candidate_ids)} candidates but {len(probs)} probabilities. "
+            f"Each candidate must have exactly one probability."
+        )
+    
     ranked = sorted(
         zip(candidate_ids, probs),
         key=lambda x: x[1],
