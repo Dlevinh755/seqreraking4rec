@@ -129,6 +129,8 @@ def generate_semantic_summaries(
     num_items: int,
     batch_size: int = 4,
     use_torch_compile: bool = False,
+    max_new_tokens: int = 64,
+    preload_all_images: bool = False,
 ) -> Dict[int, str]:
     """Generate semantic summaries for all images in meta.
     
@@ -140,6 +142,8 @@ def generate_semantic_summaries(
         num_items: Total number of items
         batch_size: Batch size for processing (default: 4)
         use_torch_compile: Whether to use torch.compile() for faster inference
+        max_new_tokens: Maximum tokens to generate (default: 64, reduced for speed)
+        preload_all_images: Pre-load all images into memory before processing (faster but uses more RAM)
         
     Returns:
         Dict {item_id: semantic_summary} - Semantic summaries for items with valid images
@@ -160,24 +164,17 @@ def generate_semantic_summaries(
         return {}
     
     print(f"Generating semantic summaries for {len(items_with_img)} images...")
-    print(f"Using batch size: {batch_size}")
-    
-    # Compile model if requested (PyTorch 2.0+)
-    if use_torch_compile and hasattr(torch, 'compile'):
-        try:
-            print("Compiling model with torch.compile() for faster inference...")
-            model = torch.compile(model, mode="reduce-overhead")
-            print("Model compiled successfully!")
-        except Exception as e:
-            print(f"Warning: torch.compile() failed: {e}. Continuing without compilation.")
-    
-    summaries = {}
+    print(f"Using batch size: {batch_size}, max_new_tokens: {max_new_tokens}")
     
     # Helper function to load and resize image (for parallel processing)
     def load_and_resize_image(item_id_path):
         """Load and resize image. Returns (item_id, img) or None if error."""
         item_id, path = item_id_path
         try:
+            # If path is already a PIL Image (preloaded), return it
+            if isinstance(path, Image.Image):
+                return (item_id, path)
+            
             img = Image.open(path).convert("RGB")
             # Resize image for Qwen3-VL (max 448px on longer side)
             width, height = img.size
@@ -194,6 +191,34 @@ def generate_semantic_summaries(
         except Exception as e:
             print(f"Error loading image {path}: {e}")
             return None
+    
+    # Pre-load all images if requested (faster but uses more RAM)
+    if preload_all_images:
+        print("Pre-loading all images into memory (this may use significant RAM)...")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        preloaded_images = {}
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = {executor.submit(load_and_resize_image, (item_id, path)): item_id 
+                      for item_id, path in items_with_img}
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Pre-loading images"):
+                result = future.result()
+                if result is not None:
+                    item_id, img = result
+                    preloaded_images[item_id] = img
+        print(f"Pre-loaded {len(preloaded_images)} images into memory")
+        # Replace items_with_img with preloaded data (use Image objects as "paths")
+        items_with_img = [(item_id, preloaded_images[item_id]) for item_id in preloaded_images.keys()]
+    
+    # Compile model if requested (PyTorch 2.0+)
+    if use_torch_compile and hasattr(torch, 'compile'):
+        try:
+            print("Compiling model with torch.compile() for faster inference...")
+            model = torch.compile(model, mode="reduce-overhead")
+            print("Model compiled successfully!")
+        except Exception as e:
+            print(f"Warning: torch.compile() failed: {e}. Continuing without compilation.")
+    
+    summaries = {}
     
     # Pre-load all images in parallel (to reduce I/O bottleneck)
     print("Pre-loading images in parallel to reduce I/O bottleneck...")
@@ -240,16 +265,80 @@ def generate_semantic_summaries(
             batch_images = [img for _, img in batch_images_data]
             
             try:
-                # Process each image individually (VL models typically process one at a time)
-                # Note: Qwen3-VL may not support true batch processing for multimodal inputs
-                # However, we optimize by:
-                # 1. Parallel image loading (reduces I/O bottleneck)
-                # 2. Pre-loading next batch (overlaps I/O with GPU computation)
-                # 3. Efficient image preprocessing
+                # Try batch processing: process multiple images together if possible
+                # Qwen3-VL may support batch processing with list of messages
+                try:
+                    # Attempt batch processing: create list of messages for all images
+                    batch_messages = []
+                    for img in batch_images:
+                        batch_messages.append([
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image", "image": img},
+                                    {"type": "text", "text": SEMANTIC_SUMMARY_PROMPT}
+                                ]
+                            }
+                        ])
+                    
+                    # Try to process batch (may not work if Qwen3-VL doesn't support it)
+                    # If this fails, fall back to sequential processing
+                    try:
+                        # Process batch: apply_chat_template may support list of message lists
+                        batch_inputs = processor.apply_chat_template(
+                            batch_messages,
+                            tokenize=True,
+                            add_generation_prompt=True,
+                            return_dict=True,
+                            return_tensors="pt"
+                        )
+                        
+                        # Move to device
+                        if isinstance(batch_inputs, dict):
+                            batch_inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                                          for k, v in batch_inputs.items()}
+                        
+                        # Generate for batch
+                        batch_generated_ids = model.generate(
+                            **batch_inputs,
+                            max_new_tokens=max_new_tokens,  # Configurable max tokens
+                            do_sample=False,
+                            num_beams=1,
+                            pad_token_id=processor.tokenizer.eos_token_id,
+                            use_cache=True,
+                        )
+                        
+                        # Decode batch
+                        if isinstance(batch_inputs.get("input_ids"), torch.Tensor):
+                            input_ids = batch_inputs["input_ids"]
+                            if input_ids.dim() == 2:
+                                # Batch processing worked!
+                                batch_generated_ids_trimmed = [
+                                    out_ids[len(in_ids):] 
+                                    for in_ids, out_ids in zip(input_ids, batch_generated_ids)
+                                ]
+                                batch_summaries = processor.batch_decode(
+                                    batch_generated_ids_trimmed, 
+                                    skip_special_tokens=True, 
+                                    clean_up_tokenization_spaces=False
+                                )
+                                
+                                for idx, item_id in enumerate(batch_ids):
+                                    if idx < len(batch_summaries):
+                                        summaries[item_id] = batch_summaries[idx].strip()
+                                continue  # Successfully processed batch, skip sequential processing
+                    except Exception as batch_error:
+                        # Batch processing failed, fall back to sequential
+                        pass
+                
+                except Exception:
+                    pass
+                
+                # Fallback: Process each image individually (if batch processing failed)
+                # Optimized sequential processing with reduced overhead
                 for idx, (item_id, img) in enumerate(zip(batch_ids, batch_images)):
                     try:
                         # Build prompt with image
-                        # Qwen3-VL uses specific format for image-text inputs
                         messages = [
                             {
                                 "role": "user",
@@ -260,8 +349,7 @@ def generate_semantic_summaries(
                             }
                         ]
                         
-                        # Prepare inputs using processor (Qwen3-VL API)
-                        # apply_chat_template with tokenize=True returns dict with input_ids, etc.
+                        # Prepare inputs
                         inputs = processor.apply_chat_template(
                             messages,
                             tokenize=True,
@@ -271,25 +359,18 @@ def generate_semantic_summaries(
                         )
                         inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
                         
-                        # Generate summary
-                        # Use faster generation settings optimized for GPU utilization
+                        # Generate summary with optimized settings
                         generated_ids = model.generate(
                             **inputs,
-                            max_new_tokens=128,
+                            max_new_tokens=max_new_tokens,  # Configurable max tokens
                             do_sample=False,
-                            num_beams=1,  # Greedy decoding (faster than beam search)
+                            num_beams=1,
                             pad_token_id=processor.tokenizer.eos_token_id,
-                            use_cache=True,  # Enable KV cache for faster generation
+                            use_cache=True,
+                            repetition_penalty=1.0,  # Disable repetition penalty for speed
                         )
                         
-                        # Ensure GPU computation is complete before moving to next image
-                        # This helps with GPU utilization tracking but may add small overhead
-                        # Comment out if it causes issues
-                        # if device.type == "cuda":
-                        #     torch.cuda.synchronize()
-                        
                         # Decode summary
-                        # Trim input_ids from generated_ids
                         generated_ids_trimmed = [
                             out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
                         ]
@@ -364,14 +445,18 @@ def maybe_generate_semantic_summaries(
     
     # Get optimization settings from args
     batch_size = getattr(args, 'semantic_summary_batch_size', 4)
+    max_new_tokens = getattr(args, 'semantic_summary_max_tokens', 64)
     use_quantization = getattr(args, 'use_quantization', False)
     use_torch_compile = getattr(args, 'use_torch_compile', False)
+    preload_all_images = getattr(args, 'preload_all_images', False)
     
     model, processor = _load_qwen3vl_model(device, use_quantization=use_quantization)
     summaries = generate_semantic_summaries(
         model, processor, device, meta, num_items,
         batch_size=batch_size,
-        use_torch_compile=use_torch_compile
+        use_torch_compile=use_torch_compile,
+        max_new_tokens=max_new_tokens,
+        preload_all_images=preload_all_images
     )
     
     # Save summaries to .pt file for caching (optional, CSV is the main storage)

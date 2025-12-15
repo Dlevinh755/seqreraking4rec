@@ -680,13 +680,44 @@ Xem chi tiết trong `OPTIMIZATION_GUIDE.md`.
   - **Giải pháp đã implement**:
     - ✅ Parallel image loading (ThreadPoolExecutor) để giảm I/O bottleneck
     - ✅ Pre-loading next batch trong background (overlap I/O với GPU computation)
-    - ✅ Tăng `--semantic_summary_batch_size` nếu GPU memory cho phép (8, 16, 32)
-  - **Khuyến nghị**:
-    - Tăng `--semantic_summary_batch_size` từ 4 lên 8-16 để giảm overhead
-    - Sử dụng `--use_quantization` để giảm memory và tăng tốc
-    - Sử dụng `--use_torch_compile` để compile model
-    - Monitor GPU utilization: Nếu vẫn thấp, có thể do Qwen3-VL không support true batch processing cho multimodal inputs
-  - **Lưu ý**: Qwen3-VL process từng image một (không như BLIP2 có batch processing), nhưng đã optimize I/O để giảm bottleneck
+    - ✅ **Batch processing thử nghiệm** (nếu Qwen3-VL support, sẽ tự động fallback nếu không)
+    - ✅ Giảm `max_new_tokens` từ 128 xuống 64 (có thể config)
+    - ✅ Pre-load all images option (nhanh hơn nhưng tốn RAM)
+  - **Khuyến nghị để tăng tốc**:
+    ```bash
+    # Option 1: Tăng batch size và giảm max tokens
+    python data_prepare.py \
+        --dataset_code beauty \
+        --use_image \
+        --generate_semantic_summary \
+        --semantic_summary_batch_size 8 \
+        --semantic_summary_max_tokens 64
+    
+    # Option 2: Pre-load all images (nhanh nhất nhưng tốn RAM)
+    python data_prepare.py \
+        --dataset_code beauty \
+        --use_image \
+        --generate_semantic_summary \
+        --semantic_summary_batch_size 8 \
+        --semantic_summary_max_tokens 64 \
+        --preload_all_images
+    
+    # Option 3: Kết hợp tất cả optimizations
+    python data_prepare.py \
+        --dataset_code beauty \
+        --use_image \
+        --generate_semantic_summary \
+        --semantic_summary_batch_size 16 \
+        --semantic_summary_max_tokens 64 \
+        --preload_all_images \
+        --use_quantization \
+        --use_torch_compile
+    ```
+  - **Lưu ý**: 
+    - Qwen3-VL có thể không support true batch processing cho multimodal inputs
+    - Code sẽ tự động thử batch processing, nếu fail sẽ fallback về sequential
+    - `--preload_all_images` tốn RAM nhưng loại bỏ hoàn toàn I/O bottleneck
+    - Giảm `--semantic_summary_max_tokens` từ 64 xuống 32-48 nếu cần tốc độ hơn nữa (nhưng có thể giảm chất lượng)
 
 - **LLM inference chậm**:
   - Sử dụng `--use_torch_compile` để compile model

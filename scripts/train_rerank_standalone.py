@@ -6,8 +6,16 @@ Can work in two modes:
 2. Ground truth mode: Use ground truth + random negatives (no retrieval needed)
 """
 
-import argparse
+import os
+import sys
 from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+import argparse
 from typing import Dict, List, Optional
 
 from config import arg
