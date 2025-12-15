@@ -3,8 +3,6 @@ data/*
 experiments/*
 readme/*
 
-# Markdown documentation files
-*.md
 
 # Python cache files
 __pycache__/
