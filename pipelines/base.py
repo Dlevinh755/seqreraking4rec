@@ -110,14 +110,22 @@ class TwoStagePipeline:
         
         Args:
             train_data: Dict {user_id: [item_ids]} - training interactions
-            **kwargs: Additional arguments passed to fit methods
+            **kwargs: Additional arguments passed to fit methods:
+                - retriever_kwargs: Dict of kwargs for retriever.fit()
+                - reranker_kwargs: Dict of kwargs for reranker.fit()
+                - skip_retrieval: If True, skip retrieval training (only train reranker)
+                - skip_rerank: If True, skip rerank training (only train retriever)
         """
-        # Fit Stage 1
-        retriever_kwargs = kwargs.get("retriever_kwargs", {})
-        self.retriever.fit(train_data, **retriever_kwargs)
+        skip_retrieval = kwargs.get("skip_retrieval", False)
+        skip_rerank = kwargs.get("skip_rerank", False)
         
-        # Fit Stage 2 (if enabled)
-        if self.reranker is not None:
+        # Fit Stage 1 (unless skipped)
+        if not skip_retrieval:
+            retriever_kwargs = kwargs.get("retriever_kwargs", {})
+            self.retriever.fit(train_data, **retriever_kwargs)
+        
+        # Fit Stage 2 (if enabled and not skipped)
+        if self.reranker is not None and not skip_rerank:
             reranker_kwargs = kwargs.get("reranker_kwargs", {})
             self.reranker.fit(train_data, **reranker_kwargs)
     

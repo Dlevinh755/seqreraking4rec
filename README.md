@@ -74,7 +74,32 @@ python scripts/train_retrieval.py --retrieval_method vbpr
 python scripts/train_retrieval.py --retrieval_method bm3
 ```
 
-### Bước 3: Train Pipeline (Stage 1 + Stage 2)
+### Bước 3: Train Rerank (Stage 2) - Standalone
+
+```bash
+# Train rerank riêng lẻ - Ground truth mode (không cần retrieval)
+python scripts/train_rerank_standalone.py \
+    --rerank_method bert4rec \
+    --mode ground_truth \
+    --rerank_top_k 50
+
+# Train rerank với retrieval đã train sẵn
+python scripts/train_rerank_standalone.py \
+    --rerank_method qwen \
+    --mode retrieval \
+    --retrieval_method lrurec \
+    --retrieval_top_k 200 \
+    --rerank_top_k 50
+
+# Train Qwen3-VL reranker (raw_image mode)
+python scripts/train_rerank_standalone.py \
+    --rerank_method qwen3vl \
+    --qwen3vl_mode raw_image \
+    --mode ground_truth \
+    --rerank_top_k 50
+```
+
+### Bước 4: Train Pipeline (Stage 1 + Stage 2) - End-to-End
 
 ```bash
 # Full pipeline với Qwen reranker
@@ -146,7 +171,9 @@ python scripts/train_pipeline.py \
     --rerank_mode ground_truth
 ```
 
-### Bước 4: Offline Evaluation
+### Bước 5: Offline Evaluation
+
+Tất cả evaluation tự động tính metrics cho @5, @10, @20 với Recall, NDCG, và Hit Rate.
 
 ```bash
 # Evaluate retrieval only
@@ -176,6 +203,14 @@ python evaluation/offline_eval.py \
     --K 10
 ```
 
+**Output format**: Tất cả metrics được hiển thị dạng bảng với @5, @10, @20:
+```
+Metric       @5        @10        @20
+Recall     0.1234    0.2345    0.3456
+Ndcg       0.0567    0.0890    0.1234
+Hit        0.4500    0.6700    0.8900
+```
+
 ## 📝 Các Methods Available
 
 ### Retrieval Methods (Stage 1)
@@ -198,42 +233,86 @@ python evaluation/offline_eval.py \
 - `retrieval`: Use candidates from Stage 1 (default)
 - `ground_truth`: Use ground truth + 19 random negatives (for rerank quality evaluation)
 
+### Training Modes
+- **End-to-end**: Train cả retrieval và rerank cùng lúc (`train_pipeline.py`)
+- **Standalone rerank**: Train rerank riêng lẻ, không cần train retrieval (`train_rerank_standalone.py`)
+  - `ground_truth` mode: Không cần retrieval model
+  - `retrieval` mode: Cần load retrieval model đã train sẵn
+
 ## ⚙️ Configuration
 
 Các hyperparameters có thể điều chỉnh trong `config.py`:
 
+### Retrieval Hyperparameters
 - `--retrieval_epochs`: Số epochs cho retrieval training (default: 10)
 - `--retrieval_lr`: Learning rate cho retrieval methods (default: 1e-3)
+- `--batch_size_retrieval`: Batch size cho retrieval training (default: 128)
+- `--retrieval_patience`: Early stopping patience (default: 5)
+
+### Rerank Hyperparameters
 - `--rerank_epochs`: Số epochs cho rerank training (default: 10)
 - `--rerank_lr`: Learning rate cho rerank methods (default: 1e-4)
 - `--rerank_batch_size`: Batch size cho rerank training (default: 32)
 - `--rerank_patience`: Early stopping patience (default: 5)
+
+### Reranker-Specific Config
 - `--qwen_max_candidates`: Max candidates cho Qwen reranker (None = dùng tất cả từ retrieval)
 - `--qwen3vl_mode`: Prompt mode cho Qwen3-VL reranker (raw_image, caption, semantic_summary, semantic_summary_small)
 
 ## 📊 Output
 
-- **Preprocessed data**: `data/preprocessed/{dataset_code}_min_rating{min_rating}-min_uc{min_uc}-min_sc{min_sc}/`
-  - `dataset_single_export.csv`: Dataset với captions và semantic summaries
-  - `clip_embeddings.pt`: CLIP embeddings (nếu có)
-  - `blip2_captions.pt`: BLIP2 captions cache (nếu có)
-  - `qwen3vl_semantic_summaries.pt`: Qwen3-VL semantic summaries cache (nếu có)
+### Preprocessed Data
+`data/preprocessed/{dataset_code}_min_rating{min_rating}-min_uc{min_uc}-min_sc{min_sc}/`
+- `dataset_single_export.csv`: Dataset với captions và semantic summaries
+- `clip_embeddings.pt`: CLIP embeddings (nếu có)
+- `blip2_captions.pt`: BLIP2 captions cache (nếu có)
+- `qwen3vl_semantic_summaries.pt`: Qwen3-VL semantic summaries cache (nếu có)
 
-- **Retrieval results**: `experiments/retrieval/{method}/{dataset_code}/seed{seed}/`
-  - `retrieved.csv`: Retrieved candidates
-  - `retrieved_metrics.json`: Evaluation metrics
+### Retrieval Results
+`experiments/retrieval/{method}/{dataset_code}/seed{seed}/`
+- `retrieved.csv`: Retrieved candidates
+- `retrieved_metrics.json`: Evaluation metrics với @5, @10, @20
 
-- **Pipeline results**: Inline trong console output
+### Evaluation Results
+Tất cả evaluation tự động tính và hiển thị metrics cho @5, @10, @20:
+- **Recall@K**: Tỷ lệ relevant items được retrieve trong top-K
+- **NDCG@K**: Normalized Discounted Cumulative Gain tại K
+- **Hit@K**: Tỷ lệ users có ít nhất 1 relevant item trong top-K
+
+Output format:
+```
+Metric       @5        @10        @20
+Recall     0.1234    0.2345    0.3456
+Ndcg       0.0567    0.0890    0.1234
+Hit        0.4500    0.6700    0.8900
+```
 
 ## 💡 Tips
 
-1. **Qwen reranker**: Số lượng candidates tự động điều chỉnh theo `retrieval_top_k`. Có thể giới hạn bằng `--qwen_max_candidates` trong config.py.
+1. **Training độc lập**: 
+   - Sử dụng `train_rerank_standalone.py` để train rerank riêng lẻ, không cần train retrieval
+   - Ground truth mode không cần retrieval model
+   - Retrieval mode cần load retrieval model đã train sẵn
 
-2. **CLIP embeddings**: Cần chạy `data_prepare.py` với `--use_image` hoặc `--use_text` trước khi train MMGCN/VBPR/BM3.
+2. **Qwen reranker**: 
+   - Số lượng candidates tự động điều chỉnh theo `retrieval_top_k`
+   - Có thể giới hạn bằng `--qwen_max_candidates` trong config.py
 
-3. **Caption/Semantic Summary**: Cần chạy `data_prepare.py` với `--generate_caption` hoặc `--generate_semantic_summary` để generate.
+3. **CLIP embeddings**: 
+   - Cần chạy `data_prepare.py` với `--use_image` hoặc `--use_text` trước khi train MMGCN/VBPR/BM3
 
-4. **Ground truth mode**: Dùng để đánh giá rerank quality độc lập với retrieval quality.
+4. **Caption/Semantic Summary**: 
+   - Cần chạy `data_prepare.py` với `--generate_caption` hoặc `--generate_semantic_summary` để generate
+   - Captions cần cho Qwen3-VL `caption` mode
+   - Semantic summaries cần cho Qwen3-VL `semantic_summary` và `semantic_summary_small` modes
+
+5. **Ground truth mode**: 
+   - Dùng để đánh giá rerank quality độc lập với retrieval quality
+   - Tạo candidates = [ground_truth] + 19 random negatives
+
+6. **Evaluation metrics**: 
+   - Tất cả evaluation tự động tính @5, @10, @20
+   - Metrics: Recall, NDCG, Hit Rate
 
 ## 🔧 Troubleshooting
 
