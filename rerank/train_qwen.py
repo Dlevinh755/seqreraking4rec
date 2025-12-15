@@ -108,7 +108,7 @@ def to_unsloth_format(samples):
 
 
 def main():
-    df = pd.read_csv("interactions.csv")
+    df = pd.read_csv("data/preprocessed/beauty_min_rating3-min_uc20-min_sc20/dataset_single_export.csv")
 
     df_train = df[df["split"] == "train"]
     user2items = defaultdict(list)
@@ -129,10 +129,10 @@ def main():
 
 
     import pandas as pd
-    import ast
 
-    df_val = pd.read_csv("candidates_val.csv")
-    df_test = pd.read_csv("candidates_test.csv")
+    df_can = pd.read_csv("experiments/retrieval/lrurec/beauty/seed42/retrieved.csv")
+    df_val = df_can[df_can["split"] == "val"]
+    df_test = df_can[df_can["split"] == "test"]
 
     # item_id -> text
     item_df = pd.read_csv("interactions.csv")[["item_new_id", "item_text"]].drop_duplicates()
