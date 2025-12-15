@@ -30,6 +30,7 @@ except ImportError:
 SEMANTIC_SUMMARY_PROMPT = """Summarize the given image into a high-level semantic description.
 
 Focus on the abstract attributes such as:
+- color, size, shape, texture, material, etc.
 - object or product category
 - functional purpose
 - usage scenario
@@ -293,10 +294,19 @@ def generate_semantic_summaries(
                             return_tensors="pt"
                         )
                         
-                        # Move to device
-                        if isinstance(batch_inputs, dict):
-                            batch_inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
-                                          for k, v in batch_inputs.items()}
+                        # Move to device - handle nested structures
+                        def move_to_device(obj, dev):
+                            """Recursively move tensors to device."""
+                            if isinstance(obj, torch.Tensor):
+                                return obj.to(dev)
+                            elif isinstance(obj, dict):
+                                return {k: move_to_device(v, dev) for k, v in obj.items()}
+                            elif isinstance(obj, (list, tuple)):
+                                return type(obj)(move_to_device(item, dev) for item in obj)
+                            else:
+                                return obj
+                        
+                        batch_inputs = move_to_device(batch_inputs, device)
                         
                         # Generate for batch
                         batch_generated_ids = model.generate(
@@ -357,7 +367,20 @@ def generate_semantic_summaries(
                             return_dict=True,
                             return_tensors="pt"
                         )
-                        inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+                        
+                        # Move to device - handle nested structures (Qwen3-VL may have complex input format)
+                        def move_to_device(obj, dev):
+                            """Recursively move tensors to device."""
+                            if isinstance(obj, torch.Tensor):
+                                return obj.to(dev)
+                            elif isinstance(obj, dict):
+                                return {k: move_to_device(v, dev) for k, v in obj.items()}
+                            elif isinstance(obj, (list, tuple)):
+                                return type(obj)(move_to_device(item, dev) for item in obj)
+                            else:
+                                return obj
+                        
+                        inputs = move_to_device(inputs, device)
                         
                         # Generate summary with optimized settings
                         generated_ids = model.generate(

@@ -426,6 +426,22 @@ class Qwen3VLReranker(BaseReranker):
                     return_tensors="pt"
                 )
                 
+                # Move to device - handle nested structures (Qwen3-VL may have complex input format)
+                def move_to_device(obj, dev):
+                    """Recursively move tensors to device."""
+                    if isinstance(obj, torch.Tensor):
+                        return obj.to(dev)
+                    elif isinstance(obj, dict):
+                        return {k: move_to_device(v, dev) for k, v in obj.items()}
+                    elif isinstance(obj, (list, tuple)):
+                        return type(obj)(move_to_device(item, dev) for item in obj)
+                    else:
+                        return obj
+                
+                # Get device from model
+                device = next(self.qwen3vl_model.model.parameters()).device
+                inputs = move_to_device(inputs, device)
+                
                 input_ids = inputs["input_ids"].squeeze(0)  # [seq_len]
                 attention_mask = inputs.get("attention_mask", torch.ones_like(input_ids))
                 if attention_mask.dim() > 1:
@@ -474,10 +490,13 @@ class Qwen3VLReranker(BaseReranker):
                 padded_attention_mask.append(attn_mask)
                 padded_labels.append(labels)
             
+            # Move to device (Trainer will handle this, but we do it explicitly for safety)
+            device = next(self.qwen3vl_model.model.parameters()).device
+            
             return {
-                "input_ids": torch.stack(padded_input_ids),
-                "attention_mask": torch.stack(padded_attention_mask),
-                "labels": torch.stack(padded_labels),
+                "input_ids": torch.stack(padded_input_ids).to(device),
+                "attention_mask": torch.stack(padded_attention_mask).to(device),
+                "labels": torch.stack(padded_labels).to(device),
             }
         
         # Tokenize dataset (simplified - we'll use collate_fn for full processing)

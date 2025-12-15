@@ -16,7 +16,7 @@ if str(project_root) not in sys.path:
 import argparse
 from typing import Dict, List, Optional
 
-from config import arg, EXPERIMENT_ROOT
+# Note: config import is moved to main() to avoid argument parsing conflicts
 from dataset import dataset_factory
 from evaluation.metrics import recall_at_k, ndcg_at_k
 from evaluation.utils import evaluate_split, load_dataset_from_csv
@@ -42,13 +42,14 @@ def evaluate_pipeline(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train two-stage recommendation pipeline")
+    # Parse script-specific arguments first (before importing config which parses all args)
+    parser = argparse.ArgumentParser(description="Train two-stage recommendation pipeline", add_help=False)
     parser.add_argument("--retrieval_method", type=str, default="lrurec",
-                       help="Retrieval method (lrurec, mmgcn)")
+                       help="Retrieval method (lrurec, mmgcn, vbpr, bm3)")
     parser.add_argument("--retrieval_top_k", type=int, default=200,
                        help="Number of candidates from Stage 1")
     parser.add_argument("--rerank_method", type=str, default="qwen",
-                       help="Rerank method (qwen, vip5, bert4rec)")
+                       help="Rerank method (qwen, qwen3vl, vip5, bert4rec)")
     parser.add_argument("--rerank_top_k", type=int, default=50,
                        help="Number of final recommendations")
     parser.add_argument("--metric_k", type=int, default=10,
@@ -56,8 +57,31 @@ def main():
     parser.add_argument("--rerank_mode", type=str, default="retrieval",
                        choices=["retrieval", "ground_truth"],
                        help="Rerank mode: 'retrieval' (use Stage 1 candidates) or 'ground_truth' (gt + 19 negatives)")
+    parser.add_argument("--qwen3vl_mode", type=str, default="raw_image",
+                       choices=["raw_image", "caption", "semantic_summary", "semantic_summary_small"],
+                       help="Qwen3-VL mode (only used if rerank_method=qwen3vl)")
     
-    args = parser.parse_args()
+    # Parse known args to avoid conflict with config.py
+    script_args, remaining_args = parser.parse_known_args()
+    args = script_args
+    
+    # Now import config (it will parse remaining_args)
+    # Temporarily replace sys.argv so config.py only sees remaining args (without script-specific args)
+    original_argv = sys.argv.copy()
+    # Manually remove script-specific arguments from sys.argv
+    script_specific_args = ["--retrieval_method", "--retrieval_top_k", "--rerank_method", 
+                           "--rerank_top_k", "--metric_k", "--rerank_mode", "--qwen3vl_mode"]
+    new_argv = [sys.argv[0]]
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i] in script_specific_args:
+            i += 2  # Skip both argument and its value
+        else:
+            new_argv.append(sys.argv[i])
+            i += 1
+    sys.argv = new_argv
+    from config import arg, EXPERIMENT_ROOT
+    sys.argv = original_argv
     
     seed_everything(arg.seed)
     
@@ -96,7 +120,8 @@ def main():
         method=args.rerank_method,
         top_k=args.rerank_top_k,
         mode=args.rerank_mode,
-        num_negatives=19  # Ground truth + 19 negatives
+        num_negatives=19,  # Ground truth + 19 negatives
+        qwen3vl_mode=args.qwen3vl_mode if args.rerank_method.lower() == "qwen3vl" else None
     )
     pipeline_cfg = PipelineConfig(
         retrieval=retrieval_cfg,
@@ -147,7 +172,7 @@ def main():
         if args.rerank_method.lower() == "qwen3vl":
             reranker_kwargs["item_meta"] = item_meta
             # For raw_image mode, also pass images in user_history
-            if arg.qwen3vl_mode == "raw_image":
+            if args.qwen3vl_mode == "raw_image":
                 # Build user history with image paths for raw_image mode
                 user_history_images = {}
                 for user_id, items in train.items():

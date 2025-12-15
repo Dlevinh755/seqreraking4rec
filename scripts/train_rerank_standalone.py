@@ -18,7 +18,7 @@ if str(project_root) not in sys.path:
 import argparse
 from typing import Dict, List, Optional
 
-from config import arg
+# Note: config import is moved to main() to avoid argument parsing conflicts
 from evaluation.utils import load_dataset_from_csv, evaluate_split
 from rerank.registry import get_reranker_class
 from retrieval.registry import get_retriever_class
@@ -26,7 +26,8 @@ from pytorch_lightning import seed_everything
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train rerank model standalone (independent from retrieval)")
+    # Parse script-specific arguments first (before importing config which parses all args)
+    parser = argparse.ArgumentParser(description="Train rerank model standalone (independent from retrieval)", add_help=False)
     
     # Dataset
     parser.add_argument("--rerank_method", type=str, required=True,
@@ -50,7 +51,32 @@ def main():
     parser.add_argument("--metric_k", type=int, default=10,
                        help="Cutoff for evaluation metrics")
     
-    args = parser.parse_args()
+    # Qwen3-VL mode
+    parser.add_argument("--qwen3vl_mode", type=str, default="raw_image",
+                       choices=["raw_image", "caption", "semantic_summary", "semantic_summary_small"],
+                       help="Qwen3-VL mode (only used if rerank_method=qwen3vl)")
+    
+    # Parse known args to avoid conflict with config.py
+    script_args, remaining_args = parser.parse_known_args()
+    args = script_args
+    
+    # Now import config (it will parse remaining_args)
+    # Temporarily replace sys.argv so config.py only sees remaining args (without script-specific args)
+    original_argv = sys.argv.copy()
+    # Manually remove script-specific arguments from sys.argv
+    script_specific_args = ["--rerank_method", "--rerank_top_k", "--mode", 
+                           "--retrieval_method", "--retrieval_top_k", "--metric_k", "--qwen3vl_mode"]
+    new_argv = [sys.argv[0]]
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i] in script_specific_args:
+            i += 2  # Skip both argument and its value
+        else:
+            new_argv.append(sys.argv[i])
+            i += 1
+    sys.argv = new_argv
+    from config import arg
+    sys.argv = original_argv
     
     seed_everything(arg.seed)
     
@@ -95,8 +121,7 @@ def main():
         if max_candidates is not None:
             reranker_kwargs["max_candidates"] = max_candidates
     elif args.rerank_method == "qwen3vl":
-        qwen3vl_mode = getattr(arg, 'qwen3vl_mode', 'raw_image')
-        reranker_kwargs["mode"] = qwen3vl_mode
+        reranker_kwargs["mode"] = args.qwen3vl_mode
         max_candidates = getattr(arg, 'qwen_max_candidates', None)
         if max_candidates is not None:
             reranker_kwargs["max_candidates"] = max_candidates
@@ -141,7 +166,7 @@ def main():
         # Add item_meta for Qwen3-VL
         if args.rerank_method == "qwen3vl":
             training_kwargs["item_meta"] = item_meta
-            if getattr(arg, 'qwen3vl_mode', 'raw_image') == "raw_image":
+            if args.qwen3vl_mode == "raw_image":
                 user_history_images = {}
                 for user_id, items in train.items():
                     user_history_images[user_id] = [

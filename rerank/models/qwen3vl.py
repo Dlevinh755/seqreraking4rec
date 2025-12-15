@@ -268,7 +268,20 @@ Candidate items:"""}
                 return_dict=True,
                 return_tensors="pt"
             )
-            inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+            
+            # Move to device - handle nested structures (Qwen3-VL may have complex input format)
+            def move_to_device(obj, dev):
+                """Recursively move tensors to device."""
+                if isinstance(obj, torch.Tensor):
+                    return obj.to(dev)
+                elif isinstance(obj, dict):
+                    return {k: move_to_device(v, dev) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return type(obj)(move_to_device(item, dev) for item in obj)
+                else:
+                    return obj
+            
+            inputs = move_to_device(inputs, self.device)
             
             # Extract probabilities for numbers 1 to num_candidates from logits
             logits = self.model(**inputs).logits[:, -1]  # [vocab_size]
@@ -324,7 +337,20 @@ Candidate items:"""}
                 return_dict=True,
                 return_tensors="pt"
             )
-            inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+            
+            # Move to device - handle nested structures (Qwen3-VL may have complex input format)
+            def move_to_device(obj, dev):
+                """Recursively move tensors to device."""
+                if isinstance(obj, torch.Tensor):
+                    return obj.to(dev)
+                elif isinstance(obj, dict):
+                    return {k: move_to_device(v, dev) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return type(obj)(move_to_device(item, dev) for item in obj)
+                else:
+                    return obj
+            
+            inputs = move_to_device(inputs, self.device)
             
             logits = self.model(**inputs).logits[:, -1]  # [vocab_size]
             
@@ -376,7 +402,20 @@ Candidate items:"""}
                 return_dict=True,
                 return_tensors="pt"
             )
-            inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+            
+            # Move to device - handle nested structures (Qwen3-VL may have complex input format)
+            def move_to_device(obj, dev):
+                """Recursively move tensors to device."""
+                if isinstance(obj, torch.Tensor):
+                    return obj.to(dev)
+                elif isinstance(obj, dict):
+                    return {k: move_to_device(v, dev) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return type(obj)(move_to_device(item, dev) for item in obj)
+                else:
+                    return obj
+            
+            inputs = move_to_device(inputs, self.device)
             
             logits = self.model(**inputs).logits[:, -1]
             
