@@ -675,10 +675,18 @@ Xem chi tiết trong `OPTIMIZATION_GUIDE.md`.
   - Sử dụng GPU với đủ memory (recommended: 12GB+ cho VL modes)
   - Sử dụng `--use_torch_compile` để tăng tốc
 
-- **Semantic summary generation chậm**:
-  - Tăng `--semantic_summary_batch_size` nếu GPU memory cho phép (8, 16, 32)
-  - Sử dụng `--use_quantization` để giảm memory và tăng tốc
-  - Sử dụng `--use_torch_compile` để compile model
+- **Semantic summary generation chậm / GPU utilization thấp**:
+  - **Vấn đề**: Code process từng image một, gây CPU bottleneck và GPU idle time
+  - **Giải pháp đã implement**:
+    - ✅ Parallel image loading (ThreadPoolExecutor) để giảm I/O bottleneck
+    - ✅ Pre-loading next batch trong background (overlap I/O với GPU computation)
+    - ✅ Tăng `--semantic_summary_batch_size` nếu GPU memory cho phép (8, 16, 32)
+  - **Khuyến nghị**:
+    - Tăng `--semantic_summary_batch_size` từ 4 lên 8-16 để giảm overhead
+    - Sử dụng `--use_quantization` để giảm memory và tăng tốc
+    - Sử dụng `--use_torch_compile` để compile model
+    - Monitor GPU utilization: Nếu vẫn thấp, có thể do Qwen3-VL không support true batch processing cho multimodal inputs
+  - **Lưu ý**: Qwen3-VL process từng image một (không như BLIP2 có batch processing), nhưng đã optimize I/O để giảm bottleneck
 
 - **LLM inference chậm**:
   - Sử dụng `--use_torch_compile` để compile model

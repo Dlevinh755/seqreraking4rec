@@ -173,38 +173,79 @@ def generate_semantic_summaries(
     
     summaries = {}
     
+    # Helper function to load and resize image (for parallel processing)
+    def load_and_resize_image(item_id_path):
+        """Load and resize image. Returns (item_id, img) or None if error."""
+        item_id, path = item_id_path
+        try:
+            img = Image.open(path).convert("RGB")
+            # Resize image for Qwen3-VL (max 448px on longer side)
+            width, height = img.size
+            max_size = 448
+            if max(width, height) > max_size:
+                if width > height:
+                    new_width = max_size
+                    new_height = int(height * (max_size / width))
+                else:
+                    new_height = max_size
+                    new_width = int(width * (max_size / height))
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            return (item_id, img)
+        except Exception as e:
+            print(f"Error loading image {path}: {e}")
+            return None
+    
+    # Pre-load all images in parallel (to reduce I/O bottleneck)
+    print("Pre-loading images in parallel to reduce I/O bottleneck...")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    # Pre-load next batch in background while processing current batch
+    next_batch_future = None
+    
     with torch.no_grad():
+        # Process in batches with parallel image loading
         for i in tqdm(range(0, len(items_with_img), batch_size), desc="Qwen3 VL semantic summaries"):
             batch = items_with_img[i : i + batch_size]
-            batch_images = []
-            batch_ids = []
             
-            for item_id, path in batch:
-                try:
-                    img = Image.open(path).convert("RGB")
-                    # Resize image for Qwen3-VL (max 448px on longer side)
-                    # This helps with memory efficiency and consistency
-                    width, height = img.size
-                    max_size = 448
-                    if max(width, height) > max_size:
-                        if width > height:
-                            new_width = max_size
-                            new_height = int(height * (max_size / width))
-                        else:
-                            new_height = max_size
-                            new_width = int(width * (max_size / height))
-                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                    batch_images.append(img)
-                    batch_ids.append(item_id)
-                except Exception as e:
-                    print(f"Error loading image {path}: {e}")
-                    continue
+            # Wait for previous batch loading to complete (if exists)
+            if next_batch_future is not None:
+                batch_images_data = next_batch_future.result()
+            else:
+                # Load current batch images in parallel
+                batch_images_data = []
+                with ThreadPoolExecutor(max_workers=min(8, len(batch))) as executor:
+                    futures = {executor.submit(load_and_resize_image, item): item[0] for item in batch}
+                    for future in as_completed(futures):
+                        result = future.result()
+                        if result is not None:
+                            batch_images_data.append(result)
             
-            if not batch_images:
+            # Pre-load next batch in background (if not last batch)
+            # This overlaps I/O with GPU computation to improve GPU utilization
+            if i + batch_size < len(items_with_img):
+                next_batch = items_with_img[i + batch_size : i + 2 * batch_size]
+                next_executor = ThreadPoolExecutor(max_workers=min(8, len(next_batch)))
+                next_batch_future = next_executor.submit(
+                    lambda batch=next_batch: [
+                        result for result in 
+                        (load_and_resize_image(item) for item in batch)
+                        if result is not None
+                    ]
+                )
+            
+            if not batch_images_data:
                 continue
+            
+            batch_ids = [item_id for item_id, _ in batch_images_data]
+            batch_images = [img for _, img in batch_images_data]
             
             try:
                 # Process each image individually (VL models typically process one at a time)
+                # Note: Qwen3-VL may not support true batch processing for multimodal inputs
+                # However, we optimize by:
+                # 1. Parallel image loading (reduces I/O bottleneck)
+                # 2. Pre-loading next batch (overlaps I/O with GPU computation)
+                # 3. Efficient image preprocessing
                 for idx, (item_id, img) in enumerate(zip(batch_ids, batch_images)):
                     try:
                         # Build prompt with image
@@ -231,14 +272,21 @@ def generate_semantic_summaries(
                         inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
                         
                         # Generate summary
-                        # Use faster generation settings
+                        # Use faster generation settings optimized for GPU utilization
                         generated_ids = model.generate(
                             **inputs,
                             max_new_tokens=128,
                             do_sample=False,
                             num_beams=1,  # Greedy decoding (faster than beam search)
                             pad_token_id=processor.tokenizer.eos_token_id,
+                            use_cache=True,  # Enable KV cache for faster generation
                         )
+                        
+                        # Ensure GPU computation is complete before moving to next image
+                        # This helps with GPU utilization tracking but may add small overhead
+                        # Comment out if it causes issues
+                        # if device.type == "cuda":
+                        #     torch.cuda.synchronize()
                         
                         # Decode summary
                         # Trim input_ids from generated_ids
