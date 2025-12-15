@@ -106,6 +106,7 @@ def main():
     }
     
     # Add text/image features if available
+    item_id2text = {}
     if "meta" in data:
         item_id2text = {}
         user_history_text = {}
@@ -141,6 +142,92 @@ def main():
                         if item_id in item_meta
                     ]
                 training_kwargs["user_history"] = user_history_images
+    
+    # Prepare training data for Qwen LLM reranker (after item_id2text is loaded)
+    if args.rerank_method == "qwen":
+        if not item_id2text:
+            print("Warning: item_id2text not available. Qwen reranker will be loaded without training.")
+            print("  Note: Qwen reranker requires item text for training. Ensure dataset has text data.")
+        else:
+            print("\n[2.5/3] Preparing training data for Qwen LLM reranker...")
+            import random
+            from rerank.models.llm import build_prompt_from_candidates
+            
+            # Build training samples: for each user, create samples with history + candidates + target
+            training_samples = []
+            all_items = set(range(1, item_count + 1))
+            
+            for user_id, items in train.items():
+                if len(items) < 2:
+                    continue  # Need at least 2 items for history and target
+                
+                # Randomly select a split point for history and target
+                if len(items) > 3:
+                    end_pos = random.randint(1, len(items) - 1)
+                else:
+                    end_pos = len(items) - 1
+                
+                history_items = items[:end_pos]
+                target_item = items[end_pos]
+                
+                # Get history texts
+                history_texts = [
+                    item_id2text.get(item_id, f"item_{item_id}")
+                    for item_id in history_items
+                    if item_id in item_id2text
+                ]
+                history_texts = history_texts[-10:]  # Max 10 items in history
+                
+                if not history_texts:
+                    continue  # Skip if no history texts available
+                
+                # Generate candidates: target + random negatives (similar to ground_truth mode)
+                user_items_set = set(items)
+                negative_candidates = [item for item in all_items if item not in user_items_set]
+                
+                num_negatives = min(19, len(negative_candidates))
+                if num_negatives > 0:
+                    negatives = random.sample(negative_candidates, num_negatives)
+                else:
+                    negatives = []
+                
+                candidates = [target_item] + negatives
+                random.shuffle(candidates)  # Shuffle so target is not always first
+                
+                # Find target index in candidates (1-indexed for prompt)
+                target_idx = candidates.index(target_item) + 1
+                
+                # Build prompt
+                prompt = build_prompt_from_candidates(
+                    history_texts,
+                    candidates,
+                    item_id2text,
+                    max_candidates=None
+                )
+                
+                # Format for Unsloth (messages format)
+                training_samples.append({
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are a recommendation ranking assistant."
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt
+                        },
+                        {
+                            "role": "assistant",
+                            "content": str(target_idx)  # Answer is the target candidate number (1-indexed)
+                        }
+                    ]
+                })
+            
+            print(f"  Prepared {len(training_samples)} training samples for Qwen LLM")
+            if training_samples:
+                training_kwargs["train_data_for_llm"] = training_samples
+            else:
+                print("  Warning: No training samples prepared. Qwen reranker will be loaded without training.")
     
     # Load retrieval model if needed
     if args.mode == "retrieval":
