@@ -360,17 +360,32 @@ class VIP5Reranker(BaseReranker):
                     vis_feats=vis_feats,
                     labels=target_ids,
                     return_dict=True,
-                    task="sequential"
+                    task="sequential",
+                    reduce_loss=False  # Get per-token loss
                 )
                 
                 # Compute loss
-                loss = output["loss"]
+                loss = output["loss"]  # Shape: [batch_size * seq_len] (per-token loss)
                 
-                # Apply loss weights (length-aware normalization)
-                if loss.dim() > 0:
-                    loss = (loss * loss_weights).mean()
+                # Reshape loss to [batch_size, seq_len] and compute per-sample loss
+                batch_size = target_ids.size(0)
+                seq_len = target_ids.size(1)
+                
+                if loss.dim() > 0 and loss.numel() > 0:
+                    # Reshape loss from [batch_size * seq_len] to [batch_size, seq_len]
+                    loss = loss.view(batch_size, seq_len)
+                    
+                    # Mask out padding tokens (where target_ids == -100)
+                    target_mask = (target_ids != -100).float()  # [batch_size, seq_len]
+                    
+                    # Compute per-sample loss: sum over sequence, divide by number of valid tokens
+                    per_sample_loss = (loss * target_mask).sum(dim=1) / target_mask.sum(dim=1).clamp(min=1.0)  # [batch_size]
+                    
+                    # Apply loss weights (length-aware normalization)
+                    loss = (per_sample_loss * loss_weights).mean()
                 else:
-                    loss = loss * loss_weights.mean()
+                    # Scalar loss (shouldn't happen with reduce_loss=False, but handle it)
+                    loss = loss * loss_weights.mean() if loss.dim() == 0 else loss.mean()
                 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)

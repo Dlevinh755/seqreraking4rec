@@ -359,7 +359,9 @@ class Qwen3VLReranker(BaseReranker):
         train_samples: List[Dict],
         val_data: Optional[Dict[int, List[int]]] = None
     ) -> None:
-        """Train VL model (raw_image, caption, semantic_summary modes) with transformers.
+        """Train VL model (raw_image, caption, semantic_summary modes) with Unsloth.
+        
+        Uses Unsloth's SFTTrainer and UnslothVisionDataCollator for proper vision model training.
         
         Args:
             train_samples: List of training samples
@@ -370,10 +372,20 @@ class Qwen3VLReranker(BaseReranker):
             return
         
         from datasets import Dataset
-        from transformers import TrainingArguments, Trainer
         
-        # Prepare training data
-        # For raw_image mode, we need to store item_ids instead of images
+        # Try to use Unsloth's training API for vision models
+        try:
+            from unsloth.trainer import UnslothVisionDataCollator
+            from trl import SFTTrainer, SFTConfig
+            from rerank.models.qwen3vl import FAST_VISION_MODEL_AVAILABLE
+            USE_UNSLOTH_TRAINER = FAST_VISION_MODEL_AVAILABLE
+        except ImportError:
+            print("Warning: Unsloth trainer not available. Using standard transformers Trainer.")
+            USE_UNSLOTH_TRAINER = False
+            from transformers import TrainingArguments, Trainer
+        
+        # Prepare training data in Unsloth format (messages format)
+        # Note: For raw_image mode, we store item_ids and load images dynamically
         # because PIL Images cannot be serialized in HuggingFace Dataset
         training_data = []
         for sample in train_samples:
@@ -381,6 +393,7 @@ class Qwen3VLReranker(BaseReranker):
             
             if self.mode == "raw_image":
                 # For raw_image, store item_ids and load images in collate_fn
+                # UnslothVisionDataCollator will handle the image loading
                 training_data.append({
                     "user_id": sample["user_id"],
                     "history": sample["history"],
@@ -388,11 +401,15 @@ class Qwen3VLReranker(BaseReranker):
                     "target": target,
                 })
             else:
-                # For caption and semantic_summary, use text-only
-                prompt_data = self._build_training_prompt_text_only(sample)
+                # For caption and semantic_summary, create text-only messages
+                prompt = self._build_training_prompt(sample)
+                messages = [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": target}
+                ]
+                # Unsloth format: store messages directly
                 training_data.append({
-                    **prompt_data,
-                    "target": target,
+                    "messages": messages
                 })
         
         hf_train_dataset = Dataset.from_list(training_data)
@@ -532,56 +549,149 @@ class Qwen3VLReranker(BaseReranker):
                 "labels": torch.stack(padded_labels).to(device),
             }
         
-        # Tokenize dataset (simplified - we'll use collate_fn for full processing)
-        # For raw_image mode, we already have item_ids, no need to map
-        # For text-only modes, we need to keep prompts
-        if self.mode != "raw_image":
-            def prepare_dataset(examples):
-                # Store prompts and targets for collate_fn
-                result = {
-                    "target": examples.get("target", []),
-                }
-                if "prompt" in examples:
-                    result["prompt"] = examples["prompt"]
-                return result
+        # Use Unsloth's training API if available
+        if USE_UNSLOTH_TRAINER:
+            print("Using Unsloth SFTTrainer for vision model training...")
             
-            hf_train_dataset = hf_train_dataset.map(
-                prepare_dataset,
-                batched=True,
-            )
-        
-        # Training arguments
-        training_args = TrainingArguments(
-            output_dir="./qwen3vl_rerank_vl",
-            per_device_train_batch_size=self.batch_size,
-            gradient_accumulation_steps=1,
-            learning_rate=self.lr,
-            num_train_epochs=self.num_epochs,
-            logging_steps=50,
-            save_steps=500,
-            report_to="none",
-            fp16=True,
-            optim="adamw_torch",
-            dataloader_pin_memory=False,
-        )
-        
-        # Custom trainer with our collate function
-        class CustomTrainer(Trainer):
-            def get_train_dataloader(self):
-                from torch.utils.data import DataLoader
-                return DataLoader(
-                    self.train_dataset,
-                    batch_size=self.args.per_device_train_batch_size,
-                    collate_fn=collate_fn,
-                    shuffle=True,
+            # Enable training mode for FastVisionModel
+            try:
+                from rerank.models.qwen3vl import FastVisionModel
+                if hasattr(FastVisionModel, 'for_training'):
+                    FastVisionModel.for_training(self.qwen3vl_model.model)
+                    print("Enabled training mode for FastVisionModel")
+            except Exception as e:
+                print(f"Warning: Could not enable training mode: {e}")
+            
+            # Custom data collator that handles raw_image mode (loads images from item_ids)
+            # and uses UnslothVisionDataCollator for text-only modes
+            if self.mode == "raw_image":
+                # For raw_image mode, we need to build messages with images from item_ids
+                def custom_collate_fn(batch):
+                    """Custom collate function that loads images and uses UnslothVisionDataCollator."""
+                    # Build messages with images for each item in batch
+                    messages_batch = []
+                    for item in batch:
+                        sample = {
+                            "user_id": item.get("user_id"),
+                            "history": item.get("history", []),
+                            "candidates": item.get("candidates", []),
+                        }
+                        prompt_data = self._build_training_prompt_with_images(sample)
+                        messages = prompt_data["messages"]
+                        # Add assistant response
+                        target = item["target"]
+                        messages.append({"role": "assistant", "content": target})
+                        messages_batch.append({"messages": messages})
+                    
+                    # Use UnslothVisionDataCollator to process the messages
+                    data_collator = UnslothVisionDataCollator(
+                        self.qwen3vl_model.model,
+                        self.qwen3vl_model.processor.tokenizer
+                    )
+                    return data_collator(messages_batch)
+            else:
+                # For text-only modes, use UnslothVisionDataCollator directly
+                data_collator = UnslothVisionDataCollator(
+                    self.qwen3vl_model.model,
+                    self.qwen3vl_model.processor.tokenizer
                 )
-        
-        trainer = CustomTrainer(
-            model=self.qwen3vl_model.model,
-            args=training_args,
-            train_dataset=hf_train_dataset,
-            tokenizer=self.qwen3vl_model.processor.tokenizer,
-        )
+            
+            # Training config with vision-specific settings
+            training_args = SFTConfig(
+                per_device_train_batch_size=self.batch_size,
+                gradient_accumulation_steps=1,
+                warmup_steps=5,
+                num_train_epochs=self.num_epochs,
+                learning_rate=self.lr,
+                logging_steps=50,
+                optim="adamw_8bit",  # Use 8-bit optimizer for memory efficiency
+                weight_decay=0.001,
+                lr_scheduler_type="linear",
+                seed=3407,
+                output_dir="./qwen3vl_rerank_vl",
+                report_to="none",
+                
+                # REQUIRED for vision finetuning:
+                remove_unused_columns=False,
+                dataset_text_field="",
+                dataset_kwargs={"skip_prepare_dataset": True},
+                max_length=2048,
+            )
+            
+            # Use SFTTrainer with UnslothVisionDataCollator
+            if self.mode == "raw_image":
+                # For raw_image mode, use custom collate_fn
+                trainer = SFTTrainer(
+                    model=self.qwen3vl_model.model,
+                    tokenizer=self.qwen3vl_model.processor.tokenizer,
+                    data_collator=custom_collate_fn,  # Custom collate function for raw_image
+                    train_dataset=hf_train_dataset,
+                    args=training_args,
+                )
+            else:
+                # For text-only modes, use UnslothVisionDataCollator directly
+                trainer = SFTTrainer(
+                    model=self.qwen3vl_model.model,
+                    tokenizer=self.qwen3vl_model.processor.tokenizer,
+                    data_collator=data_collator,  # Must use UnslothVisionDataCollator!
+                    train_dataset=hf_train_dataset,
+                    args=training_args,
+                )
+            
+        else:
+            # Fallback: Use standard transformers Trainer with custom collate_fn
+            print("Using standard transformers Trainer (fallback)...")
+            
+            # Tokenize dataset (simplified - we'll use collate_fn for full processing)
+            # For raw_image mode, we already have messages, no need to map
+            # For text-only modes, we need to keep prompts
+            if self.mode != "raw_image":
+                def prepare_dataset(examples):
+                    # Store prompts and targets for collate_fn
+                    result = {
+                        "target": examples.get("target", []),
+                    }
+                    if "prompt" in examples:
+                        result["prompt"] = examples["prompt"]
+                    return result
+                
+                hf_train_dataset = hf_train_dataset.map(
+                    prepare_dataset,
+                    batched=True,
+                )
+            
+            # Training arguments
+            training_args = TrainingArguments(
+                output_dir="./qwen3vl_rerank_vl",
+                per_device_train_batch_size=self.batch_size,
+                gradient_accumulation_steps=1,
+                learning_rate=self.lr,
+                num_train_epochs=self.num_epochs,
+                logging_steps=50,
+                save_steps=500,
+                report_to="none",
+                fp16=True,
+                optim="adamw_torch",
+                dataloader_pin_memory=False,
+            )
+            
+            # Custom trainer with our collate function
+            class CustomTrainer(Trainer):
+                def get_train_dataloader(self):
+                    from torch.utils.data import DataLoader
+                    return DataLoader(
+                        self.train_dataset,
+                        batch_size=self.args.per_device_train_batch_size,
+                        collate_fn=collate_fn,
+                        shuffle=True,
+                    )
+            
+            trainer = CustomTrainer(
+                model=self.qwen3vl_model.model,
+                args=training_args,
+                train_dataset=hf_train_dataset,
+                tokenizer=self.qwen3vl_model.processor.tokenizer,
+            )
         
         # Set model to train mode
         self.qwen3vl_model.model.train()

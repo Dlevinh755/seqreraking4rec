@@ -43,10 +43,18 @@ def resize_image_for_qwen3vl(img: Image.Image, max_size: int = 448) -> Image.Ima
 
 try:
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
-    from unsloth import FastLanguageModel
+    from unsloth import FastLanguageModel, FastVisionModel
     QWEN3VL_AVAILABLE = True
+    FAST_VISION_MODEL_AVAILABLE = True
 except ImportError:
     QWEN3VL_AVAILABLE = False
+    FAST_VISION_MODEL_AVAILABLE = False
+    # Try to import FastVisionModel separately
+    try:
+        from unsloth import FastVisionModel
+        FAST_VISION_MODEL_AVAILABLE = True
+    except ImportError:
+        FAST_VISION_MODEL_AVAILABLE = False
 
 
 class Qwen3VLModel:
@@ -94,13 +102,64 @@ class Qwen3VLModel:
             self._load_vl_model()
     
     def _load_vl_model(self):
-        """Load Qwen3-VL model for image processing."""
-        print(f"Loading Qwen3-VL model: {self.model_name}")
+        """Load Qwen3-VL model for image processing with LoRA adapters.
+        
+        Uses Unsloth's FastVisionModel to enable LoRA for efficient fine-tuning.
+        LoRA is applied to vision layers, language layers, attention modules, and MLP modules.
+        """
+        print(f"Loading Qwen3-VL model with LoRA: {self.model_name}")
         try:
+            # Load processor
             self.processor = AutoProcessor.from_pretrained(
                 self.model_name,
                 trust_remote_code=True
             )
+            
+            # Try to use FastVisionModel from Unsloth for LoRA support
+            if FAST_VISION_MODEL_AVAILABLE:
+                print("Using Unsloth FastVisionModel for LoRA support...")
+                try:
+                    # Load model with FastVisionModel (supports LoRA)
+                    self.model, _ = FastVisionModel.from_pretrained(
+                        model_name=self.model_name,
+                        max_seq_length=2048,
+                        dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
+                        load_in_4bit=True,  # 4-bit quantization enabled by default
+                        use_gradient_checkpointing="unsloth",  # Memory efficient
+                    )
+                    
+                    # Add LoRA adapters using FastVisionModel.get_peft_model
+                    print("Adding LoRA adapters to Qwen3-VL model...")
+                    self.model = FastVisionModel.get_peft_model(
+                        self.model,
+                        finetune_vision_layers=True,      # Fine-tune vision layers
+                        finetune_language_layers=True,    # Fine-tune language layers
+                        finetune_attention_modules=True,   # Fine-tune attention modules
+                        finetune_mlp_modules=True,         # Fine-tune MLP modules
+                        r=16,                             # LoRA rank (higher = more accuracy, but may overfit)
+                        lora_alpha=16,                    # Recommended: alpha >= r
+                        lora_dropout=0,                   # Usually 0 for optimization
+                        bias="none",                      # Usually "none" for optimization
+                        random_state=3407,                # For reproducibility
+                        use_rslora=False,                 # Rank Stabilized LoRA (optional)
+                        loftq_config=None,                # LoftQ config (optional)
+                    )
+                    
+                    if self.device.type == "cpu":
+                        self.model = self.model.to(self.device)
+                    
+                    self.model.eval()
+                    print(f"Qwen3-VL model loaded with LoRA on {self.device}")
+                    print("  LoRA config: r=16, alpha=16, dropout=0")
+                    print("  Fine-tuning: vision_layers=True, language_layers=True, attention=True, MLP=True")
+                    return
+                    
+                except Exception as e:
+                    print(f"Warning: Failed to load with FastVisionModel: {e}")
+                    print("Falling back to standard Qwen3VLForConditionalGeneration...")
+            
+            # Fallback: Use standard transformers API (no LoRA)
+            print("Loading Qwen3-VL model without LoRA (fallback)...")
             self.model = Qwen3VLForConditionalGeneration.from_pretrained(
                 self.model_name,
                 dtype="auto" if self.device.type == "cuda" else torch.float32,
@@ -110,12 +169,14 @@ class Qwen3VLModel:
             if self.device.type == "cpu":
                 self.model = self.model.to(self.device)
             self.model.eval()
-            print(f"Qwen3-VL model loaded on {self.device}")
+            print(f"Qwen3-VL model loaded on {self.device} (without LoRA)")
+            
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load Qwen3-VL model: {e}\n"
                 f"Note: Qwen3-VL requires latest transformers. Install with:\n"
-                f"pip install git+https://github.com/huggingface/transformers"
+                f"pip install git+https://github.com/huggingface/transformers\n"
+                f"For LoRA support, ensure unsloth is installed: pip install unsloth[colab-new]"
             )
     
     def _load_text_model(self):

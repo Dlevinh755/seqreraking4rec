@@ -94,7 +94,8 @@ def ndcg_at_k(ranked_items, gt_item, k):
 
 class LLMModel:
     def __init__(self, train_data=None, model_name=None):
-            self.model_name = model_name or "Qwen/Qwen3-0.6B"
+            # Priority: Use Unsloth models by default for better performance and 4-bit quantization
+            self.model_name = model_name or "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
             self.train_data = train_data
 
     def load_model(self, use_torch_compile=False):
