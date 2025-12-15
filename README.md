@@ -1,6 +1,21 @@
-# Quick Start Guide
+# Sequential Reranking for Recommendation
 
-Hướng dẫn nhanh để chạy project Sequential Reranking for Recommendation.
+Hệ thống recommendation hai giai đoạn (Two-Stage): Retrieval (Stage 1) + Reranking (Stage 2).
+
+## 📋 Tổng quan
+
+Project này implement một pipeline recommendation hai giai đoạn:
+- **Stage 1 (Retrieval)**: Generate candidates từ toàn bộ item pool
+- **Stage 2 (Reranking)**: Re-rank candidates từ Stage 1 để tạo final recommendations
+
+### Features
+- ✅ 4 Retrieval methods: LRURec, MMGCN, VBPR, BM3
+- ✅ 5 Rerank methods: Qwen, Qwen3-VL (4 modes), VIP5, BERT4Rec
+- ✅ Multimodal support: Images, text, captions, semantic summaries
+- ✅ Training và evaluation độc lập cho từng stage
+- ✅ Evaluation metrics: Recall@K, NDCG@K, Hit@K tại @5, @10, @20
+- ✅ Image preprocessing: Tự động resize về 448px
+- ✅ Per-epoch validation với early stopping
 
 ## 📦 Cài đặt
 
@@ -92,11 +107,12 @@ python scripts/train_rerank_standalone.py \
     --rerank_top_k 50
 
 # Train Qwen3-VL reranker (raw_image mode)
+# Note: qwen3vl_mode được lấy từ config.py (--qwen3vl_mode raw_image)
 python scripts/train_rerank_standalone.py \
     --rerank_method qwen3vl \
-    --qwen3vl_mode raw_image \
     --mode ground_truth \
     --rerank_top_k 50
+# Set qwen3vl_mode trong config.py trước khi chạy: --qwen3vl_mode raw_image
 ```
 
 ### Bước 4: Train Pipeline (Stage 1 + Stage 2) - End-to-End
@@ -111,40 +127,41 @@ python scripts/train_pipeline.py \
     --rerank_mode retrieval
 
 # Full pipeline với Qwen3-VL reranker (raw_image mode)
+# Note: qwen3vl_mode được lấy từ config.py (--qwen3vl_mode raw_image)
 python scripts/train_pipeline.py \
     --retrieval_method lrurec \
     --retrieval_top_k 200 \
     --rerank_method qwen3vl \
-    --qwen3vl_mode raw_image \
     --rerank_top_k 50 \
     --rerank_mode retrieval
 
 # Full pipeline với Qwen3-VL reranker (caption mode)
+# Note: Set qwen3vl_mode trong config.py hoặc dùng --qwen3vl_mode trong command line
 python scripts/train_pipeline.py \
     --retrieval_method lrurec \
     --retrieval_top_k 200 \
     --rerank_method qwen3vl \
-    --qwen3vl_mode caption \
     --rerank_top_k 50 \
     --rerank_mode retrieval
+# Set qwen3vl_mode trong config.py: --qwen3vl_mode caption
 
 # Full pipeline với Qwen3-VL reranker (semantic_summary mode)
 python scripts/train_pipeline.py \
     --retrieval_method lrurec \
     --retrieval_top_k 200 \
     --rerank_method qwen3vl \
-    --qwen3vl_mode semantic_summary \
     --rerank_top_k 50 \
     --rerank_mode retrieval
+# Set qwen3vl_mode trong config.py: --qwen3vl_mode semantic_summary
 
 # Full pipeline với Qwen3-VL reranker (semantic_summary_small mode)
 python scripts/train_pipeline.py \
     --retrieval_method lrurec \
     --retrieval_top_k 200 \
     --rerank_method qwen3vl \
-    --qwen3vl_mode semantic_summary_small \
     --rerank_top_k 50 \
     --rerank_mode retrieval
+# Set qwen3vl_mode trong config.py: --qwen3vl_mode semantic_summary_small
 
 # Full pipeline với VIP5 reranker
 python scripts/train_pipeline.py \
@@ -173,7 +190,7 @@ python scripts/train_pipeline.py \
 
 ### Bước 5: Offline Evaluation
 
-Tất cả evaluation tự động tính metrics cho @5, @10, @20 với Recall, NDCG, và Hit Rate.
+Tất cả evaluation tự động tính metrics cho @5, @10, @20 với Recall, NDCG, và Hit Rate trên cả **val** và **test** sets.
 
 ```bash
 # Evaluate retrieval only
@@ -181,9 +198,9 @@ python evaluation/offline_eval.py \
     --mode retrieval \
     --retrieval_method lrurec \
     --retrieval_top_k 200 \
-    --K 10
+    --split val  # or --split test
 
-# Evaluate full pipeline
+# Evaluate full pipeline với Qwen reranker
 python evaluation/offline_eval.py \
     --mode full \
     --retrieval_method lrurec \
@@ -191,7 +208,51 @@ python evaluation/offline_eval.py \
     --rerank_method qwen \
     --rerank_top_k 50 \
     --rerank_mode retrieval \
-    --K 10
+    --split test
+
+# Evaluate full pipeline với Qwen3-VL (raw_image mode)
+python evaluation/offline_eval.py \
+    --mode full \
+    --retrieval_method lrurec \
+    --retrieval_top_k 200 \
+    --rerank_method qwen3vl \
+    --qwen3vl_mode raw_image \
+    --rerank_top_k 50 \
+    --rerank_mode retrieval \
+    --split val
+
+# Evaluate full pipeline với Qwen3-VL (caption mode)
+python evaluation/offline_eval.py \
+    --mode full \
+    --retrieval_method lrurec \
+    --retrieval_top_k 200 \
+    --rerank_method qwen3vl \
+    --qwen3vl_mode caption \
+    --rerank_top_k 50 \
+    --rerank_mode retrieval \
+    --split test
+
+# Evaluate full pipeline với Qwen3-VL (semantic_summary mode)
+python evaluation/offline_eval.py \
+    --mode full \
+    --retrieval_method lrurec \
+    --retrieval_top_k 200 \
+    --rerank_method qwen3vl \
+    --qwen3vl_mode semantic_summary \
+    --rerank_top_k 50 \
+    --rerank_mode retrieval \
+    --split val
+
+# Evaluate full pipeline với Qwen3-VL (semantic_summary_small mode)
+python evaluation/offline_eval.py \
+    --mode full \
+    --retrieval_method lrurec \
+    --retrieval_top_k 200 \
+    --rerank_method qwen3vl \
+    --qwen3vl_mode semantic_summary_small \
+    --rerank_top_k 50 \
+    --rerank_mode retrieval \
+    --split test
 
 # Evaluate rerank only (ground truth + negatives)
 python evaluation/offline_eval.py \
@@ -200,7 +261,7 @@ python evaluation/offline_eval.py \
     --retrieval_top_k 200 \
     --rerank_method qwen \
     --rerank_top_k 50 \
-    --K 10
+    --split val
 ```
 
 **Output format**: Tất cả metrics được hiển thị dạng bảng với @5, @10, @20:
@@ -306,13 +367,25 @@ Hit        0.4500    0.6700    0.8900
    - Captions cần cho Qwen3-VL `caption` mode
    - Semantic summaries cần cho Qwen3-VL `semantic_summary` và `semantic_summary_small` modes
 
-5. **Ground truth mode**: 
+5. **Image Resize**: 
+   - Tất cả images được tự động resize về max 448px trên cạnh dài hơn (giữ nguyên aspect ratio)
+   - Giúp tiết kiệm memory và tăng tốc xử lý
+   - Áp dụng cho cả training và inference
+
+6. **Ground truth mode**: 
    - Dùng để đánh giá rerank quality độc lập với retrieval quality
    - Tạo candidates = [ground_truth] + 19 random negatives
 
-6. **Evaluation metrics**: 
+7. **Evaluation metrics**: 
    - Tất cả evaluation tự động tính @5, @10, @20
    - Metrics: Recall, NDCG, Hit Rate
+   - Có thể evaluate trên cả val và test sets (dùng `--split val` hoặc `--split test`)
+
+8. **Qwen3-VL Training**: 
+   - Tất cả 4 modes đều hỗ trợ training: `raw_image`, `caption`, `semantic_summary`, `semantic_summary_small`
+   - `raw_image` mode sử dụng raw images trực tiếp cho cả training và inference
+   - Training sử dụng per-epoch validation với early stopping
+   - Xem chi tiết trong `QWEN3VL_TRAINING_REPORT.md`
 
 ## 🔧 Troubleshooting
 
@@ -323,5 +396,18 @@ Hit        0.4500    0.6700    0.8900
 
 - **CLIP embeddings không tìm thấy**: Chạy `data_prepare.py` với `--use_image` hoặc `--use_text` trước.
 
-- **Out of memory**: Giảm `--batch_size_retrieval` hoặc `--rerank_batch_size` trong `config.py`.
+- **Out of memory**: 
+  - Giảm `--batch_size_retrieval` hoặc `--rerank_batch_size` trong `config.py`
+  - Với Qwen3-VL `raw_image` mode: giảm batch size xuống 4-8
+  - Images đã được tự động resize về 448px để tiết kiệm memory
+
+- **Qwen3-VL training chậm**: 
+  - Sử dụng `semantic_summary_small` mode (nhẹ hơn, nhanh hơn)
+  - Giảm batch size hoặc số lượng training samples
+  - Sử dụng GPU với đủ memory (recommended: 12GB+ cho VL modes)
+
+- **Evaluation không chạy được**: 
+  - Kiểm tra xem đã train model chưa
+  - Đảm bảo dataset đã được prepare với đúng flags (--use_image, --generate_caption, etc.)
+  - Kiểm tra `--qwen3vl_mode` có đúng với mode đã train không
 

@@ -13,6 +13,34 @@ from typing import Dict, List, Optional, Tuple, Any
 from PIL import Image
 import numpy as np
 
+
+def resize_image_for_qwen3vl(img: Image.Image, max_size: int = 448) -> Image.Image:
+    """Resize image for Qwen3-VL while maintaining aspect ratio.
+    
+    Args:
+        img: PIL Image to resize
+        max_size: Maximum size for the longer side (default: 448)
+        
+    Returns:
+        Resized PIL Image
+    """
+    width, height = img.size
+    
+    # If image is already smaller than max_size, return as is
+    if max(width, height) <= max_size:
+        return img
+    
+    # Calculate new size maintaining aspect ratio
+    if width > height:
+        new_width = max_size
+        new_height = int(height * (max_size / width))
+    else:
+        new_height = max_size
+        new_width = int(width * (max_size / height))
+    
+    # Resize with high-quality resampling
+    return img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
 try:
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
     from unsloth import FastLanguageModel
@@ -187,6 +215,8 @@ Candidate items:
             if image_path and os.path.isfile(image_path):
                 try:
                     img = Image.open(image_path).convert("RGB")
+                    # Resize image for Qwen3-VL (max 448px on longer side)
+                    img = resize_image_for_qwen3vl(img, max_size=448)
                     candidate_images.append(img)
                     candidate_texts.append(text)
                 except Exception:

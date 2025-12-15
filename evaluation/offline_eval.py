@@ -11,7 +11,7 @@ Metrics: Recall@K, NDCG@K on val/test split.
 import argparse
 import pickle
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from evaluation.metrics import recall_at_k, ndcg_at_k, hit_at_k
 from pipelines.base import PipelineConfig, RetrievalConfig, RerankConfig, TwoStagePipeline
@@ -119,15 +119,23 @@ def run_full_pipeline(
     rerank_top_k: int,
     ks: List[int] = [5, 10, 20],
     rerank_mode: str = "retrieval",
+    qwen3vl_mode: Optional[str] = None,
 ) -> Dict[str, float]:
     """Stage 1 + Stage 2: dùng TwoStagePipeline bình thường.
     
     Args:
         rerank_mode: "retrieval" (use Stage 1 candidates) or "ground_truth" (gt + negatives)
+        qwen3vl_mode: Qwen3-VL mode (only used if rerank_method=qwen3vl)
         ks: List of K values to evaluate
     """
     retrieval_cfg = RetrievalConfig(method=retrieval_method, top_k=retrieval_top_k)
-    rerank_cfg = RerankConfig(method=rerank_method, top_k=rerank_top_k, mode=rerank_mode, num_negatives=19)
+    rerank_cfg = RerankConfig(
+        method=rerank_method,
+        top_k=rerank_top_k,
+        mode=rerank_mode,
+        num_negatives=19,
+        qwen3vl_mode=qwen3vl_mode
+    )
     cfg = PipelineConfig(retrieval=retrieval_cfg, rerank=rerank_cfg)
     pipeline = TwoStagePipeline(cfg)
     pipeline.fit(train)
@@ -154,6 +162,7 @@ def run_rerank_only(
     rerank_method: str,
     rerank_top_k: int,
     ks: List[int] = [5, 10, 20],
+    qwen3vl_mode: Optional[str] = None,
 ) -> Dict[str, float]:
     """Stage 2 only: dùng Stage 1 để tạo candidates + inject ground truth.
 
@@ -165,7 +174,12 @@ def run_rerank_only(
     RerankerCls = get_reranker_class(rerank_method)
 
     retriever = RetrieverCls(top_k=retrieval_top_k)
-    reranker = RerankerCls(top_k=rerank_top_k)
+    
+    # Create reranker with mode if Qwen3-VL
+    reranker_kwargs = {"top_k": rerank_top_k}
+    if rerank_method.lower() == "qwen3vl" and qwen3vl_mode is not None:
+        reranker_kwargs["mode"] = qwen3vl_mode
+    reranker = RerankerCls(**reranker_kwargs)
 
     retriever.fit(train)
     reranker.fit(train)
@@ -216,6 +230,11 @@ def parse_args() -> argparse.Namespace:
     # Rerank config
     parser.add_argument("--rerank_method", type=str, default="qwen")
     parser.add_argument("--rerank_top_k", type=int, default=50)
+    parser.add_argument("--rerank_mode", type=str, default="retrieval", choices=["retrieval", "ground_truth"],
+                       help="Rerank mode: 'retrieval' (use Stage 1 candidates) or 'ground_truth' (gt + negatives)")
+    parser.add_argument("--qwen3vl_mode", type=str, default="raw_image",
+                       choices=["raw_image", "caption", "semantic_summary", "semantic_summary_small"],
+                       help="Qwen3-VL mode (only used if rerank_method=qwen3vl)")
 
     return parser.parse_args()
 
@@ -259,8 +278,11 @@ def main() -> None:
             rerank_top_k=args.rerank_top_k,
             ks=ks,
             rerank_mode=args.rerank_mode,
+            qwen3vl_mode=args.qwen3vl_mode if args.rerank_method.lower() == "qwen3vl" else None,
         )
         mode_name = f"Full pipeline (Stage 1 + Stage 2, rerank_mode={args.rerank_mode})"
+        if args.rerank_method.lower() == "qwen3vl":
+            mode_name += f", qwen3vl_mode={args.qwen3vl_mode}"
 
     else:  # rerank_only
         metrics = run_rerank_only(
@@ -271,8 +293,11 @@ def main() -> None:
             rerank_method=args.rerank_method,
             rerank_top_k=args.rerank_top_k,
             ks=ks,
+            qwen3vl_mode=args.qwen3vl_mode if args.rerank_method.lower() == "qwen3vl" else None,
         )
         mode_name = "Stage 2 only (rerank-only với pool từ Stage 1 + ground truth)"
+        if args.rerank_method.lower() == "qwen3vl":
+            mode_name += f", qwen3vl_mode={args.qwen3vl_mode}"
 
     print("=" * 80)
     print(f"Mode      : {mode_name}")

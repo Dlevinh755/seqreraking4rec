@@ -147,6 +147,18 @@ def generate_semantic_summaries(
             for item_id, path in batch:
                 try:
                     img = Image.open(path).convert("RGB")
+                    # Resize image for Qwen3-VL (max 448px on longer side)
+                    # This helps with memory efficiency and consistency
+                    width, height = img.size
+                    max_size = 448
+                    if max(width, height) > max_size:
+                        if width > height:
+                            new_width = max_size
+                            new_height = int(height * (max_size / width))
+                        else:
+                            new_height = max_size
+                            new_width = int(width * (max_size / height))
+                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                     batch_images.append(img)
                     batch_ids.append(item_id)
                 except Exception as e:

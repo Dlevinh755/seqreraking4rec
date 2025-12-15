@@ -33,12 +33,17 @@ class RerankConfig:
     """Configuration for Stage 2 reranking.
     
     Args:
-        method: Rerank method name (qwen, vip5, bert4rec)
+        method: Rerank method name (qwen, qwen3vl, vip5, bert4rec)
         top_k: Final number of recommendations returned
         mode: Rerank mode
             - "retrieval": Use candidates from Stage 1 (default)
             - "ground_truth": Use ground truth + 19 random negatives (for rerank quality evaluation)
         num_negatives: Number of random negatives for ground_truth mode (default: 19)
+        qwen3vl_mode: Qwen3-VL mode (only used if method=qwen3vl)
+            - "raw_image": Use raw images directly
+            - "caption": Use image captions
+            - "semantic_summary": Use semantic summaries with Qwen3-VL
+            - "semantic_summary_small": Use semantic summaries with smaller model
     
     Note:
         - `top_k` is the final number of recommendations returned
@@ -51,6 +56,7 @@ class RerankConfig:
     top_k: int = 50
     mode: str = "retrieval"  # "retrieval" or "ground_truth"
     num_negatives: int = 19  # For ground_truth mode
+    qwen3vl_mode: Optional[str] = None  # For Qwen3-VL: "raw_image", "caption", "semantic_summary", "semantic_summary_small"
 
 
 @dataclass
@@ -96,7 +102,10 @@ class TwoStagePipeline:
                 reranker_kwargs["max_candidates"] = max_candidates
             elif rerank_method == "qwen3vl":
                 # For Qwen3-VL, pass mode and max_candidates
-                qwen3vl_mode = getattr(arg, 'qwen3vl_mode', 'raw_image') if hasattr(arg, 'qwen3vl_mode') else 'raw_image'
+                # Prefer qwen3vl_mode from RerankConfig, fallback to arg.qwen3vl_mode, then default
+                qwen3vl_mode = cfg.rerank.qwen3vl_mode
+                if qwen3vl_mode is None:
+                    qwen3vl_mode = getattr(arg, 'qwen3vl_mode', 'raw_image') if hasattr(arg, 'qwen3vl_mode') else 'raw_image'
                 reranker_kwargs["mode"] = qwen3vl_mode
                 max_candidates = arg.qwen_max_candidates if hasattr(arg, 'qwen_max_candidates') and arg.qwen_max_candidates is not None else cfg.retrieval.top_k
                 reranker_kwargs["max_candidates"] = max_candidates

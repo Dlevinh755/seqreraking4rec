@@ -9,9 +9,12 @@ import torch
 import numpy as np
 from pathlib import Path
 import sys
+import random
+from copy import deepcopy
 
 from rerank.base import BaseReranker
 from dataset.paths import get_clip_embeddings_path
+from evaluation.metrics import recall_at_k
 
 # Import VIP5 model from original implementation
 try:
@@ -59,6 +62,10 @@ class VIP5Reranker(BaseReranker):
         image_feature_type: str = "vitb32",
         image_feature_size_ratio: int = 2,
         max_text_length: int = 128,
+        batch_size: int = 32,
+        num_epochs: int = 10,
+        lr: float = 1e-4,
+        patience: Optional[int] = None,
         device: Optional[str] = None,
     ) -> None:
         """
@@ -70,6 +77,10 @@ class VIP5Reranker(BaseReranker):
             image_feature_type: CLIP feature type (vitb32, vitb16, vitl14, rn50, rn101)
             image_feature_size_ratio: Number of visual tokens per item (default: 2)
             max_text_length: Maximum text sequence length
+            batch_size: Batch size cho training (default: 32)
+            num_epochs: Số epochs (default: 10)
+            lr: Learning rate (default: 1e-4)
+            patience: Early stopping patience (None = no early stopping)
             device: Device để chạy model ("cuda" hoặc "cpu")
         """
         super().__init__(top_k=top_k)
@@ -79,6 +90,10 @@ class VIP5Reranker(BaseReranker):
         self.image_feature_type = image_feature_type
         self.image_feature_size_ratio = image_feature_size_ratio
         self.max_text_length = max_text_length
+        self.batch_size = batch_size
+        self.num_epochs = num_epochs
+        self.lr = lr
+        self.patience = patience
         
         # Image feature dimensions from VIP5
         image_feature_dim_dict = {
@@ -99,6 +114,9 @@ class VIP5Reranker(BaseReranker):
         self.text_embeddings: Optional[torch.Tensor] = None     # [num_items, text_dim]
         self.item_id_to_idx: Dict[int, int] = {}  # item_id -> embedding index
         self.item_id_to_text: Dict[int, str] = {}  # item_id -> item text (for tokenization)
+        
+        # Store user history for training
+        self.user_history: Dict[int, List[int]] = {}  # user_id -> [item_ids]
         
     def _load_clip_embeddings(
         self,
@@ -141,15 +159,6 @@ class VIP5Reranker(BaseReranker):
         visual_emb = image_embs[1:num_items+1]  # [num_items, D]
         text_emb = text_embs[1:num_items+1]     # [num_items, D]
         
-        # Validate dimensions
-        if visual_emb.size(1) != self.visual_dim:
-            print(f"Warning: visual_dim mismatch. Expected {self.visual_dim}, got {visual_emb.size(1)}")
-            self.visual_dim = visual_emb.size(1)
-        
-        if text_emb.size(1) != self.text_dim:
-            print(f"Warning: text_dim mismatch. Expected {self.text_dim}, got {text_emb.size(1)}")
-            self.text_dim = text_emb.size(1)
-        
         return visual_emb, text_emb
     
     def fit(
@@ -157,7 +166,7 @@ class VIP5Reranker(BaseReranker):
         train_data: Dict[int, List[int]],
         **kwargs: Any
     ) -> None:
-        """Fit VIP5 reranker.
+        """Fit VIP5 reranker with training.
         
         Args:
             train_data: Dict {user_id: [item_ids]} - training interactions
@@ -168,7 +177,22 @@ class VIP5Reranker(BaseReranker):
                 - min_sc: int - minimum item count
                 - num_items: int - number of items
                 - item_id2text: Dict[int, str] - mapping item_id -> text (optional)
+                - val_data: Dict[int, List[int]] - validation data for early stopping
+                - num_epochs: int - override default num_epochs (optional)
+                - batch_size: int - override default batch_size (optional)
+                - lr: float - override default lr (optional)
+                - patience: int - override default patience (optional)
         """
+        # Override hyperparameters from kwargs if provided
+        if "num_epochs" in kwargs:
+            self.num_epochs = kwargs["num_epochs"]
+        if "batch_size" in kwargs:
+            self.batch_size = kwargs["batch_size"]
+        if "lr" in kwargs:
+            self.lr = kwargs["lr"]
+        if "patience" in kwargs:
+            self.patience = kwargs["patience"]
+        
         # Get dataset info
         dataset_code = kwargs.get("dataset_code")
         min_rating = kwargs.get("min_rating", 3)
@@ -176,6 +200,7 @@ class VIP5Reranker(BaseReranker):
         min_sc = kwargs.get("min_sc", 20)
         num_items = kwargs.get("num_items")
         self.item_id_to_text = kwargs.get("item_id2text", {})
+        val_data = kwargs.get("val_data")
         
         if num_items is None:
             # Infer from train_data
@@ -186,6 +211,9 @@ class VIP5Reranker(BaseReranker):
         
         if dataset_code is None:
             raise ValueError("VIP5Reranker.fit requires dataset_code in kwargs")
+        
+        # Store user history
+        self.user_history = train_data
         
         # Load CLIP embeddings
         print("Loading CLIP embeddings for VIP5...")
@@ -235,10 +263,10 @@ class VIP5Reranker(BaseReranker):
                 config.feat_dim = self.image_feature_dim
                 config.n_vis_tokens = self.image_feature_size_ratio
                 config.use_vis_layer_norm = True
-                config.use_adapter = False  # Can be set via kwargs
-                config.adapter_config = None
-                config.add_adapter_cross_attn = False
-                config.use_lm_head_adapter = False
+                config.use_adapter = kwargs.get("use_adapter", False)
+                config.adapter_config = kwargs.get("adapter_config", None)
+                config.add_adapter_cross_attn = kwargs.get("add_adapter_cross_attn", False)
+                config.use_lm_head_adapter = kwargs.get("use_lm_head_adapter", False)
                 config.whole_word_embed = True
                 config.category_embed = True
             
@@ -276,9 +304,110 @@ class VIP5Reranker(BaseReranker):
             self.model.decoder.load_state_dict(pretrained.decoder.state_dict(), strict=False)
         
         self.model = self.model.to(self.device)
+        
+        # Training
+        print("Preparing training samples...")
+        train_samples = self._prepare_training_samples(train_data)
+        
+        if len(train_samples) == 0:
+            print("Warning: No training samples generated. Skipping training.")
+            self.model.eval()
+            self.is_fitted = True
+            return
+        
+        print(f"Generated {len(train_samples)} training samples")
+        
+        # Setup optimizer
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=1e-4)
+        
+        # Training loop
+        best_state = None
+        best_val_recall = -1.0
+        epochs_no_improve = 0
+        
+        for epoch in range(self.num_epochs):
+            self.model.train()
+            total_loss = 0.0
+            num_batches = 0
+            
+            # Shuffle training samples
+            random.shuffle(train_samples)
+            
+            # Training batches
+            for i in range(0, len(train_samples), self.batch_size):
+                batch = train_samples[i:i + self.batch_size]
+                if len(batch) == 0:
+                    continue
+                
+                # Prepare batch
+                batch_dict = self._prepare_batch(batch)
+                
+                # Move to device
+                input_ids = batch_dict["input_ids"].to(self.device)
+                whole_word_ids = batch_dict["whole_word_ids"].to(self.device)
+                category_ids = batch_dict["category_ids"].to(self.device)
+                vis_feats = batch_dict["vis_feats"].to(self.device)
+                target_ids = batch_dict["target_ids"].to(self.device)
+                loss_weights = batch_dict["loss_weights"].to(self.device)
+                
+                optimizer.zero_grad()
+                
+                # Forward pass
+                output = self.model(
+                    input_ids=input_ids,
+                    whole_word_ids=whole_word_ids,
+                    category_ids=category_ids,
+                    vis_feats=vis_feats,
+                    labels=target_ids,
+                    return_dict=True,
+                    task="sequential"
+                )
+                
+                # Compute loss
+                loss = output["loss"]
+                
+                # Apply loss weights (length-aware normalization)
+                if loss.dim() > 0:
+                    loss = (loss * loss_weights).mean()
+                else:
+                    loss = loss * loss_weights.mean()
+                
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+                optimizer.step()
+                
+                total_loss += loss.item()
+                num_batches += 1
+            
+            avg_loss = total_loss / max(1, num_batches)
+            
+            # Validation
+            if val_data is not None:
+                val_recall = self._evaluate_split(val_data, k=min(10, self.top_k))
+                
+                if val_recall > best_val_recall:
+                    best_val_recall = val_recall
+                    best_state = deepcopy(self.model.state_dict())
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+                
+                print(f"[VIP5Reranker] Epoch {epoch+1}/{self.num_epochs} - "
+                      f"loss: {avg_loss:.4f}, val_Recall@{min(10, self.top_k)}: {val_recall:.4f}")
+                
+                if self.patience and epochs_no_improve >= self.patience:
+                    print(f"Early stopping at epoch {epoch+1}")
+                    break
+            else:
+                print(f"[VIP5Reranker] Epoch {epoch+1}/{self.num_epochs} - loss: {avg_loss:.4f}")
+        
+        # Load best model
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+        
         self.model.eval()
         self.is_fitted = True
-        print(f"VIP5Reranker fitted. Model on device: {self.device}")
+        print(f"VIP5Reranker training completed. Model on device: {self.device}")
     
     def rerank(
         self,
@@ -411,4 +540,215 @@ class VIP5Reranker(BaseReranker):
         
         # Return top_k
         return scores[:self.top_k]
+    
+    def _prepare_training_samples(
+        self,
+        train_data: Dict[int, List[int]]
+    ) -> List[Dict]:
+        """Prepare training samples for VIP5 sequential task (A-1).
+        
+        Args:
+            train_data: Dict {user_id: [item_ids]} - training interactions
+            
+        Returns:
+            List of training samples with keys: user_id, history, target_item, source_text, target_text
+        """
+        samples = []
+        
+        # Sequential task template A-1
+        template = "Given the following purchase history of user_{} : \n {} \n predict next possible item to be purchased by the user ?"
+        
+        for user_id, items in train_data.items():
+            if len(items) < 2:
+                continue  # Need at least 2 items for history and target
+            
+            # For training, randomly select a split point
+            # History: items[0:end_pos], Target: items[end_pos]
+            # Similar to VIP5 original implementation
+            if len(items) > 6:
+                end_candidates = list(range(max(2, len(items) - 6), len(items) - 1))
+                end_pos = random.choice(end_candidates)
+                start_candidates = list(range(1, min(4, end_pos)))
+                start_pos = random.choice(start_candidates) if start_candidates else 1
+            else:
+                start_pos = 1
+                end_pos = len(items) - 1
+            
+            purchase_history = items[start_pos:end_pos+1]
+            target_item = items[end_pos+1] if end_pos+1 < len(items) else items[-1]
+            
+            # Format history: item_1, item_2, ...
+            # Use visual token placeholders
+            history_str = ", ".join([f"item_{item_id}" for item_id in purchase_history])
+            
+            # Build source text with visual token placeholders
+            # Format: "item_1 <extra_id_0> <extra_id_0>, item_2 <extra_id_0> <extra_id_0>, ..."
+            visual_token_placeholder = " <extra_id_0>" * self.image_feature_size_ratio
+            history_with_visual = visual_token_placeholder.join([f"item_{item_id}" for item_id in purchase_history]) + visual_token_placeholder
+            
+            source_text = template.format(user_id, history_with_visual)
+            target_text = f"item_{target_item}"
+            
+            samples.append({
+                "user_id": user_id,
+                "history": purchase_history,
+                "target_item": target_item,
+                "source_text": source_text,
+                "target_text": target_text,
+            })
+        
+        return samples
+    
+    def _prepare_batch(
+        self,
+        batch: List[Dict]
+    ) -> Dict[str, torch.Tensor]:
+        """Prepare batch for VIP5 training.
+        
+        Args:
+            batch: List of training samples
+            
+        Returns:
+            Dict with keys: input_ids, whole_word_ids, category_ids, vis_feats, target_ids, loss_weights
+        """
+        batch_size = len(batch)
+        
+        # Tokenize source texts
+        source_texts = [s["source_text"] for s in batch]
+        target_texts = [s["target_text"] for s in batch]
+        
+        # Tokenize inputs
+        tokenized_inputs = self.tokenizer(
+            source_texts,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_text_length,
+            return_tensors="pt"
+        )
+        input_ids = tokenized_inputs["input_ids"]  # [B, L]
+        
+        # Tokenize targets
+        tokenized_targets = self.tokenizer(
+            target_texts,
+            padding="max_length",
+            truncation=True,
+            max_length=64,  # gen_max_length from VIP5
+            return_tensors="pt"
+        )
+        target_ids = tokenized_targets["input_ids"]  # [B, L_t]
+        
+        # Calculate whole_word_ids
+        whole_word_ids_list = []
+        for source_text in source_texts:
+            tokenized_text = self.tokenizer.tokenize(source_text)
+            input_ids_text = self.tokenizer.encode(source_text, add_special_tokens=False)
+            whole_word_ids = calculate_whole_word_ids(tokenized_text, input_ids_text, self.tokenizer)
+            # Pad to max_length
+            if len(whole_word_ids) < self.max_text_length:
+                whole_word_ids = whole_word_ids + [0] * (self.max_text_length - len(whole_word_ids))
+            else:
+                whole_word_ids = whole_word_ids[:self.max_text_length]
+            whole_word_ids_list.append(whole_word_ids)
+        whole_word_ids = torch.LongTensor(whole_word_ids_list)  # [B, L]
+        
+        # Calculate category_ids (1 for <extra_id_0>, 0 for others)
+        if hasattr(self.tokenizer, 'convert_tokens_to_ids'):
+            extra_id_0_token_id = self.tokenizer.convert_tokens_to_ids('<extra_id_0>')
+        else:
+            extra_id_0_token_id = self.tokenizer.encode('<extra_id_0>', add_special_tokens=False)[0]
+        
+        category_ids = (input_ids == extra_id_0_token_id).long()  # [B, L]
+        
+        # Prepare visual features
+        max_vis_tokens = category_ids.sum(dim=1).max().item()
+        vis_feats_list = []
+        
+        for sample in batch:
+            history = sample["history"]
+            # Get visual features for history items
+            history_visual = []
+            for item_id in history:
+                if item_id in self.item_id_to_idx:
+                    idx = self.item_id_to_idx[item_id]
+                    history_visual.append(self.visual_embeddings[idx])
+            
+            if len(history_visual) == 0:
+                # No valid items, use zeros
+                vis_feats = torch.zeros(max_vis_tokens, self.image_feature_dim)
+            else:
+                # Stack and repeat for image_feature_size_ratio
+                history_visual_tensor = torch.stack(history_visual)  # [num_items, feat_dim]
+                # Repeat each item image_feature_size_ratio times
+                vis_feats = history_visual_tensor.repeat_interleave(self.image_feature_size_ratio, dim=0)  # [num_items * ratio, feat_dim]
+                
+                # Pad or truncate to max_vis_tokens
+                if vis_feats.size(0) < max_vis_tokens:
+                    padding = torch.zeros(max_vis_tokens - vis_feats.size(0), self.image_feature_dim)
+                    vis_feats = torch.cat([vis_feats, padding], dim=0)
+                else:
+                    vis_feats = vis_feats[:max_vis_tokens]
+            
+            vis_feats_list.append(vis_feats)
+        
+        vis_feats = torch.stack(vis_feats_list)  # [B, max_vis_tokens, feat_dim]
+        
+        # Loss weights (length-aware normalization)
+        target_lengths = (target_ids != self.tokenizer.pad_token_id).sum(dim=1).float()
+        loss_weights = 1.0 / target_lengths.clamp(min=1.0)  # [B]
+        
+        # Mask target_ids: set padding to -100 (ignore in loss)
+        target_mask = (target_ids != self.tokenizer.pad_token_id)
+        target_ids_masked = target_ids.clone()
+        target_ids_masked[~target_mask] = -100
+        
+        return {
+            "input_ids": input_ids,
+            "whole_word_ids": whole_word_ids,
+            "category_ids": category_ids,
+            "vis_feats": vis_feats,
+            "target_ids": target_ids_masked,
+            "loss_weights": loss_weights,
+        }
+    
+    def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> float:
+        """Compute average Recall@K for validation.
+        
+        Args:
+            split: Dict {user_id: [gt_item_ids]} - validation/test split
+            k: Top-K for recall calculation
+            
+        Returns:
+            Average Recall@K
+        """
+        if self.model is None:
+            return 0.0
+        
+        self.model.eval()
+        recalls = []
+        
+        with torch.no_grad():
+            for user_id, gt_items in split.items():
+                if user_id not in self.user_history:
+                    continue
+                
+                # Get user history
+                history = self.user_history[user_id]
+                if len(history) == 0:
+                    continue
+                
+                # Get all items as candidates (for evaluation)
+                all_items = list(self.item_id_to_idx.keys())
+                
+                # Rerank all items
+                reranked = self.rerank(user_id, all_items, user_history=history)
+                
+                # Get top-K item IDs
+                top_k_items = [item_id for item_id, _ in reranked[:k]]
+                
+                # Compute recall
+                hits = len(set(top_k_items) & set(gt_items))
+                if len(gt_items) > 0:
+                    recalls.append(hits / min(k, len(gt_items)))
+        
+        return float(np.mean(recalls)) if recalls else 0.0
 
