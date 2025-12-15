@@ -288,7 +288,6 @@ def main() -> None:
             raise ValueError("VBPR requires image embeddings (v_feat), but image_embs is None")
         
         # Convert to torch.Tensor (VBPR expects torch.Tensor)
-        import torch
         visual_features = torch.from_numpy(v_feat).float()
         
         fit_kwargs.update({
@@ -317,7 +316,6 @@ def main() -> None:
             raise ValueError("BM3 requires text embeddings (t_feat), but text_embs is None")
         
         # Convert to torch.Tensor (BM3 expects torch.Tensor)
-        import torch
         visual_features = torch.from_numpy(v_feat).float()
         text_features = torch.from_numpy(t_feat).float()
         

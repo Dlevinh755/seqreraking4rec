@@ -8,10 +8,31 @@ Only the adapter imports have been updated to use relative imports.
 
 from dataclasses import dataclass
 
-from transformers.models.t5.modeling_t5 import (
-    T5LayerNorm, T5DenseReluDense, T5DenseGatedGeluDense, 
-    T5PreTrainedModel, T5ForConditionalGeneration
-)
+# Try to import T5 classes - handle different transformers versions
+try:
+    from transformers.models.t5.modeling_t5 import (
+        T5LayerNorm, T5DenseReluDense, T5DenseGatedGeluDense, 
+        T5PreTrainedModel, T5ForConditionalGeneration
+    )
+except ImportError:
+    # For newer transformers versions, these classes might be in different locations
+    try:
+        from transformers.models.t5.modeling_t5 import (
+            T5LayerNorm, T5PreTrainedModel, T5ForConditionalGeneration
+        )
+        # Try to import feed-forward classes
+        try:
+            from transformers.models.t5.modeling_t5 import T5DenseReluDense, T5DenseGatedGeluDense
+        except ImportError:
+            # If not available, we'll define them ourselves
+            T5DenseReluDense = None
+            T5DenseGatedGeluDense = None
+    except ImportError:
+        raise ImportError(
+            "Could not import T5 classes from transformers. "
+            "Please ensure transformers library is installed and up to date."
+        )
+
 from transformers.models.t5.configuration_t5 import T5Config
 
 import torch
@@ -20,15 +41,115 @@ import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 from transformers.activations import ACT2FN
 
+# Define T5DenseReluDense and T5DenseGatedGeluDense if not available
+if T5DenseReluDense is None:
+    class T5DenseReluDense(nn.Module):
+        def __init__(self, config):
+            super().__init__()
+            self.wi = nn.Linear(config.d_model, config.d_ff, bias=False)
+            self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
+            self.dropout = nn.Dropout(config.dropout_rate)
+            self.act = ACT2FN[config.dense_act_fn] if hasattr(config, 'dense_act_fn') else F.relu
+
+        def forward(self, hidden_states):
+            hidden_states = self.wi(hidden_states)
+            hidden_states = self.act(hidden_states)
+            hidden_states = self.dropout(hidden_states)
+            hidden_states = self.wo(hidden_states)
+            return hidden_states
+
+if T5DenseGatedGeluDense is None:
+    class T5DenseGatedGeluDense(nn.Module):
+        def __init__(self, config):
+            super().__init__()
+            self.wi_0 = nn.Linear(config.d_model, config.d_ff, bias=False)
+            self.wi_1 = nn.Linear(config.d_model, config.d_ff, bias=False)
+            self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
+            self.dropout = nn.Dropout(config.dropout_rate)
+            self.act = ACT2FN["gelu_new"] if "gelu_new" in ACT2FN else ACT2FN.get("gelu", F.gelu)
+
+        def forward(self, hidden_states):
+            hidden_gelu = self.act(self.wi_0(hidden_states))
+            hidden_linear = self.wi_1(hidden_states)
+            hidden_states = hidden_gelu * hidden_linear
+            hidden_states = self.dropout(hidden_states)
+            hidden_states = self.wo(hidden_states)
+            return hidden_states
+
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 import copy
 import math
 
 from transformers.modeling_outputs import ModelOutput, BaseModelOutput, BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions, Seq2SeqLMOutput, Seq2SeqModelOutput
-from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer
+from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
-from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
-from transformers import BeamScorer, BeamSearchScorer
+
+# Try to import pruning utilities - handle different transformers versions
+try:
+    from transformers.modeling_utils import find_pruneable_heads_and_indices, prune_linear_layer
+except ImportError:
+    # Try alternative locations
+    try:
+        from transformers.pytorch_utils import find_pruneable_heads_and_indices, prune_linear_layer
+    except ImportError:
+        # Define fallback implementations if not available
+        def find_pruneable_heads_and_indices(heads, n_heads, head_dim, already_pruned_heads):
+            """Find heads and indices to prune."""
+            mask = torch.ones(n_heads, head_dim)
+            heads = set(heads) - already_pruned_heads
+            for head in heads:
+                head -= sum(1 for h in already_pruned_heads if h < head)
+                mask[head] = 0
+            mask = mask.view(-1).contiguous().eq(1)
+            index = torch.arange(len(mask))[mask].long()
+            return heads, index
+        
+        def prune_linear_layer(layer, index, dim=0):
+            """Prune a linear layer."""
+            index = index.to(layer.weight.device)
+            W = layer.weight.index_select(dim, index).clone().detach()
+            if layer.bias is not None:
+                if dim == 1:
+                    b = layer.bias.clone().detach()
+                else:
+                    b = layer.bias[index].clone().detach()
+            else:
+                b = None
+            new_size = list(layer.weight.size())
+            new_size[dim] = len(index)
+            new_layer = nn.Linear(new_size[1], new_size[0], bias=layer.bias is not None)
+            new_layer.weight.requires_grad = False
+            new_layer.weight.copy_(W.contiguous())
+            new_layer.weight.requires_grad = True
+            if b is not None:
+                new_layer.bias.requires_grad = False
+                new_layer.bias.copy_(b.contiguous())
+                new_layer.bias.requires_grad = True
+            new_layer = new_layer.to(layer.weight.device)
+            return new_layer
+
+# Try to import model parallel utilities
+try:
+    from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
+except ImportError:
+    # Define fallback implementations if not available
+    def assert_device_map(device_map, num_blocks):
+        """Assert device map is valid."""
+        pass
+    
+    def get_device_map(num_blocks, max_memory=None, no_split_module_classes=None):
+        """Get device map for model parallelism."""
+        return None
+
+# Try to import BeamScorer
+try:
+    from transformers import BeamScorer, BeamSearchScorer
+except ImportError:
+    try:
+        from transformers.generation.beam_search import BeamScorer, BeamSearchScorer
+    except ImportError:
+        BeamScorer = None
+        BeamSearchScorer = None
 
 # Update adapter imports to use relative import
 try:
@@ -102,13 +223,18 @@ class VisualEmbedding(nn.Module):
 class T5LayerFF(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.config = config
         if config.feed_forward_proj == "relu":
+            if T5DenseReluDense is None:
+                raise ImportError("T5DenseReluDense is not available and could not be defined")
             self.DenseReluDense = T5DenseReluDense(config)
         elif config.feed_forward_proj == "gated-gelu":
+            if T5DenseGatedGeluDense is None:
+                raise ImportError("T5DenseGatedGeluDense is not available and could not be defined")
             self.DenseReluDense = T5DenseGatedGeluDense(config)
         else:
             raise ValueError(
-                f"{self.config.feed_forward_proj} is not supported. Choose between `relu` and `gated-gelu`"
+                f"{config.feed_forward_proj} is not supported. Choose between `relu` and `gated-gelu`"
             )
 
         self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)

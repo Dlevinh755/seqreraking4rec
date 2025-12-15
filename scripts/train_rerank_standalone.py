@@ -109,6 +109,14 @@ def main():
         "patience": arg.rerank_patience,
     }
     
+    # Add dataset_code and related params for VIP5Reranker
+    if args.rerank_method == "vip5":
+        training_kwargs["dataset_code"] = arg.dataset_code
+        training_kwargs["min_rating"] = arg.min_rating
+        training_kwargs["min_uc"] = arg.min_uc
+        training_kwargs["min_sc"] = arg.min_sc
+        training_kwargs["num_items"] = item_count
+    
     # Add text/image features if available
     item_id2text = {}
     if "meta" in data:

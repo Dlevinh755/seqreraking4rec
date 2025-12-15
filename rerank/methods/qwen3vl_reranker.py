@@ -373,22 +373,27 @@ class Qwen3VLReranker(BaseReranker):
         from transformers import TrainingArguments, Trainer
         
         # Prepare training data
+        # For raw_image mode, we need to store item_ids instead of images
+        # because PIL Images cannot be serialized in HuggingFace Dataset
         training_data = []
         for sample in train_samples:
-            # Build prompt and prepare inputs based on mode
+            target = str(sample["target_idx"] + 1)  # 1-indexed
+            
             if self.mode == "raw_image":
-                # For raw_image, use actual images in messages
-                prompt_data = self._build_training_prompt_with_images(sample)
+                # For raw_image, store item_ids and load images in collate_fn
+                training_data.append({
+                    "user_id": sample["user_id"],
+                    "history": sample["history"],
+                    "candidates": sample["candidates"],
+                    "target": target,
+                })
             else:
                 # For caption and semantic_summary, use text-only
                 prompt_data = self._build_training_prompt_text_only(sample)
-            
-            target = str(sample["target_idx"] + 1)  # 1-indexed
-            
-            training_data.append({
-                **prompt_data,
-                "target": target,
-            })
+                training_data.append({
+                    **prompt_data,
+                    "target": target,
+                })
         
         hf_train_dataset = Dataset.from_list(training_data)
         
@@ -409,9 +414,37 @@ class Qwen3VLReranker(BaseReranker):
                 target = item["target"]
                 
                 # Check if we have messages (raw_image mode) or prompt (text-only mode)
-                if "messages" in item:
-                    # raw_image mode: messages contain images
+                if "candidates" in item:
+                    # raw_image mode: need to build messages with images from item_ids
+                    # Load images fresh in collate_fn to avoid serialization issues
+                    sample = {
+                        "user_id": item.get("user_id"),
+                        "history": item.get("history", []),
+                        "candidates": item.get("candidates", []),
+                    }
+                    prompt_data = self._build_training_prompt_with_images(sample)
+                    messages = prompt_data["messages"]
+                elif "messages" in item:
+                    # raw_image mode: messages already built (shouldn't happen with new approach)
                     messages = item["messages"]
+                    # Ensure images are PIL Images, not dicts
+                    for msg in messages:
+                        if isinstance(msg.get("content"), list):
+                            for content_item in msg["content"]:
+                                if isinstance(content_item, dict) and content_item.get("type") == "image":
+                                    img = content_item.get("image")
+                                    if not isinstance(img, Image.Image):
+                                        # Try to convert from dict/string if needed
+                                        if isinstance(img, dict):
+                                            # Image was serialized, skip this item
+                                            content_item["image"] = None
+                                        elif isinstance(img, str):
+                                            # Image path, load it
+                                            try:
+                                                content_item["image"] = Image.open(img).convert("RGB")
+                                                content_item["image"] = resize_image_for_qwen3vl(content_item["image"], max_size=448)
+                                            except:
+                                                content_item["image"] = None
                 else:
                     # text-only mode: create message from prompt
                     prompt = item["prompt"]
@@ -500,22 +533,22 @@ class Qwen3VLReranker(BaseReranker):
             }
         
         # Tokenize dataset (simplified - we'll use collate_fn for full processing)
-        def prepare_dataset(examples):
-            # Store prompts/messages and targets for collate_fn
-            result = {
-                "target": examples.get("target", []),
-            }
-            # Handle both "prompt" (text-only) and "messages" (multimodal) formats
-            if "prompt" in examples:
-                result["prompt"] = examples["prompt"]
-            if "messages" in examples:
-                result["messages"] = examples["messages"]
-            return result
-        
-        hf_train_dataset = hf_train_dataset.map(
-            prepare_dataset,
-            batched=True,
-        )
+        # For raw_image mode, we already have item_ids, no need to map
+        # For text-only modes, we need to keep prompts
+        if self.mode != "raw_image":
+            def prepare_dataset(examples):
+                # Store prompts and targets for collate_fn
+                result = {
+                    "target": examples.get("target", []),
+                }
+                if "prompt" in examples:
+                    result["prompt"] = examples["prompt"]
+                return result
+            
+            hf_train_dataset = hf_train_dataset.map(
+                prepare_dataset,
+                batched=True,
+            )
         
         # Training arguments
         training_args = TrainingArguments(
