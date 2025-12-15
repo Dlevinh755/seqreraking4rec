@@ -81,6 +81,10 @@ class QwenReranker(BaseReranker):
         self.item_id2text = kwargs.get("item_id2text", {})
         self.user_history = kwargs.get("user_history", {})
         
+        # Get optimization settings
+        from config import arg
+        use_torch_compile = getattr(arg, 'use_torch_compile', False)
+        
         # Nếu có train_data_for_llm, train LLM model
         train_data_for_llm = kwargs.get("train_data_for_llm")
         if train_data_for_llm is not None:
@@ -88,7 +92,7 @@ class QwenReranker(BaseReranker):
                 train_data=train_data_for_llm,
                 model_name=self.model_name
             )
-            self.llm_model.load_model()
+            self.llm_model.load_model(use_torch_compile=use_torch_compile)
             self.llm_model.train()
         else:
             # Chỉ load model, không train
@@ -96,7 +100,7 @@ class QwenReranker(BaseReranker):
                 train_data=None,
                 model_name=self.model_name
             )
-            self.llm_model.load_model()
+            self.llm_model.load_model(use_torch_compile=use_torch_compile)
         
         self.is_fitted = True
 

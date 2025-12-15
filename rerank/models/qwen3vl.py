@@ -119,14 +119,19 @@ class Qwen3VLModel:
             )
     
     def _load_text_model(self):
-        """Load smaller text-only model for semantic summaries."""
-        print(f"Loading Qwen text model: {self.model_name}")
+        """Load smaller text-only model for semantic summaries with 4-bit quantization.
+        
+        Note:
+            All Unsloth models are loaded with 4-bit quantization by default
+            to reduce memory usage while maintaining performance.
+        """
+        print(f"Loading Qwen text model with 4-bit quantization: {self.model_name}")
         try:
             self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                 model_name=self.model_name,
                 max_seq_length=2048,
                 dtype=torch.float16,
-                load_in_4bit=True,
+                load_in_4bit=True,  # 4-bit quantization enabled by default for all Unsloth models
             )
             self.model = FastLanguageModel.get_peft_model(
                 self.model,

@@ -97,12 +97,22 @@ class LLMModel:
             self.model_name = model_name or "Qwen/Qwen3-0.6B"
             self.train_data = train_data
 
-    def load_model(self):
+    def load_model(self, use_torch_compile=False):
+        """Load LLM model with 4-bit quantization (default for Unsloth models).
+        
+        Args:
+            use_torch_compile: Whether to use torch.compile() for faster inference
+        
+        Note:
+            All Unsloth models are loaded with 4-bit quantization by default
+            to reduce memory usage while maintaining performance.
+        """
+        print(f"Loading LLM model with 4-bit quantization: {self.model_name}")
         self.model, self.tokenizer = FastLanguageModel.from_pretrained(
             model_name = self.model_name,
             max_seq_length = 2048,
             dtype = torch.float16,
-            load_in_4bit = True,
+            load_in_4bit = True,  # 4-bit quantization enabled by default for all Unsloth models
         )
 
         self.model = FastLanguageModel.get_peft_model(
@@ -114,6 +124,15 @@ class LLMModel:
             bias = "none",
             use_gradient_checkpointing = True,
         )
+        
+        # Compile model if requested (PyTorch 2.0+)
+        if use_torch_compile and hasattr(torch, 'compile'):
+            try:
+                print("Compiling LLM model with torch.compile() for faster inference...")
+                self.model = torch.compile(self.model, mode="reduce-overhead")
+                print("LLM model compiled successfully!")
+            except Exception as e:
+                print(f"Warning: torch.compile() failed: {e}. Continuing without compilation.")
     def train(self):
 
         from datasets import Dataset

@@ -22,7 +22,9 @@ except ImportError:
     print("Warning: transformers library not available. Qwen3-VL semantic summary generation will be disabled.")
 
 
-BATCH_SIZE = 4  # Batch size for semantic summary generation (smaller due to VL model size)
+# Batch size for semantic summary generation (configurable via args)
+# Default: 4 (smaller due to VL model size)
+# Can be increased if GPU memory allows (8, 16, 32)
 
 # Semantic summary prompt template
 SEMANTIC_SUMMARY_PROMPT = """Summarize the given image into a high-level semantic description.
@@ -36,13 +38,14 @@ Focus on the abstract attributes such as:
 Avoid describing low-level visual details.
 Keep the summary concise."""
 
-def _load_qwen3vl_model(device: torch.device):
+def _load_qwen3vl_model(device: torch.device, use_quantization: bool = False):
     """Load Qwen3-VL model from unsloth repository using transformers.
     
     Uses unsloth/Qwen3-VL-2B-Instruct which includes unsloth chat template fixes.
     
     Args:
         device: Device to load model on
+        use_quantization: Whether to use 4-bit quantization (saves memory)
         
     Returns:
         Tuple of (model, processor)
@@ -60,10 +63,28 @@ def _load_qwen3vl_model(device: torch.device):
         # Note: Qwen3-VL requires latest transformers from source
         # pip install git+https://github.com/huggingface/transformers
         processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+        
+        # Setup quantization if requested
+        quantization_config = None
+        if use_quantization and device.type == "cuda":
+            try:
+                from transformers import BitsAndBytesConfig
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
+                print("Using 4-bit quantization for Qwen3-VL model")
+            except ImportError:
+                print("Warning: bitsandbytes not available. Install with: pip install bitsandbytes")
+                quantization_config = None
+        
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_name,
             dtype="auto" if device.type == "cuda" else torch.float32,
             device_map="auto" if device.type == "cuda" else None,
+            quantization_config=quantization_config,
             trust_remote_code=True,
         )
         
@@ -106,15 +127,19 @@ def generate_semantic_summaries(
     device: torch.device,
     meta: Dict[int, Dict[str, Any]],
     num_items: int,
+    batch_size: int = 4,
+    use_torch_compile: bool = False,
 ) -> Dict[int, str]:
     """Generate semantic summaries for all images in meta.
     
     Args:
-        model: Qwen2-VL model
-        processor: Qwen2-VL processor
+        model: Qwen3-VL model
+        processor: Qwen3-VL processor
         device: Device to run inference on
         meta: Dict {item_id: {image_path: str, ...}}
         num_items: Total number of items
+        batch_size: Batch size for processing (default: 4)
+        use_torch_compile: Whether to use torch.compile() for faster inference
         
     Returns:
         Dict {item_id: semantic_summary} - Semantic summaries for items with valid images
@@ -135,12 +160,22 @@ def generate_semantic_summaries(
         return {}
     
     print(f"Generating semantic summaries for {len(items_with_img)} images...")
+    print(f"Using batch size: {batch_size}")
+    
+    # Compile model if requested (PyTorch 2.0+)
+    if use_torch_compile and hasattr(torch, 'compile'):
+        try:
+            print("Compiling model with torch.compile() for faster inference...")
+            model = torch.compile(model, mode="reduce-overhead")
+            print("Model compiled successfully!")
+        except Exception as e:
+            print(f"Warning: torch.compile() failed: {e}. Continuing without compilation.")
     
     summaries = {}
     
     with torch.no_grad():
-        for i in tqdm(range(0, len(items_with_img), BATCH_SIZE), desc="Qwen3 VL semantic summaries"):
-            batch = items_with_img[i : i + BATCH_SIZE]
+        for i in tqdm(range(0, len(items_with_img), batch_size), desc="Qwen3 VL semantic summaries"):
+            batch = items_with_img[i : i + batch_size]
             batch_images = []
             batch_ids = []
             
@@ -196,10 +231,13 @@ def generate_semantic_summaries(
                         inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
                         
                         # Generate summary
+                        # Use faster generation settings
                         generated_ids = model.generate(
                             **inputs,
                             max_new_tokens=128,
                             do_sample=False,
+                            num_beams=1,  # Greedy decoding (faster than beam search)
+                            pad_token_id=processor.tokenizer.eos_token_id,
                         )
                         
                         # Decode summary
@@ -276,8 +314,17 @@ def maybe_generate_semantic_summaries(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    model, processor = _load_qwen3vl_model(device)
-    summaries = generate_semantic_summaries(model, processor, device, meta, num_items)
+    # Get optimization settings from args
+    batch_size = getattr(args, 'semantic_summary_batch_size', 4)
+    use_quantization = getattr(args, 'use_quantization', False)
+    use_torch_compile = getattr(args, 'use_torch_compile', False)
+    
+    model, processor = _load_qwen3vl_model(device, use_quantization=use_quantization)
+    summaries = generate_semantic_summaries(
+        model, processor, device, meta, num_items,
+        batch_size=batch_size,
+        use_torch_compile=use_torch_compile
+    )
     
     # Save summaries to .pt file for caching (optional, CSV is the main storage)
     if summaries:

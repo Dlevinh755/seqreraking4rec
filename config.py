@@ -44,6 +44,12 @@ parser.add_argument('--qwen_max_candidates', type=int, default=None,
 parser.add_argument('--qwen3vl_mode', type=str, default='raw_image',
 					choices=['raw_image', 'caption', 'semantic_summary', 'semantic_summary_small'],
 					help='Prompt mode for Qwen3-VL reranker: raw_image, caption, semantic_summary, semantic_summary_small')
+parser.add_argument('--semantic_summary_batch_size', type=int, default=4,
+					help='Batch size for semantic summary generation (increase if GPU memory allows)')
+parser.add_argument('--use_quantization', action='store_true', default=False,
+					help='Use 4-bit quantization for models (saves memory, may slightly reduce accuracy)')
+parser.add_argument('--use_torch_compile', action='store_true', default=False,
+					help='Use torch.compile() for faster inference (requires PyTorch 2.0+)')
 arg = parser.parse_args()
 
 

@@ -320,6 +320,11 @@ Các hyperparameters có thể điều chỉnh trong `config.py`:
 - `--qwen_max_candidates`: Max candidates cho Qwen reranker (None = dùng tất cả từ retrieval)
 - `--qwen3vl_mode`: Prompt mode cho Qwen3-VL reranker (raw_image, caption, semantic_summary, semantic_summary_small)
 
+### Performance Optimization Config
+- `--semantic_summary_batch_size`: Batch size cho semantic summary generation (default: 4, có thể tăng lên 8, 16, 32 nếu GPU memory cho phép)
+- `--use_quantization`: Sử dụng 4-bit quantization cho models (tiết kiệm memory, tăng tốc)
+- `--use_torch_compile`: Sử dụng torch.compile() để compile models (tăng tốc inference, cần PyTorch 2.0+)
+
 ## 📊 Output
 
 ### Preprocessed Data
@@ -387,6 +392,52 @@ Hit        0.4500    0.6700    0.8900
    - Training sử dụng per-epoch validation với early stopping
    - Xem chi tiết trong `QWEN3VL_TRAINING_REPORT.md`
 
+## ⚡ Performance Optimization
+
+### Tăng tốc Semantic Summary Generation
+
+```bash
+# Tăng batch size (nếu GPU memory cho phép)
+python data_prepare.py \
+    --dataset_code beauty \
+    --use_image \
+    --generate_semantic_summary \
+    --semantic_summary_batch_size 8  # Tăng từ 4 lên 8
+
+# Sử dụng quantization để tiết kiệm memory
+python data_prepare.py \
+    --dataset_code beauty \
+    --use_image \
+    --generate_semantic_summary \
+    --use_quantization  # 4-bit quantization
+
+# Sử dụng torch.compile() để tăng tốc (PyTorch 2.0+)
+python data_prepare.py \
+    --dataset_code beauty \
+    --use_image \
+    --generate_semantic_summary \
+    --use_torch_compile
+```
+
+### Tăng tốc LLM Inference
+
+```bash
+# Sử dụng torch.compile() cho LLM inference
+python scripts/train_pipeline.py \
+    --rerank_method qwen \
+    --use_torch_compile  # Compile model để tăng tốc
+
+# Sử dụng quantization (đã có sẵn trong Unsloth)
+# Model đã được load với 4-bit quantization mặc định
+```
+
+**Expected Speedup**:
+- `--semantic_summary_batch_size 8`: 2-4x faster
+- `--use_quantization`: 1.5-2x faster, -50% memory
+- `--use_torch_compile`: 1.2-1.5x faster
+
+Xem chi tiết trong `OPTIMIZATION_GUIDE.md`.
+
 ## 🔧 Troubleshooting
 
 - **Qwen3-VL không load được**: Cần cài transformers từ source:
@@ -400,11 +451,23 @@ Hit        0.4500    0.6700    0.8900
   - Giảm `--batch_size_retrieval` hoặc `--rerank_batch_size` trong `config.py`
   - Với Qwen3-VL `raw_image` mode: giảm batch size xuống 4-8
   - Images đã được tự động resize về 448px để tiết kiệm memory
+  - Sử dụng `--use_quantization` để giảm memory usage
 
 - **Qwen3-VL training chậm**: 
   - Sử dụng `semantic_summary_small` mode (nhẹ hơn, nhanh hơn)
   - Giảm batch size hoặc số lượng training samples
   - Sử dụng GPU với đủ memory (recommended: 12GB+ cho VL modes)
+  - Sử dụng `--use_torch_compile` để tăng tốc
+
+- **Semantic summary generation chậm**:
+  - Tăng `--semantic_summary_batch_size` nếu GPU memory cho phép (8, 16, 32)
+  - Sử dụng `--use_quantization` để giảm memory và tăng tốc
+  - Sử dụng `--use_torch_compile` để compile model
+
+- **LLM inference chậm**:
+  - Sử dụng `--use_torch_compile` để compile model
+  - Model đã được load với 4-bit quantization mặc định (Unsloth)
+  - Có thể batch multiple prompts nếu cần (xem OPTIMIZATION_GUIDE.md)
 
 - **Evaluation không chạy được**: 
   - Kiểm tra xem đã train model chưa
