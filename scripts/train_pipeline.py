@@ -42,46 +42,20 @@ def evaluate_pipeline(
 
 
 def main():
-    # Parse script-specific arguments first (before importing config which parses all args)
-    parser = argparse.ArgumentParser(description="Train two-stage recommendation pipeline", add_help=False)
-    parser.add_argument("--retrieval_method", type=str, default="lrurec",
-                       help="Retrieval method (lrurec, mmgcn, vbpr, bm3)")
-    parser.add_argument("--retrieval_top_k", type=int, default=200,
-                       help="Number of candidates from Stage 1")
-    parser.add_argument("--rerank_method", type=str, default="qwen",
-                       help="Rerank method (qwen, qwen3vl, vip5, bert4rec)")
-    parser.add_argument("--rerank_top_k", type=int, default=50,
-                       help="Number of final recommendations")
-    parser.add_argument("--metric_k", type=int, default=10,
-                       help="Cutoff for evaluation metrics")
-    parser.add_argument("--rerank_mode", type=str, default="retrieval",
-                       choices=["retrieval", "ground_truth"],
-                       help="Rerank mode: 'retrieval' (use Stage 1 candidates) or 'ground_truth' (gt + 19 negatives)")
-    parser.add_argument("--qwen3vl_mode", type=str, default="raw_image",
-                       choices=["raw_image", "caption", "semantic_summary", "semantic_summary_small"],
-                       help="Qwen3-VL mode (only used if rerank_method=qwen3vl)")
-    
-    # Parse known args to avoid conflict with config.py
-    script_args, remaining_args = parser.parse_known_args()
-    args = script_args
-    
-    # Now import config (it will parse remaining_args)
-    # Temporarily replace sys.argv so config.py only sees remaining args (without script-specific args)
-    original_argv = sys.argv.copy()
-    # Manually remove script-specific arguments from sys.argv
-    script_specific_args = ["--retrieval_method", "--retrieval_top_k", "--rerank_method", 
-                           "--rerank_top_k", "--metric_k", "--rerank_mode", "--qwen3vl_mode"]
-    new_argv = [sys.argv[0]]
-    i = 1
-    while i < len(sys.argv):
-        if sys.argv[i] in script_specific_args:
-            i += 2  # Skip both argument and its value
-        else:
-            new_argv.append(sys.argv[i])
-            i += 1
-    sys.argv = new_argv
+    # Import config (it now includes script-specific arguments as optional)
     from config import arg, EXPERIMENT_ROOT
-    sys.argv = original_argv
+    
+    # Get script-specific arguments from arg (with defaults)
+    class Args:
+        retrieval_method = getattr(arg, 'retrieval_method', 'lrurec') or 'lrurec'
+        retrieval_top_k = getattr(arg, 'retrieval_top_k', 200) or 200
+        rerank_method = getattr(arg, 'rerank_method', 'qwen') or 'qwen'
+        rerank_top_k = getattr(arg, 'rerank_top_k', 50) or 50
+        metric_k = getattr(arg, 'metric_k', 10) or 10
+        rerank_mode = getattr(arg, 'rerank_mode', 'retrieval') or 'retrieval'
+        qwen3vl_mode = getattr(arg, 'qwen3vl_mode', 'raw_image') or 'raw_image'
+    
+    args = Args()
     
     seed_everything(arg.seed)
     

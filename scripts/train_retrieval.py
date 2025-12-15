@@ -195,35 +195,18 @@ def _build_retrieved_matrices(
 
 
 def main() -> None:
-    # Parse script-specific arguments first (before importing config which parses all args)
-    parser = argparse.ArgumentParser(description="Train retrieval models (Stage 1)", add_help=False)
-    parser.add_argument(
-        "--retrieval_method",
-        type=str,
-        default="lrurec",
-        choices=["lrurec", "mmgcn", "vbpr", "bm3"],
-        help="Retrieval method to use (lrurec, mmgcn, vbpr, bm3) (default: lrurec)"
-    )
-    # Parse known args to avoid conflict with config.py
-    script_args, remaining_args = parser.parse_known_args()
-    retrieval_method = script_args.retrieval_method
-    
-    # Now import config (it will parse remaining_args)
-    # Temporarily replace sys.argv so config.py only sees remaining args (without --retrieval_method)
-    import sys
-    original_argv = sys.argv.copy()
-    # Manually remove --retrieval_method and its value from sys.argv
-    new_argv = [sys.argv[0]]
-    i = 1
-    while i < len(sys.argv):
-        if sys.argv[i] == "--retrieval_method":
-            i += 2  # Skip both --retrieval_method and its value
-        else:
-            new_argv.append(sys.argv[i])
-            i += 1
-    sys.argv = new_argv
+    # Import config (it now includes --retrieval_method as optional argument)
     from config import arg, EXPERIMENT_ROOT
-    sys.argv = original_argv
+    
+    # Get retrieval_method from arg (with default fallback)
+    retrieval_method = getattr(arg, 'retrieval_method', 'lrurec')
+    if retrieval_method is None:
+        retrieval_method = 'lrurec'
+    
+    # Validate retrieval_method
+    valid_methods = ["lrurec", "mmgcn", "vbpr", "bm3"]
+    if retrieval_method not in valid_methods:
+        raise ValueError(f"Invalid retrieval_method: {retrieval_method}. Must be one of {valid_methods}")
 
     seed_everything(arg.seed)
 

@@ -26,57 +26,28 @@ from pytorch_lightning import seed_everything
 
 
 def main():
-    # Parse script-specific arguments first (before importing config which parses all args)
-    parser = argparse.ArgumentParser(description="Train rerank model standalone (independent from retrieval)", add_help=False)
-    
-    # Dataset
-    parser.add_argument("--rerank_method", type=str, required=True,
-                       choices=["qwen", "qwen3vl", "vip5", "bert4rec"],
-                       help="Rerank method to train")
-    parser.add_argument("--rerank_top_k", type=int, default=50,
-                       help="Number of final recommendations")
-    
-    # Training mode
-    parser.add_argument("--mode", type=str, default="ground_truth",
-                       choices=["ground_truth", "retrieval"],
-                       help="Training mode: 'ground_truth' (gt + negatives, no retrieval) or 'retrieval' (use pre-trained retrieval)")
-    
-    # Retrieval config (only needed if mode=retrieval)
-    parser.add_argument("--retrieval_method", type=str, default="lrurec",
-                       help="Retrieval method (only used if mode=retrieval)")
-    parser.add_argument("--retrieval_top_k", type=int, default=200,
-                       help="Number of candidates from retrieval (only used if mode=retrieval)")
-    
-    # Evaluation
-    parser.add_argument("--metric_k", type=int, default=10,
-                       help="Cutoff for evaluation metrics")
-    
-    # Qwen3-VL mode
-    parser.add_argument("--qwen3vl_mode", type=str, default="raw_image",
-                       choices=["raw_image", "caption", "semantic_summary", "semantic_summary_small"],
-                       help="Qwen3-VL mode (only used if rerank_method=qwen3vl)")
-    
-    # Parse known args to avoid conflict with config.py
-    script_args, remaining_args = parser.parse_known_args()
-    args = script_args
-    
-    # Now import config (it will parse remaining_args)
-    # Temporarily replace sys.argv so config.py only sees remaining args (without script-specific args)
-    original_argv = sys.argv.copy()
-    # Manually remove script-specific arguments from sys.argv
-    script_specific_args = ["--rerank_method", "--rerank_top_k", "--mode", 
-                           "--retrieval_method", "--retrieval_top_k", "--metric_k", "--qwen3vl_mode"]
-    new_argv = [sys.argv[0]]
-    i = 1
-    while i < len(sys.argv):
-        if sys.argv[i] in script_specific_args:
-            i += 2  # Skip both argument and its value
-        else:
-            new_argv.append(sys.argv[i])
-            i += 1
-    sys.argv = new_argv
+    # Import config (it now includes script-specific arguments as optional)
     from config import arg
-    sys.argv = original_argv
+    
+    # Get script-specific arguments from arg (with defaults and validation)
+    rerank_method_val = getattr(arg, 'rerank_method', None)
+    if rerank_method_val is None:
+        raise ValueError("--rerank_method is required. Please specify: --rerank_method qwen|qwen3vl|vip5|bert4rec")
+    
+    valid_rerank_methods = ["qwen", "qwen3vl", "vip5", "bert4rec"]
+    if rerank_method_val not in valid_rerank_methods:
+        raise ValueError(f"Invalid rerank_method: {rerank_method_val}. Must be one of {valid_rerank_methods}")
+    
+    class Args:
+        rerank_method = rerank_method_val
+        rerank_top_k = getattr(arg, 'rerank_top_k', 50) or 50
+        mode = getattr(arg, 'mode', 'ground_truth') or 'ground_truth'
+        retrieval_method = getattr(arg, 'retrieval_method', 'lrurec') or 'lrurec'
+        retrieval_top_k = getattr(arg, 'retrieval_top_k', 200) or 200
+        metric_k = getattr(arg, 'metric_k', 10) or 10
+        qwen3vl_mode = getattr(arg, 'qwen3vl_mode', 'raw_image') or 'raw_image'
+    
+    args = Args()
     
     seed_everything(arg.seed)
     

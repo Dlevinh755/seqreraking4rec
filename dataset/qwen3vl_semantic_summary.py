@@ -30,7 +30,6 @@ except ImportError:
 SEMANTIC_SUMMARY_PROMPT = """Summarize the given image into a high-level semantic description.
 
 Focus on the abstract attributes such as:
-- color, size, shape, texture, material, etc.
 - object or product category
 - functional purpose
 - usage scenario
@@ -294,6 +293,11 @@ def generate_semantic_summaries(
                             return_tensors="pt"
                         )
                         
+                        # Process vision info if needed (Qwen3-VL may require this)
+                        if hasattr(processor, 'process_vision_info') and 'vision_info' in batch_inputs:
+                            vision_info = processor.process_vision_info(batch_inputs['vision_info'])
+                            batch_inputs['vision_info'] = vision_info
+                        
                         # Move to device - handle nested structures
                         def move_to_device(obj, dev):
                             """Recursively move tensors to device."""
@@ -303,10 +307,30 @@ def generate_semantic_summaries(
                                 return {k: move_to_device(v, dev) for k, v in obj.items()}
                             elif isinstance(obj, (list, tuple)):
                                 return type(obj)(move_to_device(item, dev) for item in obj)
+                            elif hasattr(obj, 'to'):  # Handle other objects with .to() method
+                                try:
+                                    return obj.to(dev)
+                                except:
+                                    return obj
                             else:
                                 return obj
                         
                         batch_inputs = move_to_device(batch_inputs, device)
+                        
+                        # Ensure all tensor values are on device (double-check)
+                        # Use model.device to ensure consistency
+                        model_device = next(model.parameters()).device
+                        for key, value in batch_inputs.items():
+                            if isinstance(value, torch.Tensor) and value.device != model_device:
+                                batch_inputs[key] = value.to(model_device)
+                            elif isinstance(value, dict):
+                                for sub_key, sub_value in value.items():
+                                    if isinstance(sub_value, torch.Tensor) and sub_value.device != model_device:
+                                        value[sub_key] = sub_value.to(model_device)
+                            elif isinstance(value, (list, tuple)):
+                                for idx, item in enumerate(value):
+                                    if isinstance(item, torch.Tensor) and item.device != model_device:
+                                        value[idx] = item.to(model_device)
                         
                         # Generate for batch
                         batch_generated_ids = model.generate(
@@ -368,6 +392,11 @@ def generate_semantic_summaries(
                             return_tensors="pt"
                         )
                         
+                        # Process vision info if needed (Qwen3-VL may require this)
+                        if hasattr(processor, 'process_vision_info') and 'vision_info' in inputs:
+                            vision_info = processor.process_vision_info(inputs['vision_info'])
+                            inputs['vision_info'] = vision_info
+                        
                         # Move to device - handle nested structures (Qwen3-VL may have complex input format)
                         def move_to_device(obj, dev):
                             """Recursively move tensors to device."""
@@ -377,10 +406,30 @@ def generate_semantic_summaries(
                                 return {k: move_to_device(v, dev) for k, v in obj.items()}
                             elif isinstance(obj, (list, tuple)):
                                 return type(obj)(move_to_device(item, dev) for item in obj)
+                            elif hasattr(obj, 'to'):  # Handle other objects with .to() method
+                                try:
+                                    return obj.to(dev)
+                                except:
+                                    return obj
                             else:
                                 return obj
                         
                         inputs = move_to_device(inputs, device)
+                        
+                        # Ensure all tensor values are on device (double-check)
+                        # Use model.device to ensure consistency
+                        model_device = next(model.parameters()).device
+                        for key, value in inputs.items():
+                            if isinstance(value, torch.Tensor) and value.device != model_device:
+                                inputs[key] = value.to(model_device)
+                            elif isinstance(value, dict):
+                                for sub_key, sub_value in value.items():
+                                    if isinstance(sub_value, torch.Tensor) and sub_value.device != model_device:
+                                        value[sub_key] = sub_value.to(model_device)
+                            elif isinstance(value, (list, tuple)):
+                                for idx, item in enumerate(value):
+                                    if isinstance(item, torch.Tensor) and item.device != model_device:
+                                        value[idx] = item.to(model_device)
                         
                         # Generate summary with optimized settings
                         generated_ids = model.generate(

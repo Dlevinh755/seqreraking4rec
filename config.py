@@ -12,7 +12,7 @@ parser = argparse.ArgumentParser(description='Configuration for the project.')
 ## Data filltering arguments
 parser.add_argument('--dataset_code', type=str, default='beauty')
 parser.add_argument('--min_rating', type=int, default=3)    # minimum rating to consider positive
-parser.add_argument('--min_uc', type=int, default=20)   # min rating/user
+parser.add_argument('--min_uc', type=int, default=21)   # min rating/user
 parser.add_argument('--min_sc', type=int, default=28)   # min rating/item
 parser.add_argument('--use_image', action='store_true', default=False, help='Filter out items without image')
 parser.add_argument('--use_text', action='store_true', default=False, help='Filter out items without text')
@@ -54,6 +54,14 @@ parser.add_argument('--use_torch_compile', action='store_true', default=False,
 					help='Use torch.compile() for faster inference (requires PyTorch 2.0+)')
 parser.add_argument('--preload_all_images', action='store_true', default=False,
 					help='Pre-load all images into memory before processing (faster but uses more RAM)')
+# Script-specific arguments (not used by config, but added to avoid "unrecognized arguments" errors)
+parser.add_argument('--retrieval_method', type=str, default=None, help='Retrieval method (used by train_retrieval.py)')
+parser.add_argument('--retrieval_top_k', type=int, default=None, help='Number of candidates from Stage 1 (used by train_pipeline.py)')
+parser.add_argument('--rerank_method', type=str, default=None, help='Rerank method (used by train_pipeline.py)')
+parser.add_argument('--rerank_top_k', type=int, default=None, help='Number of final recommendations (used by train_pipeline.py)')
+parser.add_argument('--metric_k', type=int, default=None, help='Cutoff for evaluation metrics (used by train_pipeline.py)')
+parser.add_argument('--rerank_mode', type=str, default=None, help='Rerank mode (used by train_pipeline.py)')
+parser.add_argument('--mode', type=str, default=None, help='Training mode (used by train_rerank_standalone.py)')
 arg = parser.parse_args()
 
 
