@@ -470,6 +470,7 @@ class Qwen3VLReranker(BaseReranker):
                     messages = [{"role": "user", "content": prompt}]
                 
                 # Apply chat template (handles both text and multimodal inputs)
+                # Note: Keep tensors on CPU - Trainer will handle device placement and pin memory
                 inputs = processor.apply_chat_template(
                     messages,
                     tokenize=True,
@@ -478,21 +479,19 @@ class Qwen3VLReranker(BaseReranker):
                     return_tensors="pt"
                 )
                 
-                # Move to device - handle nested structures (Qwen3-VL may have complex input format)
-                def move_to_device(obj, dev):
-                    """Recursively move tensors to device."""
+                # Ensure inputs are on CPU (in case processor returns GPU tensors)
+                def ensure_cpu(obj):
+                    """Recursively ensure tensors are on CPU."""
                     if isinstance(obj, torch.Tensor):
-                        return obj.to(dev)
+                        return obj.cpu()
                     elif isinstance(obj, dict):
-                        return {k: move_to_device(v, dev) for k, v in obj.items()}
+                        return {k: ensure_cpu(v) for k, v in obj.items()}
                     elif isinstance(obj, (list, tuple)):
-                        return type(obj)(move_to_device(item, dev) for item in obj)
+                        return type(obj)(ensure_cpu(item) for item in obj)
                     else:
                         return obj
                 
-                # Get device from model
-                device = next(self.qwen3vl_model.model.parameters()).device
-                inputs = move_to_device(inputs, device)
+                inputs = ensure_cpu(inputs)
                 
                 input_ids = inputs["input_ids"].squeeze(0)  # [seq_len]
                 attention_mask = inputs.get("attention_mask", torch.ones_like(input_ids))
@@ -542,13 +541,11 @@ class Qwen3VLReranker(BaseReranker):
                 padded_attention_mask.append(attn_mask)
                 padded_labels.append(labels)
             
-            # Move to device (Trainer will handle this, but we do it explicitly for safety)
-            device = next(self.qwen3vl_model.model.parameters()).device
-            
+            # Return tensors on CPU - Trainer will handle device placement and pin memory
             return {
-                "input_ids": torch.stack(padded_input_ids).to(device),
-                "attention_mask": torch.stack(padded_attention_mask).to(device),
-                "labels": torch.stack(padded_labels).to(device),
+                "input_ids": torch.stack(padded_input_ids),
+                "attention_mask": torch.stack(padded_attention_mask),
+                "labels": torch.stack(padded_labels),
             }
         
         # Use Unsloth's training API if available
@@ -745,7 +742,7 @@ class Qwen3VLReranker(BaseReranker):
                 report_to="none",
                 fp16=True,
                 optim="adamw_torch",
-                dataloader_pin_memory=False,
+                dataloader_pin_memory=True,  # Enable pin memory for faster GPU transfer
             )
             
             # Custom trainer with our collate function

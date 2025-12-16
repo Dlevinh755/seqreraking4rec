@@ -408,7 +408,7 @@ class BERT4Rec(nn.Module):
         
         # Validate all IDs are within valid range [0, vocab_size-1]
         # Note: 0 is padding token, 1..vocab_size-1 are valid item IDs
-        vocab_size = self.item_embedding.num_embeddings
+        vocab_size = self.embeddings.item_embedding.num_embeddings
         if torch.any(history < 0) or torch.any(history >= vocab_size):
             invalid_history = torch.logical_or(history < 0, history >= vocab_size)
             print(f"[BERT4Rec.predict_scores] Warning: Found invalid history IDs. "
