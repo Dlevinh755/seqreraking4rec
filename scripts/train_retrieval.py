@@ -164,11 +164,11 @@ def _evaluate_split(
                 ndcgs = []
                 hits = []
                 for user_id, gt_items in sample_split.items():
-        if not gt_items:
-            continue
+                    if not gt_items:
+                        continue
                     recs = retriever.retrieve(user_id)
-        if not recs:
-            continue
+                    if not recs:
+                        continue
                     ndcgs.append(ndcg_at_k(recs, gt_items, k_val))
                     hits.append(hit_at_k(recs, gt_items, k_val))
                 
@@ -363,10 +363,10 @@ def _build_retrieved_matrices(
 
         probs.append({"ids": top_ids, "scores": top_scores})
         labels.append(int(label))
-            
-            # Progress indicator
-            if len(probs) % 5000 == 0:
-                print(f"  Processed {len(probs)}/{len(users)} users...")
+        
+        # Progress indicator
+        if len(probs) % 5000 == 0:
+            print(f"  Processed {len(probs)}/{len(users)} users...")
 
     return {"probs": probs, "labels": labels}
 
