@@ -266,6 +266,12 @@ def main():
                 return []
             
             import random
+            # Get rerank_eval_candidates from config (default: 20)
+            try:
+                max_candidates = getattr(arg, 'rerank_eval_candidates', 20)
+            except (ImportError, AttributeError):
+                max_candidates = 20
+            
             # Get all items
             all_items = set(range(1, item_count + 1))
             # Exclude user's history
@@ -273,14 +279,23 @@ def main():
             exclude_set = user_history - set(ground_truth)
             candidate_pool = all_items - exclude_set - set(ground_truth)
             
-            # Sample negatives
-            num_negatives = 19
-            num_negatives = min(num_negatives, len(candidate_pool))
+            # Sample candidates: ensure at least one ground truth, but limit total candidates
+            # This makes evaluation more realistic (not all ground truth items are guaranteed)
+            num_gt_in_candidates = min(1, len(ground_truth))  # Only ensure 1 GT item
+            gt_in_candidates = random.sample(ground_truth, num_gt_in_candidates) if len(ground_truth) > 0 else []
+            
+            # Calculate how many negatives we can add
+            num_negatives = max_candidates - len(gt_in_candidates)
+            num_negatives = max(0, min(num_negatives, len(candidate_pool)))
+            
             if num_negatives > 0:
                 negatives = random.sample(list(candidate_pool), num_negatives)
-                candidates = list(ground_truth) + negatives
+                candidates = gt_in_candidates + negatives
             else:
-                candidates = list(ground_truth)
+                candidates = gt_in_candidates
+            
+            # Shuffle to avoid bias
+            random.shuffle(candidates)
             
             if not candidates:
                 return []

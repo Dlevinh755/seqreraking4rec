@@ -88,14 +88,15 @@ class QwenReranker(BaseReranker):
         # Nếu có train_data_for_llm, train LLM model
         train_data_for_llm = kwargs.get("train_data_for_llm")
         if train_data_for_llm is not None:
+            # Don't compile model when training - PEFT doesn't support compiled models
             self.llm_model = LLMModel(
                 train_data=train_data_for_llm,
                 model_name=self.model_name
             )
-            self.llm_model.load_model(use_torch_compile=use_torch_compile)
+            self.llm_model.load_model(use_torch_compile=False)  # Disable compile for training
             self.llm_model.train()
         else:
-            # Chỉ load model, không train
+            # Chỉ load model, không train - có thể compile để tăng tốc inference
             self.llm_model = LLMModel(
                 train_data=None,
                 model_name=self.model_name

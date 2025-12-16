@@ -28,6 +28,7 @@ def evaluate_pipeline(
     pipeline: TwoStagePipeline,
     split: Dict[int, List[int]],
     k: int = 10,
+    ks: Optional[List[int]] = None,
     ground_truth_mode: bool = False
 ) -> Dict[str, float]:
     """Evaluate pipeline on a split. Wrapper for evaluation.utils.evaluate_split.
@@ -35,10 +36,11 @@ def evaluate_pipeline(
     Args:
         pipeline: TwoStagePipeline instance
         split: Dict {user_id: [item_ids]} - ground truth
-        k: Cutoff for metrics
+        k: Cutoff for metrics (used if ks is None)
+        ks: List of K values to evaluate (e.g., [5, 10, 20]). If None, uses [k]
         ground_truth_mode: If True, use ground_truth rerank mode
     """
-    return evaluate_split(pipeline.recommend, split, k, ground_truth_mode=ground_truth_mode)
+    return evaluate_split(pipeline.recommend, split, k=k, ks=ks, ground_truth_mode=ground_truth_mode)
 
 
 def main():

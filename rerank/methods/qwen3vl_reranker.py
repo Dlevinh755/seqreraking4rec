@@ -407,9 +407,11 @@ class Qwen3VLReranker(BaseReranker):
                     {"role": "user", "content": prompt},
                     {"role": "assistant", "content": target}
                 ]
-                # Unsloth format: store messages directly
+                # Store both messages (for Unsloth) and prompt/target (for fallback)
                 training_data.append({
-                    "messages": messages
+                    "messages": messages,
+                    "prompt": prompt,
+                    "target": target,
                 })
         
         hf_train_dataset = Dataset.from_list(training_data)
@@ -589,6 +591,7 @@ class Qwen3VLReranker(BaseReranker):
                     """Custom collate function that loads images and uses UnslothVisionDataCollator."""
                     # Build messages with images for each item in batch
                     messages_batch = []
+                    batch_with_target = []
                     for item in batch:
                         sample = {
                             "user_id": item.get("user_id"),
@@ -598,9 +601,16 @@ class Qwen3VLReranker(BaseReranker):
                         prompt_data = self._build_training_prompt_with_images(sample)
                         messages = prompt_data["messages"]
                         # Add assistant response
-                        target = item["target"]
+                        target = item.get("target", "")
                         messages.append({"role": "assistant", "content": target})
                         messages_batch.append({"messages": messages})
+                        # Also keep original item format for fallback
+                        batch_with_target.append({
+                            "user_id": item.get("user_id"),
+                            "history": item.get("history", []),
+                            "candidates": item.get("candidates", []),
+                            "target": target,
+                        })
                     
                     # Use UnslothVisionDataCollator to process the messages
                     try:
@@ -613,18 +623,42 @@ class Qwen3VLReranker(BaseReranker):
                         # If UnslothVisionDataCollator fails, fallback to standard collate
                         print(f"Warning: UnslothVisionDataCollator failed: {e}")
                         print("Falling back to standard collate function...")
-                        return collate_fn(messages_batch)
+                        # Use batch_with_target which has the correct format for collate_fn
+                        return collate_fn(batch_with_target)
             else:
                 # For text-only modes, try UnslothVisionDataCollator (only works with vision models)
+                # But also prepare a fallback collate_fn in case it fails
+                def text_only_collate_fn(batch):
+                    """Custom collate function for text-only modes with fallback."""
+                    # Try UnslothVisionDataCollator first
+                    try:
+                        data_collator = UnslothVisionDataCollator(
+                            self.qwen3vl_model.model,
+                            self.qwen3vl_model.processor.tokenizer
+                        )
+                        # Extract messages from batch
+                        messages_batch = [{"messages": item.get("messages", [])} for item in batch]
+                        return data_collator(messages_batch)
+                    except (TypeError, ValueError) as e:
+                        # Fallback to standard collate_fn
+                        print(f"Warning: UnslothVisionDataCollator failed for text-only mode: {e}")
+                        print("Falling back to standard collate function...")
+                        # Use standard collate_fn which expects prompt and target
+                        return collate_fn(batch)
+                
                 try:
-                    data_collator = UnslothVisionDataCollator(
+                    # Test if UnslothVisionDataCollator works
+                    test_collator = UnslothVisionDataCollator(
                         self.qwen3vl_model.model,
                         self.qwen3vl_model.processor.tokenizer
                     )
+                    # If it works, use text_only_collate_fn which will use it
+                    data_collator = text_only_collate_fn
                 except (TypeError, ValueError) as e:
                     print(f"Warning: UnslothVisionDataCollator failed for text-only mode: {e}")
                     print("Falling back to standard Trainer...")
                     USE_UNSLOTH_TRAINER = False  # Force fallback
+                    data_collator = None
             
             if USE_UNSLOTH_TRAINER:
                 # Training config with vision-specific settings
