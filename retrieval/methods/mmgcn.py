@@ -21,11 +21,11 @@ class MMGCNRetriever(BaseRetriever):
         top_k: int = 50,
         dim_x: int = 64,
         aggr_mode: str = "add",
-        concate: bool = True,
-        num_layer: int = 3,
+        concate: bool = False,
+        num_layer: int = 2,
         has_id: bool = True,
         reg_weight: float = 1e-4,
-        batch_size: int = 128,
+        batch_size: int = 512,
         num_epochs: int = 10,
         lr: float = 1e-3,
         patience: Optional[int] = None,
@@ -60,6 +60,7 @@ class MMGCNRetriever(BaseRetriever):
         self.num_user: Optional[int] = None
         self.num_item: Optional[int] = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.user_history: Dict[int, List[int]] = {}  # Store training history for masking
 
     def fit(
         self,
@@ -90,6 +91,9 @@ class MMGCNRetriever(BaseRetriever):
         
         # Build user-item dict for training
         user_item_dict = {u: items for u, items in train_data.items()}
+        
+        # Store training history for masking in evaluation
+        self.user_history = train_data
         
         # Initialize model
         words_tensor = None  # Not used in current implementation
@@ -201,8 +205,17 @@ class MMGCNRetriever(BaseRetriever):
                 continue
             
             scores = torch.matmul(user_tensor[user_id:user_id+1], item_tensor.t())
+            scores = scores.squeeze(0)  # [num_items]
+            
+            # Mask history items (items already in training set) - CRITICAL FIX
+            history_items = self.user_history.get(user_id, [])
+            for item in history_items:
+                if 1 <= item <= self.num_item:
+                    item_idx = item - 1  # Convert to 0-indexed
+                    scores[item_idx] = -1e9
+            
             _, top_items = torch.topk(scores, k=k)
-            top_items = top_items[0].cpu().numpy() + self.num_user  # Adjust for indexing
+            top_items = (top_items.cpu().numpy() + 1).tolist()  # Convert back to 1-indexed
             
             hits = len(set(top_items) & set(gt_items))
             if len(gt_items) > 0:

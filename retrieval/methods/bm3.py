@@ -64,6 +64,7 @@ class BM3Retriever(BaseRetriever):
         self.num_item: Optional[int] = None
         self.visual_features: Optional[torch.Tensor] = None
         self.text_features: Optional[torch.Tensor] = None
+        self.user_history: Dict[int, List[int]] = {}  # Store training history for masking
 
     def fit(
         self,
@@ -143,6 +144,9 @@ class BM3Retriever(BaseRetriever):
         
         self.visual_features = visual_features.to(self.device)
         self.text_features = text_features.to(self.device)
+        
+        # Store training history for masking in evaluation
+        self.user_history = train_data
         
         # Initialize model
         self.model = BM3(
@@ -267,6 +271,13 @@ class BM3Retriever(BaseRetriever):
                 
                 # Get scores for all items
                 scores = self.model.predict_all(user_id - 1)  # Convert to 0-indexed
+                
+                # Mask history items (items already in training set) - CRITICAL FIX
+                history_items = self.user_history.get(user_id, [])
+                for item in history_items:
+                    if 1 <= item <= self.num_item:
+                        item_idx = item - 1  # Convert to 0-indexed
+                        scores[item_idx] = -1e9
                 
                 # Get top-K
                 _, top_items = torch.topk(scores, k=min(k, self.num_item))

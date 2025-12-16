@@ -748,6 +748,9 @@ class Qwen3VLReranker(BaseReranker):
     def _build_training_prompt_with_images(self, sample: Dict) -> Dict:
         """Build training prompt with raw images for raw_image mode.
         
+        NOTE: This is the ONLY method that loads and uses images directly.
+        Other modes (caption, semantic_summary) use _build_training_prompt() which only uses text.
+        
         Args:
             sample: Training sample
             
@@ -830,6 +833,9 @@ Candidate items:"""}
     
     def _build_training_prompt(self, sample: Dict) -> str:
         """Build training prompt from sample.
+        
+        NOTE: This method does NOT load images. It only uses text, caption, or semantic_summary.
+        Only raw_image mode uses _build_training_prompt_with_images() which loads images directly.
         
         Args:
             sample: Training sample with history, candidates, target_item

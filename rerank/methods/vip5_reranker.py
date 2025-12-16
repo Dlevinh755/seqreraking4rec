@@ -20,10 +20,21 @@ from evaluation.metrics import recall_at_k
 try:
     from rerank.models.vip5_modeling import VIP5, VIP5Seq2SeqLMOutput
     from rerank.models.vip5_utils import prepare_vip5_input, build_rerank_prompt, calculate_whole_word_ids
+    VIP5_AVAILABLE = True
+    VIP5_IMPORT_ERROR = None
 except ImportError as e:
-    raise ImportError(
-        f"Failed to import VIP5 model. Please ensure VIP5 source code is available. Error: {e}"
-    )
+    VIP5_AVAILABLE = False
+    # Store error for later use
+    VIP5_IMPORT_ERROR = str(e)
+    # Create dummy classes to allow import (will raise error when used)
+    VIP5 = None
+    VIP5Seq2SeqLMOutput = None
+    def prepare_vip5_input(*args, **kwargs):
+        raise ImportError(f"VIP5 not available: {VIP5_IMPORT_ERROR}")
+    def build_rerank_prompt(*args, **kwargs):
+        raise ImportError(f"VIP5 not available: {VIP5_IMPORT_ERROR}")
+    def calculate_whole_word_ids(*args, **kwargs):
+        raise ImportError(f"VIP5 not available: {VIP5_IMPORT_ERROR}")
 
 # Try to import tokenizer from VIP5
 VIP5_TOKENIZER_AVAILABLE = False
@@ -106,7 +117,13 @@ class VIP5Reranker(BaseReranker):
         self.image_feature_dim = image_feature_dim_dict.get(image_feature_type, 512)
         
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-        self.model: Optional[VIP5] = None
+        if not VIP5_AVAILABLE:
+            raise ImportError(
+                f"VIP5 model is not available. Please ensure VIP5 source code is available. "
+                f"Error: {VIP5_IMPORT_ERROR}"
+            )
+        # Type annotation: VIP5 is imported from vip5_modeling
+        self.model: Optional[Any] = None  # Will be VIP5 instance after fit()
         self.tokenizer = None
         
         # CLIP embeddings cache
@@ -735,7 +752,7 @@ class VIP5Reranker(BaseReranker):
         Returns:
             Average Recall@K
         """
-        if self.model is None:
+        if self.model is None or self.tokenizer is None:
             return 0.0
         
         self.model.eval()
@@ -754,11 +771,78 @@ class VIP5Reranker(BaseReranker):
                 # Get all items as candidates (for evaluation)
                 all_items = list(self.item_id_to_idx.keys())
                 
-                # Rerank all items
-                reranked = self.rerank(user_id, all_items, user_history=history)
+                if not all_items:
+                    continue
+                
+                # Limit candidates for efficiency (during training)
+                max_eval_candidates = min(100, len(all_items))
+                candidates = random.sample(all_items, max_eval_candidates) if len(all_items) > max_eval_candidates else all_items
+                
+                # Ensure at least one ground truth is in candidates
+                if not any(item in candidates for item in gt_items):
+                    # Add one ground truth item
+                    candidates[0] = gt_items[0]
+                
+                # Rerank candidates using internal logic (bypass validation check)
+                # Encode user history + each candidate separately (same as rerank method)
+                scores = []
+                
+                for item_id in candidates:
+                    if item_id not in self.item_id_to_idx:
+                        continue
+                    
+                    # Build prompt for this specific candidate
+                    candidate_prompt = build_rerank_prompt(
+                        user_id,
+                        history,
+                        [item_id],  # Single candidate
+                        template="Given the following purchase history of user_{} : \n {} \n predict next possible item to be purchased by the user ?"
+                    )
+                    
+                    # Get visual feature for this candidate
+                    idx = self.item_id_to_idx[item_id]
+                    item_visual = self.visual_embeddings[idx].unsqueeze(0)  # [1, feat_dim]
+                    
+                    # Prepare VIP5 input
+                    vip5_input = prepare_vip5_input(
+                        candidate_prompt,
+                        item_visual,
+                        self.tokenizer,
+                        max_length=self.max_text_length,
+                        image_feature_size_ratio=self.image_feature_size_ratio,
+                    )
+                    
+                    # Move to device
+                    input_ids = vip5_input["input_ids"].to(self.device)
+                    whole_word_ids = vip5_input["whole_word_ids"].to(self.device)
+                    category_ids = vip5_input["category_ids"].to(self.device)
+                    vis_feats = vip5_input["vis_feats"].to(self.device)
+                    attention_mask = vip5_input["attention_mask"].to(self.device)
+                    
+                    # Encode with VIP5 encoder
+                    encoder_outputs = self.model.encoder(
+                        input_ids=input_ids,
+                        whole_word_ids=whole_word_ids,
+                        category_ids=category_ids,
+                        vis_feats=vis_feats,
+                        attention_mask=attention_mask,
+                        return_dict=True,
+                        task="sequential",
+                    )
+                    
+                    # Get encoder hidden states [1, seq_len, d_model]
+                    encoder_hidden = encoder_outputs.last_hidden_state
+                    
+                    # Use mean pooling of encoder output as score
+                    score = float(encoder_hidden.mean(dim=1).squeeze(0).norm().item())
+                    
+                    scores.append((item_id, score))
+                
+                # Sort by score descending
+                scores.sort(key=lambda x: x[1], reverse=True)
                 
                 # Get top-K item IDs
-                top_k_items = [item_id for item_id, _ in reranked[:k]]
+                top_k_items = [item_id for item_id, _ in scores[:k]]
                 
                 # Compute recall
                 hits = len(set(top_k_items) & set(gt_items))

@@ -71,11 +71,11 @@ class GCN(torch.nn.Module):
         nn.init.xavier_normal_(self.linear_layer2.weight)
         self.g_layer2 = nn.Linear(self.dim_id+self.dim_id, self.dim_id) if self.concate else nn.Linear(self.dim_id, self.dim_id)
 
-        self.conv_embed_3 = BaseModel(self.dim_id, self.dim_id, aggr=self.aggr_mode)
-        nn.init.xavier_normal_(self.conv_embed_3.weight)
-        self.linear_layer3 = nn.Linear(self.dim_id, self.dim_id)
-        nn.init.xavier_normal_(self.linear_layer3.weight)
-        self.g_layer3 = nn.Linear(self.dim_id+self.dim_id, self.dim_id) if self.concate else nn.Linear(self.dim_id, self.dim_id)  
+        # self.conv_embed_3 = BaseModel(self.dim_id, self.dim_id, aggr=self.aggr_mode)
+        # nn.init.xavier_normal_(self.conv_embed_3.weight)
+        # self.linear_layer3 = nn.Linear(self.dim_id, self.dim_id)
+        # nn.init.xavier_normal_(self.linear_layer3.weight)
+        # self.g_layer3 = nn.Linear(self.dim_id+self.dim_id, self.dim_id) if self.concate else nn.Linear(self.dim_id, self.dim_id)  
 
     def forward(self, features, id_embedding):
         temp_features = self.MLP(features) if self.dim_latent else features
@@ -97,9 +97,9 @@ class GCN(torch.nn.Module):
         x_hat = F.leaky_relu(self.linear_layer2(x)) + id_embedding if self.has_id else F.leaky_relu(self.linear_layer2(x))#equation 5
         x = F.leaky_relu(self.g_layer2(torch.cat((h, x_hat), dim=1))) if self.concate else F.leaky_relu(self.g_layer2(h)+x_hat)
 
-        h = F.leaky_relu(self.conv_embed_3(x, self.edge_index))#equation 1
-        x_hat = F.leaky_relu(self.linear_layer3(x)) + id_embedding if self.has_id else F.leaky_relu(self.linear_layer3(x))#equation 5
-        x = F.leaky_relu(self.g_layer3(torch.cat((h, x_hat), dim=1))) if self.concate else F.leaky_relu(self.g_layer3(h)+x_hat)
+        # h = F.leaky_relu(self.conv_embed_3(x, self.edge_index))#equation 1
+        # x_hat = F.leaky_relu(self.linear_layer3(x)) + id_embedding if self.has_id else F.leaky_relu(self.linear_layer3(x))#equation 5
+        # x = F.leaky_relu(self.g_layer3(torch.cat((h, x_hat), dim=1))) if self.concate else F.leaky_relu(self.g_layer3(h)+x_hat)
 
         return x
 

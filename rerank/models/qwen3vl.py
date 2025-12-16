@@ -268,7 +268,11 @@ Candidate items:
         item_meta: Dict[int, Dict[str, Any]],
         num_candidates: int,
     ) -> np.ndarray:
-        """Predict using raw images in prompt."""
+        """Predict using raw images in prompt.
+        
+        NOTE: This is the ONLY method that loads and uses images directly.
+        Other modes (caption, semantic_summary) only use text representations.
+        """
         # Build candidate images and texts
         candidate_images = []
         candidate_texts = []
@@ -373,7 +377,11 @@ Candidate items:"""}
         item_meta: Dict[int, Dict[str, Any]],
         num_candidates: int,
     ) -> np.ndarray:
-        """Predict using image captions."""
+        """Predict using image captions.
+        
+        NOTE: This method does NOT load images. It only uses caption text from item_meta.
+        Only raw_image mode loads and uses images directly.
+        """
         candidate_texts = []
         for item_id in candidates:
             meta = item_meta.get(item_id, {})
@@ -439,7 +447,11 @@ Candidate items:"""}
         item_meta: Dict[int, Dict[str, Any]],
         num_candidates: int,
     ) -> np.ndarray:
-        """Predict using semantic summaries with VL model."""
+        """Predict using semantic summaries with VL model.
+        
+        NOTE: This method does NOT load images. It only uses semantic_summary text from item_meta.
+        Only raw_image mode loads and uses images directly.
+        """
         candidate_texts = []
         for item_id in candidates:
             meta = item_meta.get(item_id, {})

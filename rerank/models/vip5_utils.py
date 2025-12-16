@@ -112,23 +112,39 @@ def calculate_whole_word_ids(
     In VIP5, whole_word_ids track word boundaries for whole word embeddings.
     Tokens starting with '▁' (SentencePiece) or special tokens like '<extra_id_0>' 
     mark the start of a new word.
+    
+    Note: input_ids may be padded to max_length, so we need to pad whole_word_ids accordingly.
     """
     whole_word_ids = []
     curr = 0
     
-    for i, token in enumerate(tokenized_text):
+    # Calculate whole_word_ids for each token in tokenized_text
+    for token in tokenized_text:
         if token.startswith('▁') or token == '<extra_id_0>':
             curr += 1
             whole_word_ids.append(curr)
         else:
             whole_word_ids.append(curr)
     
-    # Pad to match input_ids length (accounting for special tokens)
-    if len(whole_word_ids) < len(input_ids):
-        # Add padding (0 for special tokens like </s>, <pad>)
-        whole_word_ids = whole_word_ids[:len(input_ids) - 1] + [0]
+    # Pad or truncate to match input_ids length exactly
+    # input_ids may have been padded/truncated by tokenizer
+    target_length = len(input_ids)
     
-    return whole_word_ids[:len(input_ids)]
+    if len(whole_word_ids) < target_length:
+        # Pad with 0 (for padding tokens)
+        pad_token_id = getattr(tokenizer, 'pad_token_id', 0)
+        # Check if input_ids has padding tokens at the end
+        num_padding = target_length - len(whole_word_ids)
+        whole_word_ids = whole_word_ids + [0] * num_padding
+    elif len(whole_word_ids) > target_length:
+        # Truncate to match input_ids
+        whole_word_ids = whole_word_ids[:target_length]
+    
+    # Ensure exact match
+    assert len(whole_word_ids) == len(input_ids), \
+        f"whole_word_ids length ({len(whole_word_ids)}) must match input_ids length ({len(input_ids)})"
+    
+    return whole_word_ids
 
 
 def build_rerank_prompt(
