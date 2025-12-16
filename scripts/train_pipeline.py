@@ -147,17 +147,18 @@ def main():
         # Add item_meta for Qwen3-VL
         if args.rerank_method.lower() == "qwen3vl":
             reranker_kwargs["item_meta"] = item_meta
-            # For raw_image mode, also pass images in user_history
+            # ✅ For raw_image mode, pass item_ids (not image paths) so we can load full metadata
             if args.qwen3vl_mode == "raw_image":
-                # Build user history with image paths for raw_image mode
-                user_history_images = {}
+                # Build user history with item_ids for raw_image mode
+                # This allows loading both text and image from item_meta
+                user_history_item_ids = {}
                 for user_id, items in train.items():
-                    user_history_images[user_id] = [
-                        item_meta.get(item_id, {}).get("image_path") or item_meta.get(item_id, {}).get("image")
-                        for item_id in items
+                    # Only include items that have metadata
+                    user_history_item_ids[user_id] = [
+                        item_id for item_id in items
                         if item_id in item_meta
                     ]
-                reranker_kwargs["user_history"] = user_history_images
+                reranker_kwargs["user_history"] = user_history_item_ids
     
     # Train Stage 1
     print(f"\n[2/4] Training Stage 1 ({args.retrieval_method})...")

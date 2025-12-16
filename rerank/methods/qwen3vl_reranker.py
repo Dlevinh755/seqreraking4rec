@@ -14,6 +14,22 @@ from rerank.models.llm import rank_candidates
 from evaluation.metrics import recall_at_k
 
 
+def _truncate_item_text(text: str, max_chars: int = 200) -> str:
+    """Truncate item text metadata to prevent it from being too long.
+    
+    Args:
+        text: Item text metadata
+        max_chars: Maximum characters per item text (default: 200)
+        
+    Returns:
+        Truncated text
+    """
+    if len(text) <= max_chars:
+        return text
+    # Truncate and add ellipsis
+    return text[:max_chars - 3] + "..."
+
+
 class Qwen3VLReranker(BaseReranker):
     """Reranker sử dụng Qwen3-VL với nhiều prompt modes.
     
@@ -165,10 +181,22 @@ class Qwen3VLReranker(BaseReranker):
         
         # Lấy user history
         if user_history is None:
-            history = self.user_history.get(user_id, [])
+            # ✅ For raw_image mode, prefer item_ids from train_user_history if available
+            # Otherwise fallback to self.user_history (which may be texts/image_paths)
+            if self.mode == "raw_image" and user_id in self.train_user_history:
+                history = self.train_user_history[user_id]  # List[int] - item_ids
+            else:
+                history = self.user_history.get(user_id, [])  # List[str] - texts/image_paths
         else:
             history = user_history
         history = history[-self.max_history:]  # Chỉ lấy max_history items gần nhất
+        
+        # ✅ For raw_image mode, ensure history is List[int] (item_ids) so we can load full metadata
+        if self.mode == "raw_image" and history and isinstance(history[0], str):
+            # History is List[str] (texts/image_paths) - try to convert to item_ids
+            # This is a fallback - ideally history should already be item_ids
+            # We'll pass it as-is and let _predict_probs_raw_image handle it
+            pass
         
         # Predict probabilities
         num_candidates = len(candidates)
@@ -495,16 +523,75 @@ class Qwen3VLReranker(BaseReranker):
                 else:
                     # text-only mode: create message from prompt
                     prompt = item["prompt"]
-                    messages = [{"role": "user", "content": prompt}]
+                    # For text-only mode, use tokenizer directly instead of apply_chat_template
+                    # because apply_chat_template expects multimodal format (content as list)
+                    # Tokenize the prompt directly
+                    inputs = processor.tokenizer(
+                        prompt,
+                        return_tensors="pt",
+                        padding=False,
+                        truncation=True,
+                        max_length=2048,
+                    )
+                    # Ensure inputs are on CPU (in case processor returns GPU tensors)
+                    def ensure_cpu(obj):
+                        """Recursively ensure tensors are on CPU."""
+                        if isinstance(obj, torch.Tensor):
+                            return obj.cpu()
+                        elif isinstance(obj, dict):
+                            return {k: ensure_cpu(v) for k, v in obj.items()}
+                        elif isinstance(obj, (list, tuple)):
+                            return type(obj)(ensure_cpu(item) for item in obj)
+                        else:
+                            return obj
+                    
+                    inputs = ensure_cpu(inputs)
+                    
+                    # Extract input_ids and attention_mask
+                    input_ids = inputs["input_ids"].squeeze(0)  # [seq_len]
+                    attention_mask = inputs.get("attention_mask", torch.ones_like(input_ids))
+                    if attention_mask.dim() > 1:
+                        attention_mask = attention_mask.squeeze(0)
+                    
+                    # Tokenize target (ensure on CPU)
+                    target_tokens = processor.tokenizer.encode(
+                        target,
+                        add_special_tokens=False,
+                        return_tensors="pt"
+                    ).squeeze(0).cpu()  # [target_len]
+                    
+                    # Create full sequence: input_ids + target_tokens
+                    full_input_ids = torch.cat([input_ids, target_tokens])
+                    full_attention_mask = torch.cat([
+                        attention_mask,
+                        torch.ones(len(target_tokens), dtype=attention_mask.dtype)
+                    ])
+                    
+                    # Create labels: -100 for input, target tokens for output
+                    labels = torch.cat([
+                        torch.full_like(input_ids, -100),
+                        target_tokens
+                    ])
+                    
+                    batch_input_ids.append(full_input_ids)
+                    batch_attention_mask.append(full_attention_mask)
+                    batch_labels.append(labels)
+                    continue  # Skip the multimodal processing below
                 
-                # Apply chat template (handles both text and multimodal inputs)
+                # Apply chat template (for multimodal inputs only - raw_image mode)
                 # Note: Keep tensors on CPU - Trainer will handle device placement and pin memory
+                # ✅ For raw_image mode, use larger max_length because images consume many visual tokens
+                # Each image can consume 256-1024 visual tokens, so with 20 candidates we need more space
+                # Qwen3-VL supports up to 8192 tokens, but we use 4096 to balance memory and completeness
+                max_len = 4096 if self.mode == "raw_image" else 2048
                 inputs = processor.apply_chat_template(
                     messages,
                     tokenize=True,
                     add_generation_prompt=True,
                     return_dict=True,
-                    return_tensors="pt"
+                    return_tensors="pt",
+                    truncation=True,  # ✅ Truncate if too long
+                    max_length=max_len,  # ✅ Larger for raw_image mode (4096), smaller for text-only (2048)
                 )
                 
                 # Ensure inputs are on CPU (in case processor returns GPU tensors)
@@ -876,6 +963,8 @@ class Qwen3VLReranker(BaseReranker):
         for item_id in history[-self.max_history:]:
             meta = self.item_meta.get(item_id, {})
             text = meta.get("text", f"item_{item_id}")
+            # ✅ Truncate item text metadata to prevent it from being too long
+            text = _truncate_item_text(text, max_chars=200)
             history_texts.append(text)
         
         history_text = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
@@ -886,6 +975,8 @@ class Qwen3VLReranker(BaseReranker):
         for item_id in candidates:
             meta = self.item_meta.get(item_id, {})
             text = meta.get("text", f"item_{item_id}")
+            # ✅ Truncate item text metadata to prevent it from being too long
+            text = _truncate_item_text(text, max_chars=200)
             image_path = meta.get("image_path") or meta.get("image")
             
             if image_path and os.path.isfile(image_path):
@@ -965,6 +1056,8 @@ Candidate items:"""}
             if self.mode == "caption":
                 caption = meta.get("caption", "")
                 text = meta.get("text", f"item_{item_id}")
+                # ✅ Truncate item text metadata
+                text = _truncate_item_text(text, max_chars=200)
                 if caption:
                     history_texts.append(f"{text} (Image: {caption})")
                 else:
@@ -972,12 +1065,16 @@ Candidate items:"""}
             elif self.mode in ["semantic_summary", "semantic_summary_small"]:
                 semantic_summary = meta.get("semantic_summary", "")
                 text = meta.get("text", f"item_{item_id}")
+                # ✅ Truncate item text metadata
+                text = _truncate_item_text(text, max_chars=200)
                 if semantic_summary:
                     history_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     history_texts.append(text)
             else:
                 text = meta.get("text", f"item_{item_id}")
+                # ✅ Truncate item text metadata
+                text = _truncate_item_text(text, max_chars=200)
                 history_texts.append(text)
         
         # Get candidate texts
@@ -987,6 +1084,8 @@ Candidate items:"""}
             if self.mode == "caption":
                 caption = meta.get("caption", "")
                 text = meta.get("text", f"item_{item_id}")
+                # ✅ Truncate item text metadata
+                text = _truncate_item_text(text, max_chars=200)
                 if caption:
                     candidate_texts.append(f"{text} (Image: {caption})")
                 else:
@@ -994,12 +1093,16 @@ Candidate items:"""}
             elif self.mode in ["semantic_summary", "semantic_summary_small"]:
                 semantic_summary = meta.get("semantic_summary", "")
                 text = meta.get("text", f"item_{item_id}")
+                # ✅ Truncate item text metadata
+                text = _truncate_item_text(text, max_chars=200)
                 if semantic_summary:
                     candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     candidate_texts.append(text)
             else:
                 text = meta.get("text", f"item_{item_id}")
+                # ✅ Truncate item text metadata
+                text = _truncate_item_text(text, max_chars=200)
                 candidate_texts.append(text)
         
         # Build prompt

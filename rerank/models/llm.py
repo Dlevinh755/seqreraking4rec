@@ -306,19 +306,31 @@ class LLMModel:
 
         full_text = prompt + response
 
+        # ✅ Add padding=True to ensure consistent length for batching
         tokenized = self.tokenizer(
             full_text,
             truncation=True,
             max_length=2048,
+            padding="max_length",  # ✅ Pad to max_length for consistent batching
         )
 
+        # ✅ Convert labels to list (not nested) and ensure proper format
         labels = tokenized["input_ids"].copy()
-
-        prompt_len = len(
-            self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        
+        # Calculate prompt length (without special tokens for accurate masking)
+        prompt_tokenized = self.tokenizer(
+            prompt,
+            add_special_tokens=False,
+            truncation=False,
         )
-
-        labels[:prompt_len] = [-100] * prompt_len
+        prompt_len = len(prompt_tokenized["input_ids"])
+        
+        # Mask prompt tokens in labels (set to -100 to ignore in loss)
+        # Only mask if prompt_len is within the sequence length
+        if prompt_len < len(labels):
+            labels[:prompt_len] = [-100] * prompt_len
+        
+        # ✅ Ensure labels is a flat list (not nested)
         tokenized["labels"] = labels
 
         return tokenized

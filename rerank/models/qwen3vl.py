@@ -14,6 +14,22 @@ from PIL import Image
 import numpy as np
 
 
+def _truncate_item_text(text: str, max_chars: int = 200) -> str:
+    """Truncate item text metadata to prevent it from being too long.
+    
+    Args:
+        text: Item text metadata
+        max_chars: Maximum characters per item text (default: 200)
+        
+    Returns:
+        Truncated text
+    """
+    if len(text) <= max_chars:
+        return text
+    # Truncate and add ellipsis
+    return text[:max_chars - 3] + "..."
+
+
 def resize_image_for_qwen3vl(img: Image.Image, max_size: int = 448) -> Image.Image:
     """Resize image for Qwen3-VL while maintaining aspect ratio.
     
@@ -263,7 +279,7 @@ Candidate items:
     
     def _predict_probs_raw_image(
         self,
-        user_history: List[str],
+        user_history: List[str],  # Can be List[str] (texts/image_paths) or List[int] (item_ids)
         candidates: List[int],
         item_meta: Dict[int, Dict[str, Any]],
         num_candidates: int,
@@ -272,7 +288,56 @@ Candidate items:
         
         NOTE: This is the ONLY method that loads and uses images directly.
         Other modes (caption, semantic_summary) only use text representations.
+        
+        Args:
+            user_history: Can be:
+                - List[int]: item_ids (preferred) - will load text and image from item_meta
+                - List[str]: texts or image_paths (legacy) - will use as-is for history_text
         """
+        # ✅ Build history with images and texts from item_meta
+        # Check if user_history contains item_ids (int) or texts (str)
+        history_images = []
+        history_texts = []
+        
+        if user_history and isinstance(user_history[0], int):
+            # user_history is List[int] (item_ids) - load text and image from item_meta
+            for item_id in user_history:
+                meta = item_meta.get(item_id, {})
+                text = meta.get("text", f"item_{item_id}")
+                text = _truncate_item_text(text, max_chars=200)
+                image_path = meta.get("image_path") or meta.get("image")
+                
+                if image_path and os.path.isfile(image_path):
+                    try:
+                        img = Image.open(image_path).convert("RGB")
+                        img = resize_image_for_qwen3vl(img, max_size=448)
+                        history_images.append(img)
+                        history_texts.append(text)
+                    except Exception:
+                        history_images.append(None)
+                        history_texts.append(text)
+                else:
+                    history_images.append(None)
+                    history_texts.append(text)
+        else:
+            # user_history is List[str] (texts/image_paths) - legacy format
+            # Try to load images if they are paths, otherwise use as text
+            for h in user_history:
+                if isinstance(h, str) and os.path.isfile(h):
+                    # It's an image path - try to load
+                    try:
+                        img = Image.open(h).convert("RGB")
+                        img = resize_image_for_qwen3vl(img, max_size=448)
+                        history_images.append(img)
+                        history_texts.append(h)  # Use path as text fallback
+                    except Exception:
+                        history_images.append(None)
+                        history_texts.append(h)
+                else:
+                    # It's text
+                    history_images.append(None)
+                    history_texts.append(h)
+        
         # Build candidate images and texts
         candidate_images = []
         candidate_texts = []
@@ -280,6 +345,8 @@ Candidate items:
         for item_id in candidates:
             meta = item_meta.get(item_id, {})
             text = meta.get("text", f"item_{item_id}")
+            # ✅ Truncate item text metadata to prevent it from being too long
+            text = _truncate_item_text(text, max_chars=200)
             image_path = meta.get("image_path") or meta.get("image")
             
             if image_path and os.path.isfile(image_path):
@@ -297,7 +364,8 @@ Candidate items:
                 candidate_texts.append(text)
         
         # Build prompt with images
-        history_text = "\n".join([f"- {h}" for h in user_history]) if user_history else "No previous interactions."
+        # ✅ Use history_texts (not raw user_history) to ensure we have proper text
+        history_text = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
         
         # Create messages with images (Qwen3-VL format)
         content = [
@@ -305,11 +373,19 @@ Candidate items:
 
 Choose exactly ONE item the user is most likely to interact with next.
 
-User history:
-{history_text}
-
-Candidate items:"""}
+User history:"""}
         ]
+        
+        # ✅ Add history images and texts
+        for img, text in zip(history_images, history_texts):
+            if img is not None:
+                content.append({"type": "image", "image": img})
+            content.append({"type": "text", "text": f"- {text}"})
+        
+        content.append({
+            "type": "text",
+            "text": "\nCandidate items:"
+        })
         
         # Add candidate images and text
         for i, (text, img) in enumerate(zip(candidate_texts, candidate_images)):
@@ -326,12 +402,18 @@ Candidate items:"""}
         
         # Process and generate
         with torch.no_grad():
+            # ✅ For raw_image mode, use larger max_length because images consume many visual tokens
+            # Each image can consume 256-1024 visual tokens, so with 20 candidates we need more space
+            # Qwen3-VL supports up to 8192 tokens, but we use 4096 to balance memory and completeness
+            max_len = 4096 if self.mode == "raw_image" else 2048
             inputs = self.processor.apply_chat_template(
                 messages,
                 tokenize=True,
                 add_generation_prompt=True,
                 return_dict=True,
-                return_tensors="pt"
+                return_tensors="pt",
+                truncation=True,  # ✅ Truncate if too long
+                max_length=max_len,  # ✅ Larger for raw_image mode (4096), smaller for text-only (2048)
             )
             
             # Move to device - handle nested structures (Qwen3-VL may have complex input format)
@@ -346,7 +428,19 @@ Candidate items:"""}
                 else:
                     return obj
             
+            # ✅ Ensure all inputs are moved to device
             inputs = move_to_device(inputs, self.device)
+            
+            # ✅ Double-check: explicitly move input_ids and attention_mask if they exist
+            if isinstance(inputs, dict):
+                if "input_ids" in inputs and isinstance(inputs["input_ids"], torch.Tensor):
+                    inputs["input_ids"] = inputs["input_ids"].to(self.device)
+                if "attention_mask" in inputs and isinstance(inputs["attention_mask"], torch.Tensor):
+                    inputs["attention_mask"] = inputs["attention_mask"].to(self.device)
+                # Handle any other tensor keys that might exist
+                for key, value in inputs.items():
+                    if isinstance(value, torch.Tensor) and value.device != self.device:
+                        inputs[key] = value.to(self.device)
             
             # Extract probabilities for numbers 1 to num_candidates from logits
             logits = self.model(**inputs).logits[:, -1]  # [vocab_size]
@@ -387,6 +481,8 @@ Candidate items:"""}
             meta = item_meta.get(item_id, {})
             caption = meta.get("caption")
             text = meta.get("text", f"item_{item_id}")
+            # ✅ Truncate item text metadata to prevent it from being too long
+            text = _truncate_item_text(text, max_chars=200)
             
             if caption:
                 candidate_texts.append(f"{text} (Image: {caption})")
@@ -399,12 +495,15 @@ Candidate items:"""}
         messages = [{"role": "user", "content": prompt}]
         
         with torch.no_grad():
+            # ✅ For caption mode (text-only), 2048 should be enough
             inputs = self.processor.apply_chat_template(
                 messages,
                 tokenize=True,
                 add_generation_prompt=True,
                 return_dict=True,
-                return_tensors="pt"
+                return_tensors="pt",
+                truncation=True,
+                max_length=2048,  # ✅ Text-only mode, 2048 is sufficient
             )
             
             # Move to device - handle nested structures (Qwen3-VL may have complex input format)
@@ -419,7 +518,19 @@ Candidate items:"""}
                 else:
                     return obj
             
+            # ✅ Ensure all inputs are moved to device
             inputs = move_to_device(inputs, self.device)
+            
+            # ✅ Double-check: explicitly move input_ids and attention_mask if they exist
+            if isinstance(inputs, dict):
+                if "input_ids" in inputs and isinstance(inputs["input_ids"], torch.Tensor):
+                    inputs["input_ids"] = inputs["input_ids"].to(self.device)
+                if "attention_mask" in inputs and isinstance(inputs["attention_mask"], torch.Tensor):
+                    inputs["attention_mask"] = inputs["attention_mask"].to(self.device)
+                # Handle any other tensor keys that might exist
+                for key, value in inputs.items():
+                    if isinstance(value, torch.Tensor) and value.device != self.device:
+                        inputs[key] = value.to(self.device)
             
             logits = self.model(**inputs).logits[:, -1]  # [vocab_size]
             
@@ -457,6 +568,8 @@ Candidate items:"""}
             meta = item_meta.get(item_id, {})
             semantic_summary = meta.get("semantic_summary")
             text = meta.get("text", f"item_{item_id}")
+            # ✅ Truncate item text metadata to prevent it from being too long
+            text = _truncate_item_text(text, max_chars=200)
             
             if semantic_summary:
                 candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
@@ -468,12 +581,15 @@ Candidate items:"""}
         messages = [{"role": "user", "content": prompt}]
         
         with torch.no_grad():
+            # ✅ For semantic_summary mode (text-only), 2048 should be enough
             inputs = self.processor.apply_chat_template(
                 messages,
                 tokenize=True,
                 add_generation_prompt=True,
                 return_dict=True,
-                return_tensors="pt"
+                return_tensors="pt",
+                truncation=True,
+                max_length=2048,  # ✅ Text-only mode, 2048 is sufficient
             )
             
             # Move to device - handle nested structures (Qwen3-VL may have complex input format)
@@ -521,6 +637,8 @@ Candidate items:"""}
             meta = item_meta.get(item_id, {})
             semantic_summary = meta.get("semantic_summary")
             text = meta.get("text", f"item_{item_id}")
+            # ✅ Truncate item text metadata to prevent it from being too long
+            text = _truncate_item_text(text, max_chars=200)
             
             if semantic_summary:
                 candidate_texts.append(f"{text} (Semantic: {semantic_summary})")

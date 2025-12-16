@@ -341,6 +341,20 @@ def _build_retrieved_matrices(
                 with torch.no_grad():
                     batch_scores = retriever.model.predict_batch(user_indices)  # [batch_size, num_item]
                 
+                # Mask history items for all users in batch (vectorized)
+                for j, user_id in enumerate(valid_user_ids):
+                    history_items = retriever.user_history.get(user_id, [])
+                    for item in history_items:
+                        if 1 <= item <= retriever.num_item:
+                            item_idx = item - 1
+                            batch_scores[j, item_idx] = -1e9
+                
+                # ✅ OPTIMIZATION: Use torch.topk on GPU instead of np.argsort on CPU
+                # This is MUCH faster for large arrays (12086 items)
+                top_k = min(RETRIEVAL_SAVE_TOP_K, retriever.num_item)
+                _, top_indices_batch = torch.topk(batch_scores, k=top_k, dim=1)  # [batch_size, top_k]
+                top_indices_batch = top_indices_batch.cpu().numpy()  # Convert to numpy after topk
+                
                 # Process each user in batch
                 for j, user_id in enumerate(valid_user_ids):
                     gt_items = split.get(user_id, [])
@@ -348,19 +362,8 @@ def _build_retrieved_matrices(
                         continue
                     label = gt_items[0]
                     
-                    # Get scores for this user
-                    scores = batch_scores[j].cpu().numpy()
-                    
-                    # Mask history items
-                    history_items = retriever.user_history.get(user_id, [])
-                    for item in history_items:
-                        if 1 <= item <= retriever.num_item:
-                            item_idx = item - 1
-                            scores[item_idx] = -1e9
-                    
-                    # Get top-K items
-                    top_k = min(RETRIEVAL_SAVE_TOP_K, retriever.num_item)
-                    top_indices = np.argsort(scores)[::-1][:top_k]
+                    # Get top-K items for this user (already computed via topk)
+                    top_indices = top_indices_batch[j]  # [top_k]
                     top_items = [int(idx + 1) for idx in top_indices]  # Convert to 1-indexed
                     
                     # Build top_ids and top_scores
@@ -375,9 +378,10 @@ def _build_retrieved_matrices(
                     probs.append({"ids": top_ids, "scores": top_scores})
                     labels.append(int(label))
                 
-                # Progress indicator
-                if (i + batch_size) % 5000 == 0 or (i + batch_size) >= len(users):
-                    print(f"  Processed {min(i + batch_size, len(users))}/{len(users)} users...")
+                # Progress indicator - use actual number of processed users (len(probs))
+                processed_count = len(probs)
+                if processed_count % 5000 == 0 or processed_count >= len(users):
+                    print(f"  Processed {processed_count}/{len(users)} users...")
         # Check if model has result attribute (MMGCN)
         elif hasattr(retriever.model, 'result'):
             # Batch processing for graph-based models (MMGCN)
@@ -409,7 +413,21 @@ def _build_retrieved_matrices(
                 batch_user_emb = user_tensor[user_indices]  # [batch_size, dim]
                 
                 # Compute scores for all users in batch: [batch_size, num_item]
-                batch_scores = torch.matmul(batch_user_emb, item_tensor.t())
+                batch_scores = torch.matmul(batch_user_emb, item_tensor.t())  # [batch_size, num_item]
+                
+                # Mask history items for all users in batch (vectorized)
+                for j, user_id in enumerate(valid_user_ids):
+                    history_items = retriever.user_history.get(user_id, [])
+                    for item in history_items:
+                        if 1 <= item <= retriever.num_item:
+                            item_idx = item - 1
+                            batch_scores[j, item_idx] = -1e9
+                
+                # ✅ OPTIMIZATION: Use torch.topk on GPU instead of np.argsort on CPU
+                # This is MUCH faster for large arrays (12086 items)
+                top_k = min(RETRIEVAL_SAVE_TOP_K, retriever.num_item)
+                _, top_indices_batch = torch.topk(batch_scores, k=top_k, dim=1)  # [batch_size, top_k]
+                top_indices_batch = top_indices_batch.cpu().numpy()  # Convert to numpy after topk
                 
                 # Process each user in batch
                 for j, user_id in enumerate(valid_user_ids):
@@ -418,19 +436,8 @@ def _build_retrieved_matrices(
                         continue
                     label = gt_items[0]
                     
-                    # Get scores for this user
-                    scores = batch_scores[j].cpu().numpy()
-                    
-                    # Mask history items
-                    history_items = retriever.user_history.get(user_id, [])
-                    for item in history_items:
-                        if 1 <= item <= retriever.num_item:
-                            item_idx = item - 1
-                            scores[item_idx] = -1e9
-                    
-                    # Get top-K items
-                    top_k = min(RETRIEVAL_SAVE_TOP_K, retriever.num_item)
-                    top_indices = np.argsort(scores)[::-1][:top_k]
+                    # Get top-K items for this user (already computed via topk)
+                    top_indices = top_indices_batch[j]  # [top_k]
                     top_items = [int(idx + 1) for idx in top_indices]  # Convert to 1-indexed
                     
                     # Build top_ids and top_scores
@@ -445,9 +452,10 @@ def _build_retrieved_matrices(
                     probs.append({"ids": top_ids, "scores": top_scores})
                     labels.append(int(label))
                 
-                # Progress indicator
-                if (i + batch_size) % 5000 == 0 or (i + batch_size) >= len(users):
-                    print(f"  Processed {min(i + batch_size, len(users))}/{len(users)} users...")
+                # Progress indicator - use actual number of processed users (len(probs))
+                processed_count = len(probs)
+                if processed_count % 5000 == 0 or processed_count >= len(users):
+                    print(f"  Processed {processed_count}/{len(users)} users...")
         else:
             # Fallback: process users one by one
             print(f"[_build_retrieved_matrices] Using sequential processing for {retriever.get_name()}...")
