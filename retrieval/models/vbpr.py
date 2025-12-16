@@ -98,11 +98,17 @@ class VBPR(nn.Module):
         self._init_embeddings()
     
     def _init_embeddings(self):
-        """Initialize embeddings with small random values."""
-        nn.init.normal_(self.gamma_user.weight, mean=0.0, std=0.01)
-        nn.init.normal_(self.gamma_item.weight, mean=0.0, std=0.01)
-        nn.init.normal_(self.theta_user.weight, mean=0.0, std=0.01)
-        nn.init.normal_(self.E.weight, mean=0.0, std=0.01)
+        """Initialize embeddings with Xavier normal for better convergence.
+        
+        Note: Original VBPR uses std=0.01, but this can be too small and lead to
+        slow learning. Xavier initialization is more standard for recommendation models.
+        """
+        # Use Xavier normal for embeddings (better for matrix factorization models)
+        nn.init.xavier_normal_(self.gamma_user.weight)
+        nn.init.xavier_normal_(self.gamma_item.weight)
+        nn.init.xavier_normal_(self.theta_user.weight)
+        # For projection matrix E, use smaller initialization to match visual feature scale
+        nn.init.normal_(self.E.weight, mean=0.0, std=0.1)
     
     def forward(
         self,

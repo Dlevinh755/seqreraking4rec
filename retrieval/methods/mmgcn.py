@@ -95,6 +95,14 @@ class MMGCNRetriever(BaseRetriever):
         # Store training history for masking in evaluation
         self.user_history = train_data
         
+        # Print graph statistics
+        num_edges = edge_index.shape[1] if hasattr(edge_index, 'shape') else len(edge_index[0]) if isinstance(edge_index, (list, tuple)) else 0
+        num_nodes = self.num_user + self.num_item
+        print(f"[MMGCNRetriever] Graph statistics:")
+        print(f"  Nodes: {num_nodes} (users: {self.num_user}, items: {self.num_item})")
+        print(f"  Edges: {num_edges}")
+        print(f"  Note: MMGCN processes ALL nodes in each forward pass, regardless of batch size!")
+        
         # Initialize model
         words_tensor = None  # Not used in current implementation
         self.model = Net(
@@ -140,11 +148,14 @@ class MMGCNRetriever(BaseRetriever):
                 train_samples.append((user_id, pos_item, neg_item))
         
         print(f"[MMGCNRetriever] Generated {len(train_samples)} training samples")
+        expected_batches = (len(train_samples) + self.batch_size - 1) // self.batch_size
+        print(f"[MMGCNRetriever] Batch size: {self.batch_size}, Expected batches per epoch: {expected_batches}")
         
         for epoch in range(self.num_epochs):
             self.model.train()
             total_loss = 0.0
             num_batches = 0
+            total_samples_processed = 0
             
             # Shuffle training samples
             np.random.shuffle(train_samples)
@@ -174,17 +185,36 @@ class MMGCNRetriever(BaseRetriever):
                 ).view(-1).to(self.device)  # [batch_size*2]
                 
                 optimizer.zero_grad()
+                
+                # Debug: Measure forward pass time (only for first batch of first epoch)
+                if epoch == 0 and i == 0:
+                    import time
+                    start_time = time.time()
+                
                 loss, _, _, _, _ = self.model.loss(
                     user_tensor,
                     item_tensor
                 )
+                
+                if epoch == 0 and i == 0:
+                    forward_time = time.time() - start_time
+                    print(f"[MMGCNRetriever] Forward pass time for batch {i}: {forward_time:.4f}s")
+                    print(f"[MMGCNRetriever] Batch size: {len(batch_samples)}, Time per sample: {forward_time/len(batch_samples)*1000:.2f}ms")
+                
                 loss.backward()
                 optimizer.step()
                 
                 total_loss += loss.item()
                 num_batches += 1
+                total_samples_processed += len(batch_samples)
             
             avg_loss = total_loss / max(1, num_batches)
+            
+            # Verify all samples were processed
+            if epoch == 0:
+                print(f"[MMGCNRetriever] Epoch {epoch+1}: Processed {total_samples_processed}/{len(train_samples)} samples in {num_batches} batches")
+                if total_samples_processed != len(train_samples):
+                    print(f"[MMGCNRetriever] WARNING: Not all samples were processed! Expected {len(train_samples)}, got {total_samples_processed}")
             
             # Validation
             if val_data is not None:

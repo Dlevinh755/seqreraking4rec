@@ -174,11 +174,14 @@ class BM3Retriever(BaseRetriever):
             raise ValueError("No training samples generated! Check train_data and num_item.")
         
         print(f"[BM3Retriever] Generated {len(train_samples)} training samples")
+        expected_batches = (len(train_samples) + self.batch_size - 1) // self.batch_size
+        print(f"[BM3Retriever] Batch size: {self.batch_size}, Expected batches per epoch: {expected_batches}")
         
         for epoch in range(self.num_epochs):
             self.model.train()
             total_loss = 0.0
             num_batches = 0
+            total_samples_processed = 0
             
             # Shuffle training samples
             np.random.shuffle(train_samples)
@@ -202,8 +205,15 @@ class BM3Retriever(BaseRetriever):
                 
                 total_loss += loss.item()
                 num_batches += 1
+                total_samples_processed += len(batch)
             
             avg_loss = total_loss / max(1, num_batches)
+            
+            # Verify all samples were processed
+            if epoch == 0:
+                print(f"[BM3Retriever] Epoch {epoch+1}: Processed {total_samples_processed}/{len(train_samples)} samples in {num_batches} batches")
+                if total_samples_processed != len(train_samples):
+                    print(f"[BM3Retriever] WARNING: Not all samples were processed! Expected {len(train_samples)}, got {total_samples_processed}")
             
             # Validation
             if val_data is not None:

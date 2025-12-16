@@ -132,6 +132,12 @@ class VBPRRetriever(BaseRetriever):
         self.user_history = train_data
         
         # Initialize model
+        print(f"[VBPRRetriever] Model configuration:")
+        print(f"  dim_gamma: {self.dim_gamma} (⚠️ Consider increasing to 64 for better performance)")
+        print(f"  dim_theta: {self.dim_theta} (⚠️ Consider increasing to 64 for better performance)")
+        print(f"  lr: {self.lr} (⚠️ Consider increasing to 1e-3 if performance is low)")
+        print(f"  visual_dim: {visual_features.size(1)}")
+        
         self.model = VBPR(
             n_users=self.num_user,
             n_items=self.num_item,
@@ -165,11 +171,14 @@ class VBPRRetriever(BaseRetriever):
             raise ValueError("No training samples generated! Check train_data and num_item.")
         
         print(f"[VBPRRetriever] Generated {len(train_samples)} training samples")
+        expected_batches = (len(train_samples) + self.batch_size - 1) // self.batch_size
+        print(f"[VBPRRetriever] Batch size: {self.batch_size}, Expected batches per epoch: {expected_batches}")
         
         for epoch in range(self.num_epochs):
             self.model.train()
             total_loss = 0.0
             num_batches = 0
+            total_samples_processed = 0
             
             # Shuffle training samples
             np.random.shuffle(train_samples)
@@ -185,9 +194,21 @@ class VBPRRetriever(BaseRetriever):
                 neg_ids = torch.tensor([s[2] for s in batch], dtype=torch.long).to(self.device)
                 
                 optimizer.zero_grad()
+                
+                # Debug: Measure forward pass time (only for first batch of first epoch)
+                if epoch == 0 and i == 0:
+                    import time
+                    start_time = time.time()
+                
                 loss = self.model.loss(
                     user_ids, pos_ids, neg_ids, lambda_reg=self.lambda_reg
                 )
+                
+                if epoch == 0 and i == 0:
+                    forward_time = time.time() - start_time
+                    print(f"[VBPRRetriever] Forward pass time for batch {i}: {forward_time:.4f}s")
+                    print(f"[VBPRRetriever] Batch size: {len(batch)}, Time per sample: {forward_time/len(batch)*1000:.2f}ms")
+                
                 loss.backward()
                 
                 # Debug: Print loss components (only for first batch of first epoch)
@@ -235,8 +256,15 @@ class VBPRRetriever(BaseRetriever):
                 
                 total_loss += loss.item()
                 num_batches += 1
+                total_samples_processed += len(batch)
             
             avg_loss = total_loss / max(1, num_batches)
+            
+            # Verify all samples were processed
+            if epoch == 0:
+                print(f"[VBPRRetriever] Epoch {epoch+1}: Processed {total_samples_processed}/{len(train_samples)} samples in {num_batches} batches")
+                if total_samples_processed != len(train_samples):
+                    print(f"[VBPRRetriever] WARNING: Not all samples were processed! Expected {len(train_samples)}, got {total_samples_processed}")
             
             # Validation
             if val_data is not None:
@@ -338,6 +366,25 @@ class VBPRRetriever(BaseRetriever):
                 
                 # Predict scores for batch [batch_size, n_items]
                 scores_batch = self.model.predict_batch(user_ids_tensor)  # [batch_size, n_items]
+                
+                # Debug: Print score statistics (only for first batch of first evaluation)
+                if i == 0 and len(recalls) == 0:
+                    print(f"[VBPRRetriever] Score statistics (first batch):")
+                    print(f"  Scores shape: {scores_batch.shape}")
+                    print(f"  Score mean: {scores_batch.mean().item():.6f}")
+                    print(f"  Score std: {scores_batch.std().item():.6f}")
+                    print(f"  Score min: {scores_batch.min().item():.6f}")
+                    print(f"  Score max: {scores_batch.max().item():.6f}")
+                    # Check embedding norms
+                    gamma_u_norm = self.model.gamma_user.weight.norm(dim=1).mean().item()
+                    gamma_i_norm = self.model.gamma_item.weight.norm(dim=1).mean().item()
+                    theta_u_norm = self.model.theta_user.weight.norm(dim=1).mean().item()
+                    E_norm = self.model.E.weight.norm().item()
+                    print(f"  Embedding norms:")
+                    print(f"    gamma_user: {gamma_u_norm:.6f}")
+                    print(f"    gamma_item: {gamma_i_norm:.6f}")
+                    print(f"    theta_user: {theta_u_norm:.6f}")
+                    print(f"    E (projection): {E_norm:.6f}")
                 
                 # Mask history items for each user in batch
                 for j, history_items in enumerate(batch_history_items):
