@@ -289,7 +289,7 @@ class BM3(nn.Module):
         user_ids: torch.Tensor,
         pos_item_ids: torch.Tensor,
         neg_item_ids: torch.Tensor,
-        lambda_reg: float = 0.1
+        lambda_reg: float = 1e-4  # Changed default from 0.1 to 1e-4 (same as MMGCN)
     ) -> torch.Tensor:
         """
         Compute BPR loss with regularization.
@@ -298,7 +298,7 @@ class BM3(nn.Module):
             user_ids: User IDs [batch_size]
             pos_item_ids: Positive item IDs [batch_size]
             neg_item_ids: Negative item IDs [batch_size]
-            lambda_reg: Regularization weight (default: 0.1)
+            lambda_reg: Regularization weight (default: 1e-4, changed from 0.1)
             
         Returns:
             BPR loss value

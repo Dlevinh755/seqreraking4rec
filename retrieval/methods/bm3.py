@@ -27,11 +27,11 @@ class BM3Retriever(BaseRetriever):
         top_k: int = 50,
         embed_dim: int = 64,
         layers: int = 1,
-        dropout: float = 0.5,
+        dropout: float = 0.1,  # Changed from 0.5 to 0.1 - 0.5 was too high and caused underfitting
         batch_size: int = 64,
         num_epochs: int = 10,
         lr: float = 1e-3,
-        reg_weight: float = 0.1,
+        reg_weight: float = 1e-4,  # Changed from 0.1 to 1e-4 (same as MMGCN) - 0.1 was too high!
         patience: Optional[int] = None,
         device: Optional[str] = None,
     ) -> None:
@@ -149,6 +149,14 @@ class BM3Retriever(BaseRetriever):
         self.user_history = train_data
         
         # Initialize model
+        print(f"[BM3Retriever] Model configuration:")
+        print(f"  embed_dim: {self.embed_dim}")
+        print(f"  layers: {self.layers}")
+        print(f"  dropout: {self.dropout} (⚠️ Consider reducing to 0.1 if performance is low)")
+        print(f"  reg_weight: {self.reg_weight} (⚠️ Consider reducing to 1e-4 if performance is low)")
+        print(f"  lr: {self.lr}")
+        print(f"  visual_dim: {self.visual_features.size(1)}, text_dim: {self.text_features.size(1)}")
+        
         self.model = BM3(
             n_users=self.num_user,
             n_items=self.num_item,
@@ -315,6 +323,21 @@ class BM3Retriever(BaseRetriever):
                 
                 # Predict scores for batch [batch_size, n_items]
                 scores_batch = self.model.predict_batch(user_ids_tensor)  # [batch_size, n_items]
+                
+                # Debug: Print score statistics (only for first batch of first evaluation)
+                if i == 0 and len(recalls) == 0:
+                    print(f"[BM3Retriever] Score statistics (first batch):")
+                    print(f"  Scores shape: {scores_batch.shape}")
+                    print(f"  Score mean: {scores_batch.mean().item():.6f}")
+                    print(f"  Score std: {scores_batch.std().item():.6f}")
+                    print(f"  Score min: {scores_batch.min().item():.6f}")
+                    print(f"  Score max: {scores_batch.max().item():.6f}")
+                    # Check embedding norms
+                    user_emb_norm = self.model.user_embedding.weight.norm(dim=1).mean().item()
+                    item_emb_norm = self.model.item_embedding.weight.norm(dim=1).mean().item()
+                    print(f"  Embedding norms:")
+                    print(f"    user_embedding: {user_emb_norm:.6f}")
+                    print(f"    item_embedding: {item_emb_norm:.6f}")
                 
                 # Mask history items for each user in batch
                 for j, history_items in enumerate(batch_history_items):
