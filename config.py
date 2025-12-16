@@ -44,6 +44,16 @@ parser.add_argument('--mmgcn_reg_weight', type=float, default=1e-4,
 parser.add_argument('--mmgcn_aggr_mode', type=str, default='add',
 					choices=['add', 'mean', 'max'],
 					help='MMGCN aggregation mode (default: add, usually best for recommendation)')
+# VBPR-specific hyperparameters
+parser.add_argument('--vbpr_dim_gamma', type=int, default=20,
+					help='VBPR dimension of user/item latent factors (default: 20, recommended: 64 for better performance)')
+parser.add_argument('--vbpr_dim_theta', type=int, default=20,
+					help='VBPR dimension of visual projection (default: 20, recommended: 64 for better performance)')
+parser.add_argument('--vbpr_lambda_reg', type=float, default=0.01,
+					help='VBPR regularization weight (default: 0.01, range: 1e-4 to 0.1)')
+parser.add_argument('--vbpr_optimizer', type=str, default='adam',
+					choices=['adam', 'sgd'],
+					help='VBPR optimizer (default: adam, recommended for better convergence)')
 parser.add_argument('--rerank_epochs', type=int, default=100,
 					help='Number of training epochs for rerank models (e.g., BERT4Rec).')
 parser.add_argument('--rerank_batch_size', type=int, default=8,

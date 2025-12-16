@@ -488,6 +488,14 @@ def main() -> None:
         })
     
     elif retrieval_method == "vbpr":
+        # Add VBPR-specific hyperparameters to retriever_kwargs
+        retriever_kwargs.update({
+            "dim_gamma": getattr(arg, 'vbpr_dim_gamma', 20),
+            "dim_theta": getattr(arg, 'vbpr_dim_theta', 20),
+            "lambda_reg": getattr(arg, 'vbpr_lambda_reg', 0.01),
+            "optimizer": getattr(arg, 'vbpr_optimizer', 'adam'),
+        })
+        
         print("Loading CLIP embeddings for VBPR...")
         v_feat, t_feat = _load_clip_embeddings(
             arg.dataset_code,
@@ -502,6 +510,15 @@ def main() -> None:
         
         # Convert to torch.Tensor (VBPR expects torch.Tensor)
         visual_features = torch.from_numpy(v_feat).float()
+        
+        # Print VBPR hyperparameters
+        print(f"\nVBPR Hyperparameters:")
+        print(f"  dim_gamma: {retriever_kwargs['dim_gamma']} (⚠️ Consider increasing to 64 for better performance)")
+        print(f"  dim_theta: {retriever_kwargs['dim_theta']} (⚠️ Consider increasing to 64 for better performance)")
+        print(f"  lambda_reg: {retriever_kwargs['lambda_reg']}")
+        print(f"  optimizer: {retriever_kwargs['optimizer']}")
+        print(f"  lr: {retriever_kwargs['lr']} (⚠️ Consider increasing to 1e-3 if performance is low)")
+        print()
         
         fit_kwargs.update({
             "num_user": num_users,
