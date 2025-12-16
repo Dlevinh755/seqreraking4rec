@@ -164,11 +164,11 @@ def _evaluate_split(
                 ndcgs = []
                 hits = []
                 for user_id, gt_items in sample_split.items():
-                    if not gt_items:
-                        continue
+        if not gt_items:
+            continue
                     recs = retriever.retrieve(user_id)
-                    if not recs:
-                        continue
+        if not recs:
+            continue
                     ndcgs.append(ndcg_at_k(recs, gt_items, k_val))
                     hits.append(hit_at_k(recs, gt_items, k_val))
                 
@@ -266,11 +266,81 @@ def _build_retrieved_matrices(
     split: Dict[int, List[int]],
     item_count: int,
 ) -> Dict[str, List]:
+    """Build retrieved matrices for Stage 2.
+    
+    Optimized for MMGCN/VBPR/BM3 by batch processing users.
+    """
     users = sorted(split.keys())
     # We'll store only the top-`RETRIEVAL_SAVE_TOP_K` candidate IDs and their scores
     probs: List[dict] = []
     labels: List[int] = []
 
+    # Check if retriever supports batch prediction (MMGCN, VBPR, BM3)
+    if hasattr(retriever, 'model') and hasattr(retriever.model, 'forward') and hasattr(retriever.model, 'result'):
+        # Batch processing for graph-based models (MMGCN)
+        print(f"[_build_retrieved_matrices] Using batch processing for {retriever.get_name()}...")
+        
+        # Update embeddings once
+        retriever.model.eval()
+        with torch.no_grad():
+            retriever.model.forward()  # Update self.result
+        
+        # Get all user and item embeddings
+        user_tensor = retriever.model.result[:retriever.num_user]  # [num_user, dim]
+        item_tensor = retriever.model.result[retriever.num_user:]   # [num_item, dim]
+        
+        # Process users in batches
+        batch_size = 512
+        device = retriever.device
+        
+        for i in range(0, len(users), batch_size):
+            batch_users = users[i:i + batch_size]
+            
+            # Filter valid users
+            valid_user_ids = [u for u in batch_users if 1 <= u <= retriever.num_user]
+            if not valid_user_ids:
+                continue
+            
+            # Get user indices (0-indexed)
+            user_indices = torch.tensor([u - 1 for u in valid_user_ids], dtype=torch.long).to(device)
+            batch_user_emb = user_tensor[user_indices]  # [batch_size, dim]
+            
+            # Compute scores for all users in batch: [batch_size, num_item]
+            batch_scores = torch.matmul(batch_user_emb, item_tensor.t())
+            
+            # Process each user in batch
+            for j, user_id in enumerate(valid_user_ids):
+                gt_items = split.get(user_id, [])
+                if not gt_items:
+                    continue
+                label = gt_items[0]
+                
+                # Get scores for this user
+                scores = batch_scores[j].cpu().numpy()
+                
+                # Get top-K items
+                top_k = min(RETRIEVAL_SAVE_TOP_K, retriever.num_item)
+                top_indices = np.argsort(scores)[::-1][:top_k]
+                top_items = [int(idx + 1) for idx in top_indices]  # Convert to 1-indexed
+                
+                # Build top_ids and top_scores
+                top_ids: List[int] = []
+                top_scores: List[float] = []
+                for rank, item_id in enumerate(top_items):
+                    if 0 < item_id <= item_count:
+                        score = float(len(top_items) - rank)
+                        top_ids.append(int(item_id))
+                        top_scores.append(score)
+                
+                probs.append({"ids": top_ids, "scores": top_scores})
+                labels.append(int(label))
+            
+            # Progress indicator
+            if (i + batch_size) % 5000 == 0 or (i + batch_size) >= len(users):
+                print(f"  Processed {min(i + batch_size, len(users))}/{len(users)} users...")
+    else:
+        # Fallback: process users one by one (for LRURec, etc.)
+        print(f"[_build_retrieved_matrices] Using sequential processing for {retriever.get_name()}...")
     for u in users:
         gt_items = split.get(u, [])
         if not gt_items:
@@ -293,6 +363,10 @@ def _build_retrieved_matrices(
 
         probs.append({"ids": top_ids, "scores": top_scores})
         labels.append(int(label))
+            
+            # Progress indicator
+            if len(probs) % 5000 == 0:
+                print(f"  Processed {len(probs)}/{len(users)} users...")
 
     return {"probs": probs, "labels": labels}
 
@@ -368,6 +442,15 @@ def main() -> None:
     }
     
     if retrieval_method == "mmgcn":
+        # Add MMGCN-specific hyperparameters to retriever_kwargs
+        retriever_kwargs.update({
+            "dim_x": getattr(arg, 'mmgcn_dim_x', 64),
+            "num_layer": getattr(arg, 'mmgcn_num_layer', 2),
+            "concate": getattr(arg, 'mmgcn_concate', False),
+            "reg_weight": getattr(arg, 'mmgcn_reg_weight', 1e-4),
+            "aggr_mode": getattr(arg, 'mmgcn_aggr_mode', 'add'),
+        })
+        
         print("Loading CLIP embeddings for MMGCN...")
         v_feat, t_feat = _load_clip_embeddings(
             arg.dataset_code,
@@ -385,6 +468,16 @@ def main() -> None:
         print(f"Building edge_index from {len(train)} user interactions...")
         edge_index = _build_edge_index(train, num_users, num_items)
         print(f"Built edge_index with shape {edge_index.shape} ({edge_index.shape[1]} edges)")
+        
+        # Print MMGCN hyperparameters
+        print(f"\nMMGCN Hyperparameters:")
+        print(f"  dim_x: {retriever_kwargs['dim_x']}")
+        print(f"  num_layer: {retriever_kwargs['num_layer']}")
+        print(f"  concate: {retriever_kwargs['concate']}")
+        print(f"  reg_weight: {retriever_kwargs['reg_weight']}")
+        print(f"  aggr_mode: {retriever_kwargs['aggr_mode']}")
+        print(f"  lr: {retriever_kwargs['lr']} (⚠️ Consider increasing to 1e-3 if performance is low)")
+        print()
         
         fit_kwargs.update({
             "num_user": num_users,

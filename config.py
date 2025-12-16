@@ -31,7 +31,19 @@ parser.add_argument('--num_workers_retrieval', type=int, default=4,
 parser.add_argument('--retrieval_patience', type=int, default=10,
 					help='Early stopping patience (epochs without val improvement) for Stage-1 retrieval.')
 parser.add_argument('--retrieval_lr', type=float, default=1e-4,
-					help='Learning rate for all retrieval methods (default: 1e-3). Note: VBPR paper uses 5e-4, but we standardize to 1e-3 for fair comparison.')
+					help='Learning rate for all retrieval methods (default: 1e-4). Note: VBPR paper uses 5e-4, MMGCN may need 1e-3 for better performance.')
+# MMGCN-specific hyperparameters
+parser.add_argument('--mmgcn_dim_x', type=int, default=64,
+					help='MMGCN embedding dimension (default: 64, recommended: 128-256 for better performance)')
+parser.add_argument('--mmgcn_num_layer', type=int, default=2,
+					help='MMGCN number of GCN layers (default: 2, max: 3)')
+parser.add_argument('--mmgcn_concate', action='store_true', default=False,
+					help='MMGCN concat features (default: False, recommended: True for better performance)')
+parser.add_argument('--mmgcn_reg_weight', type=float, default=1e-4,
+					help='MMGCN regularization weight (default: 1e-4, range: 1e-5 to 1e-3)')
+parser.add_argument('--mmgcn_aggr_mode', type=str, default='add',
+					choices=['add', 'mean', 'max'],
+					help='MMGCN aggregation mode (default: add, usually best for recommendation)')
 parser.add_argument('--rerank_epochs', type=int, default=100,
 					help='Number of training epochs for rerank models (e.g., BERT4Rec).')
 parser.add_argument('--rerank_batch_size', type=int, default=8,
