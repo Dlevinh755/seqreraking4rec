@@ -550,7 +550,26 @@ class Qwen3VLReranker(BaseReranker):
             }
         
         # Use Unsloth's training API if available
-        if USE_UNSLOTH_TRAINER:
+        # Check if model is actually a vision model (required for UnslothVisionDataCollator)
+        # UnslothVisionDataCollator only works with vision models loaded via FastVisionModel
+        is_vision_model = False
+        try:
+            from unsloth import FastVisionModel
+            # Check if model is wrapped in FastVisionModel or is a Qwen3VL model
+            model_to_check = self.qwen3vl_model.model
+            if hasattr(model_to_check, 'model'):  # PEFT models wrap the base model
+                model_to_check = model_to_check.model
+            if hasattr(model_to_check, '__class__'):
+                model_class_name = model_to_check.__class__.__name__
+                # Check if it's a Qwen3VL/Qwen2VL model (which FastVisionModel wraps)
+                if 'Qwen3VL' in model_class_name or 'Qwen2VL' in model_class_name:
+                    is_vision_model = True
+        except Exception as e:
+            print(f"Warning: Could not check vision model status: {e}")
+        
+        # Only use UnslothVisionDataCollator if model is actually a vision model
+        # For text-only modes with non-vision models, fallback to standard Trainer
+        if USE_UNSLOTH_TRAINER and is_vision_model:
             print("Using Unsloth SFTTrainer for vision model training...")
             
             # Enable training mode for FastVisionModel
@@ -563,7 +582,7 @@ class Qwen3VLReranker(BaseReranker):
                 print(f"Warning: Could not enable training mode: {e}")
             
             # Custom data collator that handles raw_image mode (loads images from item_ids)
-            # and uses UnslothVisionDataCollator for text-only modes
+            # For text-only modes, UnslothVisionDataCollator should work with vision models
             if self.mode == "raw_image":
                 # For raw_image mode, we need to build messages with images from item_ids
                 def custom_collate_fn(batch):
@@ -584,61 +603,81 @@ class Qwen3VLReranker(BaseReranker):
                         messages_batch.append({"messages": messages})
                     
                     # Use UnslothVisionDataCollator to process the messages
+                    try:
+                        data_collator = UnslothVisionDataCollator(
+                            self.qwen3vl_model.model,
+                            self.qwen3vl_model.processor.tokenizer
+                        )
+                        return data_collator(messages_batch)
+                    except (TypeError, ValueError) as e:
+                        # If UnslothVisionDataCollator fails, fallback to standard collate
+                        print(f"Warning: UnslothVisionDataCollator failed: {e}")
+                        print("Falling back to standard collate function...")
+                        return collate_fn(messages_batch)
+            else:
+                # For text-only modes, try UnslothVisionDataCollator (only works with vision models)
+                try:
                     data_collator = UnslothVisionDataCollator(
                         self.qwen3vl_model.model,
                         self.qwen3vl_model.processor.tokenizer
                     )
-                    return data_collator(messages_batch)
-            else:
-                # For text-only modes, use UnslothVisionDataCollator directly
-                data_collator = UnslothVisionDataCollator(
-                    self.qwen3vl_model.model,
-                    self.qwen3vl_model.processor.tokenizer
-                )
+                except (TypeError, ValueError) as e:
+                    print(f"Warning: UnslothVisionDataCollator failed for text-only mode: {e}")
+                    print("Falling back to standard Trainer...")
+                    USE_UNSLOTH_TRAINER = False  # Force fallback
             
-            # Training config with vision-specific settings
-            training_args = SFTConfig(
-                per_device_train_batch_size=self.batch_size,
-                gradient_accumulation_steps=1,
-                warmup_steps=5,
-                num_train_epochs=self.num_epochs,
-                learning_rate=self.lr,
-                logging_steps=50,
-                optim="adamw_8bit",  # Use 8-bit optimizer for memory efficiency
-                weight_decay=0.001,
-                lr_scheduler_type="linear",
-                seed=3407,
-                output_dir="./qwen3vl_rerank_vl",
-                report_to="none",
+            if USE_UNSLOTH_TRAINER:
+                # Training config with vision-specific settings
+                training_args = SFTConfig(
+                    per_device_train_batch_size=self.batch_size,
+                    gradient_accumulation_steps=1,
+                    warmup_steps=5,
+                    num_train_epochs=self.num_epochs,
+                    learning_rate=self.lr,
+                    logging_steps=50,
+                    optim="adamw_8bit",  # Use 8-bit optimizer for memory efficiency
+                    weight_decay=0.001,
+                    lr_scheduler_type="linear",
+                    seed=3407,
+                    output_dir="./qwen3vl_rerank_vl",
+                    report_to="none",
+                    
+                    # REQUIRED for vision finetuning:
+                    remove_unused_columns=False,
+                    dataset_text_field="",
+                    dataset_kwargs={"skip_prepare_dataset": True},
+                    max_length=2048,
+                )
                 
-                # REQUIRED for vision finetuning:
-                remove_unused_columns=False,
-                dataset_text_field="",
-                dataset_kwargs={"skip_prepare_dataset": True},
-                max_length=2048,
-            )
-            
-            # Use SFTTrainer with UnslothVisionDataCollator
-            if self.mode == "raw_image":
-                # For raw_image mode, use custom collate_fn
-                trainer = SFTTrainer(
-                    model=self.qwen3vl_model.model,
-                    tokenizer=self.qwen3vl_model.processor.tokenizer,
-                    data_collator=custom_collate_fn,  # Custom collate function for raw_image
-                    train_dataset=hf_train_dataset,
-                    args=training_args,
-                )
+                # Use SFTTrainer with UnslothVisionDataCollator
+                if self.mode == "raw_image":
+                    # For raw_image mode, use custom collate_fn
+                    trainer = SFTTrainer(
+                        model=self.qwen3vl_model.model,
+                        tokenizer=self.qwen3vl_model.processor.tokenizer,
+                        data_collator=custom_collate_fn,  # Custom collate function for raw_image
+                        train_dataset=hf_train_dataset,
+                        args=training_args,
+                    )
+                else:
+                    # For text-only modes, use UnslothVisionDataCollator directly
+                    trainer = SFTTrainer(
+                        model=self.qwen3vl_model.model,
+                        tokenizer=self.qwen3vl_model.processor.tokenizer,
+                        data_collator=data_collator,  # Must use UnslothVisionDataCollator!
+                        train_dataset=hf_train_dataset,
+                        args=training_args,
+                    )
             else:
-                # For text-only modes, use UnslothVisionDataCollator directly
-                trainer = SFTTrainer(
-                    model=self.qwen3vl_model.model,
-                    tokenizer=self.qwen3vl_model.processor.tokenizer,
-                    data_collator=data_collator,  # Must use UnslothVisionDataCollator!
-                    train_dataset=hf_train_dataset,
-                    args=training_args,
-                )
-            
+                # Fallback to standard Trainer
+                USE_UNSLOTH_TRAINER = False
         else:
+            # Model is not a vision model or Unsloth trainer not available
+            if USE_UNSLOTH_TRAINER and not is_vision_model:
+                print("Model is not a vision model, using standard Trainer...")
+            USE_UNSLOTH_TRAINER = False
+        
+        if not USE_UNSLOTH_TRAINER:
             # Fallback: Use standard transformers Trainer with custom collate_fn
             print("Using standard transformers Trainer (fallback)...")
             

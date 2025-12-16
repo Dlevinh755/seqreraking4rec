@@ -118,8 +118,21 @@ class BERT4RecReranker(BaseReranker):
             # Add 1 for padding token (0)
             self.vocab_size += 1
         
-        # Store user history
-        self.user_history = {uid: items[:] for uid, items in train_data.items()}
+        # Validate and filter items to ensure all are within valid range [1, vocab_size-1]
+        # vocab_size includes padding token (0), so valid item IDs are 1..vocab_size-1
+        self.user_history = {}
+        invalid_items_count = 0
+        for uid, items in train_data.items():
+            # Filter out invalid items (0 or >= vocab_size)
+            valid_items = [item for item in items if 1 <= item < self.vocab_size]
+            if len(valid_items) > 0:
+                self.user_history[uid] = valid_items
+            if len(valid_items) < len(items):
+                invalid_items_count += len(items) - len(valid_items)
+        
+        if invalid_items_count > 0:
+            print(f"[BERT4RecReranker] Warning: Filtered {invalid_items_count} invalid items "
+                  f"(outside range [1, {self.vocab_size-1}]) from training data")
         
         # Initialize model
         self.model = BERT4Rec(
@@ -247,6 +260,11 @@ class BERT4RecReranker(BaseReranker):
             # Truncate to max_seq_length
             seq = items[-self.max_seq_length:]
             
+            # Filter to valid range [1, vocab_size-1] (exclude 0 and >= vocab_size)
+            seq = [item for item in seq if 1 <= item < self.vocab_size]
+            if len(seq) < 2:
+                continue
+            
             # Create masked sequence
             input_ids = seq.copy()
             masked_lm_labels = [0] * len(seq)  # 0 = not masked
@@ -324,8 +342,13 @@ class BERT4RecReranker(BaseReranker):
                     continue
                 
                 # Get user history
-                history = self.user_history[user_id]
+                history = self.user_history.get(user_id, [])
                 if len(history) == 0:
+                    continue
+                
+                # Filter history to valid range [1, vocab_size-1]
+                valid_history = [item for item in history if 1 <= item < self.vocab_size]
+                if len(valid_history) == 0:
                     continue
                 
                 # Get all items as candidates (for evaluation)
@@ -342,13 +365,21 @@ class BERT4RecReranker(BaseReranker):
                 max_eval_candidates = min(max_eval_candidates, len(all_items))
                 candidates = random.sample(all_items, max_eval_candidates) if len(all_items) > max_eval_candidates else all_items
                 
-                # Ensure at least one ground truth is in candidates
-                if not any(item in candidates for item in gt_items):
-                    # Add one ground truth item
-                    candidates[0] = gt_items[0]
+                # Filter gt_items to valid range [1, vocab_size-1]
+                valid_gt_items = [item for item in gt_items if 1 <= item < self.vocab_size]
                 
-                # Prepare history tensor
-                history_seq = history[-self.max_seq_length:]
+                # Ensure at least one ground truth is in candidates
+                if valid_gt_items and not any(item in candidates for item in valid_gt_items):
+                    # Add one ground truth item (if valid)
+                    candidates[0] = valid_gt_items[0]
+                
+                # Filter candidates to valid range [1, vocab_size-1]
+                candidates = [item for item in candidates if 1 <= item < self.vocab_size]
+                if not candidates:
+                    continue
+                
+                # Prepare history tensor (use valid_history)
+                history_seq = valid_history[-self.max_seq_length:]
                 history_tensor = torch.tensor([history_seq], dtype=torch.long).to(self.device)
                 
                 # Prepare candidates tensor
@@ -367,10 +398,10 @@ class BERT4RecReranker(BaseReranker):
                 # Get top-K item IDs
                 top_k_items = [item_id for item_id, _ in scored[:k]]
                 
-                # Compute recall
-                hits = len(set(top_k_items) & set(gt_items))
-                if len(gt_items) > 0:
-                    recalls.append(hits / min(k, len(gt_items)))
+                # Compute recall (use valid_gt_items)
+                hits = len(set(top_k_items) & set(valid_gt_items))
+                if len(valid_gt_items) > 0:
+                    recalls.append(hits / min(k, len(valid_gt_items)))
         
         return float(np.mean(recalls)) if recalls else 0.0
 
@@ -408,12 +439,24 @@ class BERT4RecReranker(BaseReranker):
             # No history, return candidates in original order with uniform scores
             return [(item_id, 1.0) for item_id in candidates[:self.top_k]]
         
+        # Filter history to valid range [1, vocab_size-1]
+        valid_history = [item for item in user_history if 1 <= item < self.vocab_size]
+        if not valid_history:
+            # No valid history, return candidates in original order with uniform scores
+            return [(item_id, 1.0) for item_id in candidates[:self.top_k] if 1 <= item_id < self.vocab_size]
+        
         # Prepare history tensor
-        history_seq = user_history[-self.max_seq_length:]  # Truncate to max length
+        history_seq = valid_history[-self.max_seq_length:]  # Truncate to max length
         history_tensor = torch.tensor([history_seq], dtype=torch.long).to(self.device)
         
+        # Filter candidates to valid range [1, vocab_size-1]
+        valid_candidates = [item for item in candidates if 1 <= item < self.vocab_size]
+        if not valid_candidates:
+            # No valid candidates, return empty
+            return []
+        
         # Prepare candidates tensor
-        candidates_tensor = torch.tensor([candidates], dtype=torch.long).to(self.device)
+        candidates_tensor = torch.tensor([valid_candidates], dtype=torch.long).to(self.device)
         
         # Predict scores
         self.model.eval()
@@ -421,8 +464,8 @@ class BERT4RecReranker(BaseReranker):
             scores = self.model.predict_scores(history_tensor, candidates_tensor)  # [1, num_candidates]
             scores = scores.squeeze(0).cpu().numpy()  # [num_candidates]
         
-        # Create (item_id, score) pairs
-        scored = list(zip(candidates, scores))
+        # Create (item_id, score) pairs (use valid_candidates, not original candidates)
+        scored = list(zip(valid_candidates, scores))
         
         # Sort by score descending
         scored.sort(key=lambda x: x[1], reverse=True)

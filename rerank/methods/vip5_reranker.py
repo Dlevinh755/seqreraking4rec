@@ -706,8 +706,8 @@ class VIP5Reranker(BaseReranker):
                     history_visual.append(self.visual_embeddings[idx])
             
             if len(history_visual) == 0:
-                # No valid items, use zeros
-                vis_feats = torch.zeros(max_vis_tokens, self.image_feature_dim)
+                # No valid items, use zeros (on same device as visual_embeddings)
+                vis_feats = torch.zeros(max_vis_tokens, self.image_feature_dim, device=self.device)
             else:
                 # Stack and repeat for image_feature_size_ratio
                 history_visual_tensor = torch.stack(history_visual)  # [num_items, feat_dim]
@@ -716,7 +716,8 @@ class VIP5Reranker(BaseReranker):
                 
                 # Pad or truncate to max_vis_tokens
                 if vis_feats.size(0) < max_vis_tokens:
-                    padding = torch.zeros(max_vis_tokens - vis_feats.size(0), self.image_feature_dim)
+                    # Create padding on same device as vis_feats
+                    padding = torch.zeros(max_vis_tokens - vis_feats.size(0), self.image_feature_dim, device=vis_feats.device)
                     vis_feats = torch.cat([vis_feats, padding], dim=0)
                 else:
                     vis_feats = vis_feats[:max_vis_tokens]

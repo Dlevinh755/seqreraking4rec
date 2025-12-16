@@ -406,6 +406,23 @@ class BERT4Rec(nn.Module):
         history_len = history.size(1)
         num_candidates = candidates.size(1)
         
+        # Validate all IDs are within valid range [0, vocab_size-1]
+        # Note: 0 is padding token, 1..vocab_size-1 are valid item IDs
+        vocab_size = self.item_embedding.num_embeddings
+        if torch.any(history < 0) or torch.any(history >= vocab_size):
+            invalid_history = torch.logical_or(history < 0, history >= vocab_size)
+            print(f"[BERT4Rec.predict_scores] Warning: Found invalid history IDs. "
+                  f"Valid range: [0, {vocab_size-1}], but found values outside this range.")
+            # Clamp to valid range
+            history = torch.clamp(history, 0, vocab_size - 1)
+        
+        if torch.any(candidates < 0) or torch.any(candidates >= vocab_size):
+            invalid_candidates = torch.logical_or(candidates < 0, candidates >= vocab_size)
+            print(f"[BERT4Rec.predict_scores] Warning: Found invalid candidate IDs. "
+                  f"Valid range: [0, {vocab_size-1}], but found values outside this range.")
+            # Clamp to valid range
+            candidates = torch.clamp(candidates, 0, vocab_size - 1)
+        
         # Expand history for each candidate: [batch, num_cand, history_len]
         history_expanded = history.unsqueeze(1).expand(batch_size, num_candidates, history_len)
         history_flat = history_expanded.reshape(batch_size * num_candidates, history_len)
