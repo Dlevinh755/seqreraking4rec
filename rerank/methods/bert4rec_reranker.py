@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import random
 from collections import defaultdict
 
 from rerank.base import BaseReranker
@@ -306,7 +307,11 @@ class BERT4RecReranker(BaseReranker):
         return input_ids, masked_lm_labels, attention_mask
 
     def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> float:
-        """Compute average Recall@K for validation."""
+        """Compute average Recall@K for validation.
+        
+        NOTE: BERT4Rec is a reranker, so it only predicts on sampled candidates
+        (not full ranking). This matches the behavior of other rerankers (VIP5, Qwen3VL).
+        """
         if self.model is None:
             return 0.0
         
@@ -325,21 +330,45 @@ class BERT4RecReranker(BaseReranker):
                 
                 # Get all items as candidates (for evaluation)
                 all_items = list(range(1, self.vocab_size))
-                candidates = torch.tensor([all_items], dtype=torch.long).to(self.device)
                 
-                # Prepare history
-                history_tensor = torch.tensor([history[-self.max_seq_length:]], dtype=torch.long).to(self.device)
+                # Limit candidates for efficiency (during training evaluation)
+                # BERT4Rec is a reranker, so it only needs to rerank candidates, not full ranking
+                # Get eval_candidates from config (default: 20)
+                try:
+                    from config import arg
+                    max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
+                except ImportError:
+                    max_eval_candidates = 20
+                max_eval_candidates = min(max_eval_candidates, len(all_items))
+                candidates = random.sample(all_items, max_eval_candidates) if len(all_items) > max_eval_candidates else all_items
                 
-                # Predict scores
-                scores = self.model.predict_scores(history_tensor, candidates)  # [1, vocab_size-1]
-                scores = scores.squeeze(0)  # [vocab_size-1]
+                # Ensure at least one ground truth is in candidates
+                if not any(item in candidates for item in gt_items):
+                    # Add one ground truth item
+                    candidates[0] = gt_items[0]
                 
-                # Get top-K
-                _, top_items = torch.topk(scores, k=min(k, len(all_items)))
-                top_items = (top_items.cpu().numpy() + 1).tolist()  # Convert to 1-indexed
+                # Prepare history tensor
+                history_seq = history[-self.max_seq_length:]
+                history_tensor = torch.tensor([history_seq], dtype=torch.long).to(self.device)
+                
+                # Prepare candidates tensor
+                candidates_tensor = torch.tensor([candidates], dtype=torch.long).to(self.device)
+                
+                # Predict scores (only on candidates, not all items)
+                scores = self.model.predict_scores(history_tensor, candidates_tensor)  # [1, num_candidates]
+                scores = scores.squeeze(0).cpu().numpy()  # [num_candidates]
+                
+                # Create (item_id, score) pairs
+                scored = list(zip(candidates, scores))
+                
+                # Sort by score descending
+                scored.sort(key=lambda x: x[1], reverse=True)
+                
+                # Get top-K item IDs
+                top_k_items = [item_id for item_id, _ in scored[:k]]
                 
                 # Compute recall
-                hits = len(set(top_items) & set(gt_items))
+                hits = len(set(top_k_items) & set(gt_items))
                 if len(gt_items) > 0:
                     recalls.append(hits / min(k, len(gt_items)))
         

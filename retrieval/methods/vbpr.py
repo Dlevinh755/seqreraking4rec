@@ -235,36 +235,61 @@ class VBPRRetriever(BaseRetriever):
         return samples
 
     def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> float:
-        """Compute average Recall@K for validation."""
+        """Compute average Recall@K for validation (optimized with batch processing)."""
         if self.model is None:
             return 0.0
         
         self.model.eval()
         recalls = []
         
+        # Prepare batch data
+        user_ids_list = []
+        gt_items_list = []
+        history_items_list = []
+        
+        for user_id, gt_items in split.items():
+            if user_id > self.num_user:
+                continue
+            user_ids_list.append(user_id - 1)  # Convert to 0-indexed
+            gt_items_list.append(gt_items)
+            history_items_list.append(self.user_history.get(user_id, []))
+        
+        if not user_ids_list:
+            return 0.0
+        
+        # Batch size for evaluation (can be adjusted based on GPU memory)
+        batch_size = 512
+        device = self.device
+        
         with torch.no_grad():
-            for user_id, gt_items in split.items():
-                if user_id > self.num_user:
-                    continue
+            for i in range(0, len(user_ids_list), batch_size):
+                batch_user_ids = user_ids_list[i:i + batch_size]
+                batch_gt_items = gt_items_list[i:i + batch_size]
+                batch_history_items = history_items_list[i:i + batch_size]
                 
-                # Get scores for all items
-                scores = self.model.predict_all(user_id - 1)  # Convert to 0-indexed
+                # Convert to tensor
+                user_ids_tensor = torch.tensor(batch_user_ids, dtype=torch.long).to(device)
                 
-                # Mask history items (items already in training set) - CRITICAL FIX
-                history_items = self.user_history.get(user_id, [])
-                for item in history_items:
-                    if 1 <= item <= self.num_item:
-                        item_idx = item - 1  # Convert to 0-indexed
-                        scores[item_idx] = -1e9
+                # Predict scores for batch [batch_size, n_items]
+                scores_batch = self.model.predict_batch(user_ids_tensor)  # [batch_size, n_items]
                 
-                # Get top-K
-                _, top_items = torch.topk(scores, k=min(k, self.num_item))
-                top_items = (top_items.cpu().numpy() + 1).tolist()  # Convert back to 1-indexed
+                # Mask history items for each user in batch
+                for j, history_items in enumerate(batch_history_items):
+                    for item in history_items:
+                        if 1 <= item <= self.num_item:
+                            item_idx = item - 1  # Convert to 0-indexed
+                            scores_batch[j, item_idx] = -1e9
                 
-                # Compute recall
-                hits = len(set(top_items) & set(gt_items))
-                if len(gt_items) > 0:
-                    recalls.append(hits / min(k, len(gt_items)))
+                # Get top-K for each user in batch
+                _, top_items_batch = torch.topk(scores_batch, k=min(k, self.num_item), dim=1)  # [batch_size, k]
+                top_items_batch = (top_items_batch.cpu().numpy() + 1)  # Convert back to 1-indexed
+                
+                # Compute recall for each user in batch
+                for j, (top_items, gt_items) in enumerate(zip(top_items_batch, batch_gt_items)):
+                    top_items_list = top_items.tolist()
+                    hits = len(set(top_items_list) & set(gt_items))
+                    if len(gt_items) > 0:
+                        recalls.append(hits / min(k, len(gt_items)))
         
         return float(np.mean(recalls)) if recalls else 0.0
 

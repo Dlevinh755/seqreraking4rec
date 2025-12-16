@@ -236,6 +236,53 @@ class BM3(nn.Module):
             
         return scores
     
+    def predict_batch(self, user_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Predict scores for all items for a batch of users (optimized for batch evaluation).
+        
+        Args:
+            user_ids: User IDs [batch_size] (0-indexed)
+            
+        Returns:
+            Scores for all items for each user [batch_size, n_items]
+        """
+        self.eval()
+        with torch.no_grad():
+            # Get user embeddings
+            user_emb = self.user_embedding(user_ids)  # [batch_size, embed_dim]
+            
+            # Get all item embeddings
+            item_emb = self.item_embedding.weight  # [n_items, embed_dim]
+            
+            # Get all multimodal features
+            visual_feat = self.visual_features  # [n_items, visual_dim]
+            text_feat = self.text_features      # [n_items, text_dim]
+            
+            # Project to embedding space
+            visual_proj = self.visual_proj(visual_feat)  # [n_items, embed_dim]
+            text_proj = self.text_proj(text_feat)        # [n_items, embed_dim]
+            
+            # Concatenate and fuse
+            multimodal_input = torch.cat([visual_proj, text_proj], dim=1)  # [n_items, embed_dim*2]
+            
+            # Pass through fusion MLP
+            x = multimodal_input
+            for i, layer in enumerate(self.fusion_layers):
+                x = layer(x)
+                if i < len(self.fusion_layers) - 1:
+                    x = F.relu(x)
+                    x = self.dropout_layer(x)
+            
+            multimodal_emb = x  # [n_items, embed_dim]
+            
+            # Compute scores for all users at once
+            cf_scores = torch.matmul(user_emb, item_emb.t())  # [batch_size, n_items]
+            multimodal_scores = torch.matmul(user_emb, multimodal_emb.t())  # [batch_size, n_items]
+            
+            scores = cf_scores + multimodal_scores  # [batch_size, n_items]
+            
+        return scores
+    
     def loss(
         self,
         user_ids: torch.Tensor,

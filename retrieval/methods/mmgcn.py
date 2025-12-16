@@ -188,7 +188,7 @@ class MMGCNRetriever(BaseRetriever):
         self.is_fitted = True
 
     def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> float:
-        """Compute average Recall@K for validation."""
+        """Compute average Recall@K for validation (optimized with batch processing)."""
         if self.model is None:
             return 0.0
         
@@ -196,30 +196,58 @@ class MMGCNRetriever(BaseRetriever):
         with torch.no_grad():
             self.model.forward()  # Update self.result
         
-        user_tensor = self.model.result[:self.num_user]
-        item_tensor = self.model.result[self.num_user:]
+        user_tensor = self.model.result[:self.num_user]  # [num_user, dim]
+        item_tensor = self.model.result[self.num_user:]  # [num_item, dim]
+        
+        # Prepare batch data
+        user_ids_list = []
+        gt_items_list = []
+        history_items_list = []
+        
+        for user_id, gt_items in split.items():
+            if user_id > self.num_user or user_id < 1:
+                continue
+            user_ids_list.append(user_id)
+            gt_items_list.append(gt_items)
+            history_items_list.append(self.user_history.get(user_id, []))
+        
+        if not user_ids_list:
+            return 0.0
         
         recalls = []
-        for user_id, gt_items in split.items():
-            if user_id >= self.num_user:
-                continue
-            
-            scores = torch.matmul(user_tensor[user_id:user_id+1], item_tensor.t())
-            scores = scores.squeeze(0)  # [num_items]
-            
-            # Mask history items (items already in training set) - CRITICAL FIX
-            history_items = self.user_history.get(user_id, [])
-            for item in history_items:
-                if 1 <= item <= self.num_item:
-                    item_idx = item - 1  # Convert to 0-indexed
-                    scores[item_idx] = -1e9
-            
-            _, top_items = torch.topk(scores, k=k)
-            top_items = (top_items.cpu().numpy() + 1).tolist()  # Convert back to 1-indexed
-            
-            hits = len(set(top_items) & set(gt_items))
-            if len(gt_items) > 0:
-                recalls.append(hits / min(k, len(gt_items)))
+        # Batch size for evaluation (can be adjusted based on GPU memory)
+        batch_size = 512
+        
+        with torch.no_grad():
+            for i in range(0, len(user_ids_list), batch_size):
+                batch_user_ids = user_ids_list[i:i + batch_size]
+                batch_gt_items = gt_items_list[i:i + batch_size]
+                batch_history_items = history_items_list[i:i + batch_size]
+                
+                # Get user embeddings for batch
+                batch_user_indices = torch.tensor(batch_user_ids, dtype=torch.long).to(self.device)
+                batch_user_emb = user_tensor[batch_user_indices]  # [batch_size, dim]
+                
+                # Compute scores for all items for batch users [batch_size, num_items]
+                scores_batch = torch.matmul(batch_user_emb, item_tensor.t())  # [batch_size, num_items]
+                
+                # Mask history items for each user in batch
+                for j, (user_id, history_items) in enumerate(zip(batch_user_ids, batch_history_items)):
+                    for item in history_items:
+                        if 1 <= item <= self.num_item:
+                            item_idx = item - 1  # Convert to 0-indexed
+                            scores_batch[j, item_idx] = -1e9
+                
+                # Get top-K for each user in batch
+                _, top_items_batch = torch.topk(scores_batch, k=k, dim=1)  # [batch_size, k]
+                top_items_batch = (top_items_batch.cpu().numpy() + 1)  # Convert back to 1-indexed
+                
+                # Compute recall for each user in batch
+                for j, (top_items, gt_items) in enumerate(zip(top_items_batch, batch_gt_items)):
+                    top_items_list = top_items.tolist()
+                    hits = len(set(top_items_list) & set(gt_items))
+                    if len(gt_items) > 0:
+                        recalls.append(hits / min(k, len(gt_items)))
         
         return float(np.mean(recalls)) if recalls else 0.0
 
@@ -242,7 +270,7 @@ class MMGCNRetriever(BaseRetriever):
         if self.model is None or self.num_user is None or self.num_item is None:
             raise RuntimeError("MMGCNRetriever model not initialized")
         
-        if user_id >= self.num_user:
+        if user_id > self.num_user or user_id < 1:
             return []
         
         exclude_items = exclude_items or set()

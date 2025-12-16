@@ -39,6 +39,8 @@ parser.add_argument('--rerank_lr', type=float, default=1e-4,
 					help='Learning rate for rerank models (default: 1e-4).')
 parser.add_argument('--rerank_patience', type=int, default=5,
 					help='Early stopping patience (epochs without val improvement) for rerank models.')
+parser.add_argument('--rerank_eval_candidates', type=int, default=20,
+					help='Number of candidates to sample for reranker evaluation (default: 20). Used by all rerankers during validation.')
 parser.add_argument('--qwen_max_candidates', type=int, default=None,
 					help='Maximum number of candidates for Qwen reranker. If None, uses retrieval_top_k from pipeline config.')
 parser.add_argument('--qwen3vl_mode', type=str, default='raw_image',

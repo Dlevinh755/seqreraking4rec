@@ -172,6 +172,37 @@ class VBPR(nn.Module):
             
         return scores
     
+    def predict_batch(self, user_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Predict scores for all items for a batch of users (optimized for batch evaluation).
+        
+        Args:
+            user_ids: User IDs [batch_size] (0-indexed)
+            
+        Returns:
+            Scores for all items for each user [batch_size, n_items]
+        """
+        self.eval()
+        with torch.no_grad():
+            # Get user embeddings
+            gamma_u = self.gamma_user(user_ids)  # [batch_size, dim_gamma]
+            theta_u = self.theta_user(user_ids)  # [batch_size, dim_theta]
+            
+            # Get all item embeddings
+            gamma_i = self.gamma_item.weight  # [n_items, dim_gamma]
+            
+            # Get all visual features
+            visual_i = self.visual_features  # [n_items, visual_dim]
+            projected_visual = self.E(visual_i)  # [n_items, dim_theta]
+            
+            # Compute scores for all users at once
+            cf_scores = torch.matmul(gamma_u, gamma_i.t())  # [batch_size, n_items]
+            visual_scores = torch.matmul(theta_u, projected_visual.t())  # [batch_size, n_items]
+            
+            scores = cf_scores + visual_scores  # [batch_size, n_items]
+            
+        return scores
+    
     def loss(
         self,
         user_ids: torch.Tensor,

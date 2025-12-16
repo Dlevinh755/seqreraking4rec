@@ -39,43 +39,23 @@ RETRIEVAL_SAVE_TOP_K = 20  # how many top candidate scores to store per user
 def _evaluate_split(
     retriever,
     split: Dict[int, List[int]],
-    k: int,
+    k: int = None,
+    ks: Optional[List[int]] = None,
 ) -> Dict[str, float]:
-    """Evaluate retriever on a split. Wrapper for evaluation.utils.evaluate_split."""
-    return evaluate_split(retriever.retrieve, split, k)
-
-    metrics: Dict[str, float] = {}
-    one_hot = F.one_hot(labels, num_classes=scores.size(1))
-    answer_count = one_hot.sum(1)
-
-    labels_float = one_hot.float()
-    rank = (-scores).argsort(dim=1)
-
-    cut = rank
-    device = scores.device
-    for k in sorted(ks, reverse=True):
-        cut = cut[:, :k]
-        hits = labels_float.gather(1, cut)
-
-        # Recall@K
-        denom = torch.min(torch.tensor([k], device=device), labels_float.sum(1).float())
-        metrics[f"Recall@{k}"] = (hits.sum(1) / denom).mean().cpu().item()
-
-        # MRR@K
-        positions = torch.arange(1, k + 1, device=device).unsqueeze(0)
-        metrics[f"MRR@{k}"] = (hits / positions).sum(1).mean().cpu().item()
-
-        # NDCG@K
-        position = torch.arange(2, 2 + k, device=device)
-        weights = 1.0 / torch.log2(position.float())
-        dcg = (hits * weights.to(device)).sum(1)
-        idcg = torch.tensor([
-            weights[: int(min(int(n.item()), k))].sum().item() for n in answer_count
-        ], device=device)
-        ndcg = (dcg / idcg).mean()
-        metrics[f"NDCG@{k}"] = ndcg.cpu().item()
-
-    return metrics
+    """Evaluate retriever on a split. Wrapper for evaluation.utils.evaluate_split.
+    
+    Args:
+        retriever: Retriever instance
+        split: Dict {user_id: [item_ids]} - ground truth
+        k: Single cutoff (used if ks is None)
+        ks: List of K values to evaluate (e.g., [5, 10, 20])
+    """
+    if ks is None:
+        if k is None:
+            ks = [10]  # Default
+        else:
+            ks = [k]
+    return evaluate_split(retriever.retrieve, split, k=k if k else 10, ks=ks)
 
 
 def _build_edge_index(train_data: Dict[int, List[int]], num_user: int, num_item: int) -> np.ndarray:
@@ -339,7 +319,8 @@ def main() -> None:
     print(f"Load best model state from training: {best_epoch_info}")
     print("=" * 80 + "\n")
     print("Evaluating Stage 1 Retrieval on test set...")
-    test_metrics = _evaluate_split(retriever, test, METRIC_K)
+    # Evaluate with multiple K values: 5, 10, 20
+    test_metrics = _evaluate_split(retriever, test, ks=[5, 10, 20])
 
     print("=" * 80)
     print(f"Stage 1 Retrieval Evaluation - Method: {retrieval_method}")
@@ -348,9 +329,24 @@ def main() -> None:
     print(f"min_uc      : {arg.min_uc}")
     print(f"min_sc      : {arg.min_sc}")
     print(f"Retrieval K : {RETRIEVAL_TOP_K}")
-    print(f"Metric K    : {METRIC_K}")
     print("-" * 80)
-    print(f"TEST - users: {test_metrics['num_users']}, Recall@{METRIC_K}: {test_metrics['recall']:.4f}, NDCG@{METRIC_K}: {test_metrics['ndcg']:.4f}")
+    
+    # Format output as requested: Recall@10, NDCG@10, Hit@10, Recall@5, NDCG@5, Hit@5, Recall@20, NDCG@20, Hit@20
+    num_users = test_metrics.get('num_users', 0)
+    recall_5 = test_metrics.get('recall@5', 0.0)
+    ndcg_5 = test_metrics.get('ndcg@5', 0.0)
+    hit_5 = test_metrics.get('hit@5', 0.0)
+    recall_10 = test_metrics.get('recall@10', 0.0)
+    ndcg_10 = test_metrics.get('ndcg@10', 0.0)
+    hit_10 = test_metrics.get('hit@10', 0.0)
+    recall_20 = test_metrics.get('recall@20', 0.0)
+    ndcg_20 = test_metrics.get('ndcg@20', 0.0)
+    hit_20 = test_metrics.get('hit@20', 0.0)
+    
+    print(f"TEST - users: {num_users}, "
+          f"Recall@10: {recall_10:.4f}, NDCG@10: {ndcg_10:.4f}, Hit@10: {hit_10:.4f}, "
+          f"Recall@5: {recall_5:.4f}, NDCG@5: {ndcg_5:.4f}, Hit@5: {hit_5:.4f}, "
+          f"Recall@20: {recall_20:.4f}, NDCG@20: {ndcg_20:.4f}, Hit@20: {hit_20:.4f}")
     print("=" * 80)
 
     # 5) Build retrieved.pkl cho Stage 2 (LlamaRec-compatible format)

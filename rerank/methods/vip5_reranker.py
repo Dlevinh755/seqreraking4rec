@@ -237,8 +237,9 @@ class VIP5Reranker(BaseReranker):
         visual_emb, text_emb = self._load_clip_embeddings(
             dataset_code, min_rating, min_uc, min_sc, num_items
         )
-        self.visual_embeddings = visual_emb
-        self.text_embeddings = text_emb
+        # Move embeddings to device for faster evaluation
+        self.visual_embeddings = visual_emb.to(self.device)
+        self.text_embeddings = text_emb.to(self.device)
         
         # Build item_id to embedding index mapping
         # Assuming item IDs are 1-indexed and embeddings are in order
@@ -775,7 +776,13 @@ class VIP5Reranker(BaseReranker):
                     continue
                 
                 # Limit candidates for efficiency (during training)
-                max_eval_candidates = min(100, len(all_items))
+                # Get eval_candidates from config (default: 20)
+                try:
+                    from config import arg
+                    max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
+                except ImportError:
+                    max_eval_candidates = 20
+                max_eval_candidates = min(max_eval_candidates, len(all_items))
                 candidates = random.sample(all_items, max_eval_candidates) if len(all_items) > max_eval_candidates else all_items
                 
                 # Ensure at least one ground truth is in candidates

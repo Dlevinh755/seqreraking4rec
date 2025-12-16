@@ -949,7 +949,13 @@ Answer with only one number (1-{num_candidates}).
                 continue
             
             # Limit candidates for efficiency
-            max_eval_candidates = min(100, len(all_items))
+            # Get eval_candidates from config (default: 20)
+            try:
+                from config import arg
+                max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
+            except ImportError:
+                max_eval_candidates = 20
+            max_eval_candidates = min(max_eval_candidates, len(all_items))
             candidates = random.sample(all_items, max_eval_candidates) if len(all_items) > max_eval_candidates else all_items
             
             # Ensure at least one ground truth is in candidates
