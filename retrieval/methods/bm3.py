@@ -269,14 +269,20 @@ class BM3Retriever(BaseRetriever):
         gt_items_list = []
         history_items_list = []
         
+        skipped_users = 0
         for user_id, gt_items in split.items():
             if user_id > self.num_user:
+                skipped_users += 1
                 continue
             user_ids_list.append(user_id - 1)  # Convert to 0-indexed
             gt_items_list.append(gt_items)
             history_items_list.append(self.user_history.get(user_id, []))
         
+        if skipped_users > 0:
+            print(f"[BM3Retriever] Warning: Skipped {skipped_users} users with user_id > {self.num_user}")
+        
         if not user_ids_list:
+            print(f"[BM3Retriever] Warning: No valid users in split (total: {len(split)}, skipped: {skipped_users}, num_user: {self.num_user})")
             return 0.0
         
         # Batch size for evaluation (can be adjusted based on GPU memory)

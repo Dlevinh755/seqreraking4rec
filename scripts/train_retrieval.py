@@ -206,8 +206,25 @@ def main() -> None:
     item_count = max(meta.keys()) if meta else 0
     
     # Get number of users and items
-    num_users = max(train.keys()) if train else 0
+    # IMPORTANT: Use max(train.keys()) for embedding size (user_ids are 1-indexed and may not be continuous)
+    # But also track actual number of users for validation
+    num_users = max(train.keys()) if train else 0  # Max user_id (for embedding size)
+    actual_num_users = len(train)  # Actual number of users (for validation/logging)
     num_items = item_count
+    
+    # Debug: Print dataset statistics
+    print(f"\nDataset Statistics:")
+    print(f"  Train users: {len(train)} (max user_id: {num_users})")
+    print(f"  Val users: {len(val)}")
+    print(f"  Test users: {len(test)}")
+    print(f"  Items: {item_count}")
+    if len(test) > 0:
+        max_test_user_id = max(test.keys())
+        print(f"  Max test user_id: {max_test_user_id}")
+        if max_test_user_id > num_users:
+            print(f"  WARNING: Max test user_id ({max_test_user_id}) > num_users ({num_users})!")
+            print(f"  This will cause test users to be skipped during evaluation.")
+    print()
 
     RetrieverCls = get_retriever_class(retrieval_method)
     

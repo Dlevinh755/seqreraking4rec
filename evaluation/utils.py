@@ -40,12 +40,21 @@ def evaluate_split(
     
     users = sorted(split.keys())
     
+    if len(users) == 0:
+        print(f"[evaluate_split] WARNING: Split is empty (no users)!")
+        return {"num_users": 0, **{f"recall@{k}": 0.0 for k in ks}, **{f"ndcg@{k}": 0.0 for k in ks}, **{f"hit@{k}": 0.0 for k in ks}}
+    
     # Initialize lists for each K
     metrics_by_k = {k_val: {"recalls": [], "ndcgs": [], "hits": []} for k_val in ks}
+    
+    skipped_no_gt = 0
+    skipped_no_recs = 0
+    evaluated = 0
     
     for user_id in users:
         gt_items = split.get(user_id, [])
         if not gt_items:
+            skipped_no_gt += 1
             continue
         
         # Get recommendations
@@ -56,7 +65,10 @@ def evaluate_split(
             recs = recommend_fn(user_id)
         
         if not recs:
+            skipped_no_recs += 1
             continue
+        
+        evaluated += 1
         
         # Compute metrics for each K
         for k_val in ks:
@@ -67,6 +79,11 @@ def evaluate_split(
             metrics_by_k[k_val]["recalls"].append(r)
             metrics_by_k[k_val]["ndcgs"].append(n)
             metrics_by_k[k_val]["hits"].append(h)
+    
+    # Debug info
+    if skipped_no_gt > 0 or skipped_no_recs > 0:
+        print(f"[evaluate_split] Total users: {len(users)}, Evaluated: {evaluated}, "
+              f"Skipped (no GT): {skipped_no_gt}, Skipped (no recs): {skipped_no_recs}")
     
     # Aggregate results
     result = {"num_users": len(users)}

@@ -204,14 +204,20 @@ class MMGCNRetriever(BaseRetriever):
         gt_items_list = []
         history_items_list = []
         
+        skipped_users = 0
         for user_id, gt_items in split.items():
             if user_id > self.num_user or user_id < 1:
+                skipped_users += 1
                 continue
             user_ids_list.append(user_id)
             gt_items_list.append(gt_items)
             history_items_list.append(self.user_history.get(user_id, []))
         
+        if skipped_users > 0:
+            print(f"[MMGCNRetriever] Warning: Skipped {skipped_users} users with user_id > {self.num_user} or < 1")
+        
         if not user_ids_list:
+            print(f"[MMGCNRetriever] Warning: No valid users in split (total: {len(split)}, skipped: {skipped_users}, num_user: {self.num_user})")
             return 0.0
         
         recalls = []

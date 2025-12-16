@@ -148,6 +148,12 @@ class VBPRRetriever(BaseRetriever):
         # Prepare training samples (user, pos_item, neg_item)
         train_samples = self._prepare_training_samples(train_data)
         
+        if len(train_samples) == 0:
+            raise ValueError("No training samples generated! Check train_data and num_item.")
+        
+        print(f"[VBPRRetriever] Generated {len(train_samples)} training samples")
+        print(f"[VBPRRetriever] Using learning rate: {self.lr}, optimizer: SGD")
+        
         for epoch in range(self.num_epochs):
             self.model.train()
             total_loss = 0.0
@@ -247,14 +253,20 @@ class VBPRRetriever(BaseRetriever):
         gt_items_list = []
         history_items_list = []
         
+        skipped_users = 0
         for user_id, gt_items in split.items():
             if user_id > self.num_user:
+                skipped_users += 1
                 continue
             user_ids_list.append(user_id - 1)  # Convert to 0-indexed
             gt_items_list.append(gt_items)
             history_items_list.append(self.user_history.get(user_id, []))
         
+        if skipped_users > 0:
+            print(f"[VBPRRetriever] Warning: Skipped {skipped_users} users with user_id > {self.num_user}")
+        
         if not user_ids_list:
+            print(f"[VBPRRetriever] Warning: No valid users in split (total: {len(split)}, skipped: {skipped_users})")
             return 0.0
         
         # Batch size for evaluation (can be adjusted based on GPU memory)
