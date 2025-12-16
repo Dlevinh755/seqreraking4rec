@@ -776,6 +776,13 @@ class VIP5Reranker(BaseReranker):
                 if not all_items:
                     continue
                 
+                # ✅ FIX: Exclude history items from candidate pool (avoid recommending already purchased items)
+                history_set = set(history)
+                candidate_pool = [item for item in all_items if item not in history_set]
+                
+                if not candidate_pool:
+                    continue  # No candidates available after excluding history
+                
                 # Limit candidates for efficiency (during training)
                 # Get eval_candidates from config (default: 20)
                 try:
@@ -783,13 +790,16 @@ class VIP5Reranker(BaseReranker):
                     max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
                 except ImportError:
                     max_eval_candidates = 20
-                max_eval_candidates = min(max_eval_candidates, len(all_items))
-                candidates = random.sample(all_items, max_eval_candidates) if len(all_items) > max_eval_candidates else all_items
+                max_eval_candidates = min(max_eval_candidates, len(candidate_pool))
+                candidates = random.sample(candidate_pool, max_eval_candidates) if len(candidate_pool) > max_eval_candidates else candidate_pool
                 
                 # Ensure at least one ground truth is in candidates
                 if not any(item in candidates for item in gt_items):
                     # Add one ground truth item
                     candidates[0] = gt_items[0]
+                
+                # ✅ Shuffle candidates to avoid bias (GT item should not always be first)
+                random.shuffle(candidates)
                 
                 # Rerank candidates using internal logic (bypass validation check)
                 # Encode user history + each candidate separately (same as rerank method)

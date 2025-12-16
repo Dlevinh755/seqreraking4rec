@@ -135,24 +135,24 @@ class Qwen3VLReranker(BaseReranker):
         
         self.is_fitted = True
     
-    def rerank(
+    def _rerank_internal(
         self,
         user_id: int,
         candidates: List[int],
+        user_history: Optional[List[int]] = None,
         **kwargs: Any
     ) -> List[Tuple[int, float]]:
-        """Rerank candidates cho một user.
+        """Internal rerank method without validation check (for use during training).
         
         Args:
             user_id: ID của user
             candidates: List các item IDs cần rerank
+            user_history: Optional user history (if not provided, uses self.user_history)
             **kwargs: Additional arguments (không dùng ở đây)
             
         Returns:
             List[Tuple[int, float]]: [(item_id, score)] đã sort giảm dần
         """
-        self._validate_fitted()
-        
         if self.qwen3vl_model is None:
             raise RuntimeError("Qwen3-VL model chưa được load. Gọi fit() trước!")
         
@@ -164,7 +164,10 @@ class Qwen3VLReranker(BaseReranker):
             candidates = candidates[:self.max_candidates]
         
         # Lấy user history
-        history = self.user_history.get(user_id, [])
+        if user_history is None:
+            history = self.user_history.get(user_id, [])
+        else:
+            history = user_history
         history = history[-self.max_history:]  # Chỉ lấy max_history items gần nhất
         
         # Predict probabilities
@@ -195,6 +198,30 @@ class Qwen3VLReranker(BaseReranker):
             scored.append((item_id, score))
         
         return scored
+    
+    def rerank(
+        self,
+        user_id: int,
+        candidates: List[int],
+        **kwargs: Any
+    ) -> List[Tuple[int, float]]:
+        """Rerank candidates cho một user.
+        
+        Args:
+            user_id: ID của user
+            candidates: List các item IDs cần rerank
+            **kwargs: Additional arguments:
+                - user_history: List[int] - user's interaction history (optional)
+            
+        Returns:
+            List[Tuple[int, float]]: [(item_id, score)] đã sort giảm dần
+        """
+        self._validate_fitted()
+        
+        # Extract user_history from kwargs if provided
+        user_history = kwargs.get("user_history")
+        
+        return self._rerank_internal(user_id, candidates, user_history=user_history, **kwargs)
     
     def _prepare_training_samples(
         self,
@@ -330,13 +357,13 @@ class Qwen3VLReranker(BaseReranker):
             remove_columns=hf_train_dataset.column_names,
         )
         
-        # Training arguments
+        # Training arguments - set num_train_epochs=1 because we'll call trainer.train() in a loop
         training_args = TrainingArguments(
             output_dir="./qwen3vl_rerank",
             per_device_train_batch_size=self.batch_size,
             gradient_accumulation_steps=1,
             learning_rate=self.lr,
-            num_train_epochs=self.num_epochs,
+            num_train_epochs=1,  # ✅ Set to 1 - we'll train 1 epoch per loop iteration
             logging_steps=50,
             save_steps=500,
             report_to="none",
@@ -584,6 +611,9 @@ class Qwen3VLReranker(BaseReranker):
             # For text-only modes, UnslothVisionDataCollator should work with vision models
             if self.mode == "raw_image":
                 # For raw_image mode, we need to build messages with images from item_ids
+                # Track if we've already warned about UnslothVisionDataCollator failure
+                _unsloth_warned = [False]  # Use list to allow modification in nested function
+                
                 def custom_collate_fn(batch):
                     """Custom collate function that loads images and uses UnslothVisionDataCollator."""
                     # Build messages with images for each item in batch
@@ -618,13 +648,19 @@ class Qwen3VLReranker(BaseReranker):
                         return data_collator(messages_batch)
                     except (TypeError, ValueError) as e:
                         # If UnslothVisionDataCollator fails, fallback to standard collate
-                        print(f"Warning: UnslothVisionDataCollator failed: {e}")
-                        print("Falling back to standard collate function...")
+                        # Only warn once to avoid spam
+                        if not _unsloth_warned[0]:
+                            print(f"Warning: UnslothVisionDataCollator failed: {e}")
+                            print("Falling back to standard collate function...")
+                            _unsloth_warned[0] = True
                         # Use batch_with_target which has the correct format for collate_fn
                         return collate_fn(batch_with_target)
             else:
                 # For text-only modes, try UnslothVisionDataCollator (only works with vision models)
                 # But also prepare a fallback collate_fn in case it fails
+                # Track if we've already warned about UnslothVisionDataCollator failure
+                _text_unsloth_warned = [False]  # Use list to allow modification in nested function
+                
                 def text_only_collate_fn(batch):
                     """Custom collate function for text-only modes with fallback."""
                     # Try UnslothVisionDataCollator first
@@ -638,8 +674,11 @@ class Qwen3VLReranker(BaseReranker):
                         return data_collator(messages_batch)
                     except (TypeError, ValueError) as e:
                         # Fallback to standard collate_fn
-                        print(f"Warning: UnslothVisionDataCollator failed for text-only mode: {e}")
-                        print("Falling back to standard collate function...")
+                        # Only warn once to avoid spam
+                        if not _text_unsloth_warned[0]:
+                            print(f"Warning: UnslothVisionDataCollator failed for text-only mode: {e}")
+                            print("Falling back to standard collate function...")
+                            _text_unsloth_warned[0] = True
                         # Use standard collate_fn which expects prompt and target
                         return collate_fn(batch)
                 
@@ -659,11 +698,12 @@ class Qwen3VLReranker(BaseReranker):
             
             if USE_UNSLOTH_TRAINER:
                 # Training config with vision-specific settings
+                # Set num_train_epochs=1 because we'll call trainer.train() in a loop
                 training_args = SFTConfig(
                     per_device_train_batch_size=self.batch_size,
                     gradient_accumulation_steps=1,
                     warmup_steps=5,
-                    num_train_epochs=self.num_epochs,
+                    num_train_epochs=1,  # ✅ Set to 1 - we'll train 1 epoch per loop iteration
                     learning_rate=self.lr,
                     logging_steps=50,
                     optim="adamw_8bit",  # Use 8-bit optimizer for memory efficiency
@@ -730,13 +770,13 @@ class Qwen3VLReranker(BaseReranker):
                     batched=True,
                 )
             
-            # Training arguments
+            # Training arguments - set num_train_epochs=1 because we'll call trainer.train() in a loop
             training_args = TrainingArguments(
                 output_dir="./qwen3vl_rerank_vl",
                 per_device_train_batch_size=self.batch_size,
                 gradient_accumulation_steps=1,
                 learning_rate=self.lr,
-                num_train_epochs=self.num_epochs,
+                num_train_epochs=1,  # ✅ Set to 1 - we'll train 1 epoch per loop iteration
                 logging_steps=50,
                 save_steps=500,
                 report_to="none",
@@ -1018,6 +1058,13 @@ Answer with only one number (1-{num_candidates}).
             if not all_items:
                 continue
             
+            # ✅ FIX: Exclude history items from candidate pool (avoid recommending already purchased items)
+            history_set = set(history)
+            candidate_pool = [item for item in all_items if item not in history_set]
+            
+            if not candidate_pool:
+                continue  # No candidates available after excluding history
+            
             # Limit candidates for efficiency
             # Get eval_candidates from config (default: 20)
             try:
@@ -1025,16 +1072,19 @@ Answer with only one number (1-{num_candidates}).
                 max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
             except ImportError:
                 max_eval_candidates = 20
-            max_eval_candidates = min(max_eval_candidates, len(all_items))
-            candidates = random.sample(all_items, max_eval_candidates) if len(all_items) > max_eval_candidates else all_items
+            max_eval_candidates = min(max_eval_candidates, len(candidate_pool))
+            candidates = random.sample(candidate_pool, max_eval_candidates) if len(candidate_pool) > max_eval_candidates else candidate_pool
             
             # Ensure at least one ground truth is in candidates
             if not any(item in candidates for item in gt_items):
                 # Add one ground truth item
                 candidates[0] = gt_items[0]
             
-            # Rerank
-            reranked = self.rerank(user_id, candidates, user_history=history)
+            # ✅ Shuffle candidates to avoid bias (GT item should not always be first)
+            random.shuffle(candidates)
+            
+            # Rerank (use _rerank_internal to bypass validation check during training)
+            reranked = self._rerank_internal(user_id, candidates, user_history=history)
             
             # Get top-K item IDs
             top_k_items = [item_id for item_id, _ in reranked[:k]]

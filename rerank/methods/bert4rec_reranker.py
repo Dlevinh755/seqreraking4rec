@@ -354,6 +354,13 @@ class BERT4RecReranker(BaseReranker):
                 # Get all items as candidates (for evaluation)
                 all_items = list(range(1, self.vocab_size))
                 
+                # ✅ FIX: Exclude history items from candidate pool (avoid recommending already purchased items)
+                history_set = set(valid_history)
+                candidate_pool = [item for item in all_items if item not in history_set]
+                
+                if not candidate_pool:
+                    continue  # No candidates available after excluding history
+                
                 # Limit candidates for efficiency (during training evaluation)
                 # BERT4Rec is a reranker, so it only needs to rerank candidates, not full ranking
                 # Get eval_candidates from config (default: 20)
@@ -362,8 +369,8 @@ class BERT4RecReranker(BaseReranker):
                     max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
                 except ImportError:
                     max_eval_candidates = 20
-                max_eval_candidates = min(max_eval_candidates, len(all_items))
-                candidates = random.sample(all_items, max_eval_candidates) if len(all_items) > max_eval_candidates else all_items
+                max_eval_candidates = min(max_eval_candidates, len(candidate_pool))
+                candidates = random.sample(candidate_pool, max_eval_candidates) if len(candidate_pool) > max_eval_candidates else candidate_pool
                 
                 # Filter gt_items to valid range [1, vocab_size-1]
                 valid_gt_items = [item for item in gt_items if 1 <= item < self.vocab_size]
@@ -372,6 +379,9 @@ class BERT4RecReranker(BaseReranker):
                 if valid_gt_items and not any(item in candidates for item in valid_gt_items):
                     # Add one ground truth item (if valid)
                     candidates[0] = valid_gt_items[0]
+                
+                # ✅ Shuffle candidates to avoid bias (GT item should not always be first)
+                random.shuffle(candidates)
                 
                 # Filter candidates to valid range [1, vocab_size-1]
                 candidates = [item for item in candidates if 1 <= item < self.vocab_size]
