@@ -54,6 +54,15 @@ parser.add_argument('--vbpr_lambda_reg', type=float, default=0.01,
 parser.add_argument('--vbpr_optimizer', type=str, default='adam',
 					choices=['adam', 'sgd'],
 					help='VBPR optimizer (default: adam, recommended for better convergence)')
+# BM3-specific hyperparameters
+parser.add_argument('--bm3_embed_dim', type=int, default=64,
+					help='BM3 embedding dimension (default: 64, recommended: 128-256 for better performance)')
+parser.add_argument('--bm3_layers', type=int, default=1,
+					help='BM3 number of MLP layers for feature fusion (default: 1, recommended: 2-3 for better performance)')
+parser.add_argument('--bm3_dropout', type=float, default=0.1,
+					help='BM3 dropout rate (default: 0.1, range: 0.0-0.5, lower dropout may improve performance)')
+parser.add_argument('--bm3_reg_weight', type=float, default=1e-4,
+					help='BM3 regularization weight (default: 1e-4, range: 1e-5 to 1e-3)')
 parser.add_argument('--rerank_epochs', type=int, default=100,
 					help='Number of training epochs for rerank models (e.g., BERT4Rec).')
 parser.add_argument('--rerank_batch_size', type=int, default=8,

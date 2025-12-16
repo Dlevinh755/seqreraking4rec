@@ -669,6 +669,14 @@ def main() -> None:
         })
     
     elif retrieval_method == "bm3":
+        # Add BM3-specific hyperparameters to retriever_kwargs
+        retriever_kwargs.update({
+            "embed_dim": getattr(arg, 'bm3_embed_dim', 64),
+            "layers": getattr(arg, 'bm3_layers', 1),
+            "dropout": getattr(arg, 'bm3_dropout', 0.1),
+            "reg_weight": getattr(arg, 'bm3_reg_weight', 1e-4),
+        })
+        
         print("Loading CLIP embeddings for BM3...")
         v_feat, t_feat = _load_clip_embeddings(
             arg.dataset_code,
@@ -686,6 +694,20 @@ def main() -> None:
         # Convert to torch.Tensor (BM3 expects torch.Tensor)
         visual_features = torch.from_numpy(v_feat).float()
         text_features = torch.from_numpy(t_feat).float()
+        
+        # Print BM3 hyperparameters
+        embed_dim = retriever_kwargs['embed_dim']
+        layers = retriever_kwargs['layers']
+        dropout = retriever_kwargs['dropout']
+        reg_weight = retriever_kwargs['reg_weight']
+        lr = retriever_kwargs['lr']
+        print(f"\nBM3 Hyperparameters:")
+        print(f"  embed_dim: {embed_dim} {'(⚠️ Consider increasing to 128-256 for better performance)' if embed_dim < 128 else ''}")
+        print(f"  layers: {layers} {'(⚠️ Consider increasing to 2-3 for better performance)' if layers < 2 else ''}")
+        print(f"  dropout: {dropout} {'(⚠️ Consider reducing to 0.0-0.05 if performance is low)' if dropout > 0.1 else ''}")
+        print(f"  reg_weight: {reg_weight}")
+        print(f"  lr: {lr} {'(⚠️ Consider increasing to 2e-3 if performance is low)' if lr < 2e-3 else ''}")
+        print()
         
         fit_kwargs.update({
             "num_user": num_users,

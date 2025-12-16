@@ -150,11 +150,11 @@ class BM3Retriever(BaseRetriever):
         
         # Initialize model
         print(f"[BM3Retriever] Model configuration:")
-        print(f"  embed_dim: {self.embed_dim}")
-        print(f"  layers: {self.layers}")
-        print(f"  dropout: {self.dropout} (⚠️ Consider reducing to 0.1 if performance is low)")
-        print(f"  reg_weight: {self.reg_weight} (⚠️ Consider reducing to 1e-4 if performance is low)")
-        print(f"  lr: {self.lr}")
+        print(f"  embed_dim: {self.embed_dim} {'(⚠️ Consider increasing to 128-256 for better performance)' if self.embed_dim < 128 else ''}")
+        print(f"  layers: {self.layers} {'(⚠️ Consider increasing to 2-3 for better performance)' if self.layers < 2 else ''}")
+        print(f"  dropout: {self.dropout} {'(⚠️ Consider reducing to 0.0-0.05 if performance is low)' if self.dropout > 0.1 else ''}")
+        print(f"  reg_weight: {self.reg_weight}")
+        print(f"  lr: {self.lr} {'(⚠️ Consider increasing to 2e-3 if performance is low)' if self.lr < 2e-3 else ''}")
         print(f"  visual_dim: {self.visual_features.size(1)}, text_dim: {self.text_features.size(1)}")
         
         self.model = BM3(
