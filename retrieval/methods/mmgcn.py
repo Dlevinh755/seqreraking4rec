@@ -139,8 +139,14 @@ class MMGCNRetriever(BaseRetriever):
                     if i not in items
                 ])
                 
-                user_tensor = torch.tensor([user_id, user_id], dtype=torch.long)
-                item_tensor = torch.tensor([pos_item, neg_item], dtype=torch.long)
+                # Convert to graph indices:
+                # - Users: 0-indexed (0 to num_user-1)
+                # - Items: offset by num_user (num_user to num_user+num_item-1)
+                user_tensor = torch.tensor([user_id - 1, user_id - 1], dtype=torch.long)  # 0-indexed
+                item_tensor = torch.tensor([
+                    self.num_user + pos_item - 1,  # Graph index: offset by num_user
+                    self.num_user + neg_item - 1   # Graph index: offset by num_user
+                ], dtype=torch.long)
                 
                 optimizer.zero_grad()
                 loss, _, _, _, _ = self.model.loss(
@@ -231,7 +237,8 @@ class MMGCNRetriever(BaseRetriever):
                 batch_history_items = history_items_list[i:i + batch_size]
                 
                 # Get user embeddings for batch
-                batch_user_indices = torch.tensor(batch_user_ids, dtype=torch.long).to(self.device)
+                # Convert user_ids from 1-indexed to 0-indexed for indexing into user_tensor
+                batch_user_indices = torch.tensor([uid - 1 for uid in batch_user_ids], dtype=torch.long).to(self.device)
                 batch_user_emb = user_tensor[batch_user_indices]  # [batch_size, dim]
                 
                 # Compute scores for all items for batch users [batch_size, num_items]
@@ -286,8 +293,9 @@ class MMGCNRetriever(BaseRetriever):
         with torch.no_grad():
             self.model.forward()  # Update self.result
         
-        user_emb = self.model.result[user_id:user_id+1]
-        item_emb = self.model.result[self.num_user:]
+        # Convert user_id from 1-indexed to 0-indexed for indexing into result
+        user_emb = self.model.result[user_id - 1:user_id]  # [1, dim]
+        item_emb = self.model.result[self.num_user:]  # [num_item, dim]
         
         # Compute scores
         scores = torch.matmul(user_emb, item_emb.t()).squeeze(0)

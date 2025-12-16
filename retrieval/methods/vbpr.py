@@ -31,6 +31,7 @@ class VBPRRetriever(BaseRetriever):
         num_epochs: int = 10,
         lr: float = 5e-4,
         lambda_reg: float = 0.01,
+        optimizer: str = "adam",  # "sgd" or "adam" (default: adam for better convergence)
         patience: Optional[int] = None,
         device: Optional[str] = None,
     ) -> None:
@@ -43,6 +44,7 @@ class VBPRRetriever(BaseRetriever):
             num_epochs: Số epochs (default: 10)
             lr: Learning rate (default: 5e-4, following VBPR paper)
             lambda_reg: Regularization weight (default: 0.01)
+            optimizer: Optimizer to use ("sgd" or "adam", default: "sgd")
             patience: Early stopping patience (None = no early stopping)
             device: Device to use ("cuda" or "cpu", auto-detect if None)
         """
@@ -53,6 +55,7 @@ class VBPRRetriever(BaseRetriever):
         self.num_epochs = num_epochs
         self.lr = lr
         self.lambda_reg = lambda_reg
+        self.optimizer_name = optimizer.lower()
         self.patience = patience
         
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -138,7 +141,17 @@ class VBPRRetriever(BaseRetriever):
         ).to(self.device)
         
         # Training loop
-        optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
+        # Note: VBPR paper uses SGD with lr=5e-4. If lr is too small (e.g., 1e-4), 
+        # model may not learn effectively. Consider using Adam or increasing lr.
+        if self.optimizer_name == "adam":
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+            print(f"[VBPRRetriever] Using Adam optimizer with lr={self.lr}")
+        else:
+            if self.lr < 1e-3:
+                print(f"[VBPRRetriever] WARNING: Learning rate {self.lr} may be too small for SGD.")
+                print(f"  VBPR paper uses 5e-4. Consider using Adam optimizer (--optimizer adam) or increasing lr to 5e-4.")
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
+            print(f"[VBPRRetriever] Using SGD optimizer with lr={self.lr}")
         best_state = None
         best_val_recall = -1.0
         epochs_no_improve = 0
@@ -152,7 +165,6 @@ class VBPRRetriever(BaseRetriever):
             raise ValueError("No training samples generated! Check train_data and num_item.")
         
         print(f"[VBPRRetriever] Generated {len(train_samples)} training samples")
-        print(f"[VBPRRetriever] Using learning rate: {self.lr}, optimizer: SGD")
         
         for epoch in range(self.num_epochs):
             self.model.train()
@@ -177,6 +189,48 @@ class VBPRRetriever(BaseRetriever):
                     user_ids, pos_ids, neg_ids, lambda_reg=self.lambda_reg
                 )
                 loss.backward()
+                
+                # Debug: Print loss components (only for first batch of first epoch)
+                if epoch == 0 and i == 0:
+                    # Manually compute loss components for debugging
+                    pos_scores = self.model.forward(user_ids, pos_ids)
+                    neg_scores = self.model.forward(user_ids, neg_ids)
+                    diff = pos_scores - neg_scores
+                    bpr_loss_debug = -torch.log(torch.sigmoid(diff) + 1e-10).mean()
+                    
+                    gamma_u = self.model.gamma_user(user_ids)
+                    gamma_i_pos = self.model.gamma_item(pos_ids)
+                    gamma_i_neg = self.model.gamma_item(neg_ids)
+                    theta_u = self.model.theta_user(user_ids)
+                    batch_size = user_ids.size(0)
+                    reg_loss_debug = self.lambda_reg * (
+                        torch.sum(gamma_u ** 2) +
+                        torch.sum(gamma_i_pos ** 2) +
+                        torch.sum(gamma_i_neg ** 2) +
+                        torch.sum(theta_u ** 2)
+                    ) / batch_size
+                    
+                    print(f"[VBPRRetriever] Loss breakdown (first batch):")
+                    print(f"  BPR loss: {bpr_loss_debug.item():.6f}")
+                    print(f"  Reg loss: {reg_loss_debug.item():.6f} (lambda={self.lambda_reg})")
+                    print(f"  Total loss: {loss.item():.6f}")
+                
+                # Debug: Check gradient norms (only for first batch of first epoch)
+                if epoch == 0 and i == 0:
+                    total_grad_norm = 0.0
+                    param_count = 0
+                    for name, param in self.model.named_parameters():
+                        if param.grad is not None:
+                            param_grad_norm = param.grad.data.norm(2).item()
+                            total_grad_norm += param_grad_norm ** 2
+                            param_count += 1
+                            if param_count <= 3:  # Print first 3 params
+                                print(f"[VBPRRetriever] Gradient norm for {name}: {param_grad_norm:.6f}")
+                    total_grad_norm = total_grad_norm ** 0.5
+                    print(f"[VBPRRetriever] Total gradient norm: {total_grad_norm:.6f}")
+                    if total_grad_norm < 1e-6:
+                        print(f"[VBPRRetriever] WARNING: Gradient norm is very small! Model may not be learning.")
+                
                 optimizer.step()
                 
                 total_loss += loss.item()

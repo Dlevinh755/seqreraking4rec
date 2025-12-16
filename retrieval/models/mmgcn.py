@@ -210,8 +210,17 @@ class Net(torch.nn.Module):
         self.weight = self.weight.to(score.device)
         logits = torch.matmul(score, self.weight)  # [B, 1]
         base_loss = torch.nn.functional.softplus(-logits).mean()
-        reg_embedding_loss = (self.id_embedding[user_tensor]**2 + self.id_embedding[item_tensor]**2).mean()+(self.v_gcn.preference**2).mean()
-        reg_loss = self.reg_weight * (reg_embedding_loss)
+        
+        # Regularization:
+        # - id_embedding: chỉ tính cho batch hiện tại (2 users + 2 items)
+        #   Normalize by batch_size để scale nhất quán với BPR loss (giống VBPR)
+        # - preference: tính cho toàn bộ users (global parameter), giữ nguyên scale
+        batch_size = user_tensor.size(0)  # Usually 2 (pos + neg)
+        id_reg_sum = torch.sum(self.id_embedding[user_tensor]**2) + torch.sum(self.id_embedding[item_tensor]**2)
+        id_reg = id_reg_sum / batch_size  # Normalize by batch_size (consistent with VBPR)
+        pref_reg = (self.v_gcn.preference**2).mean()  # Global parameter, keep original scale
+        reg_embedding_loss = id_reg + pref_reg
+        reg_loss = self.reg_weight * reg_embedding_loss
         loss = base_loss + reg_loss
         return loss, reg_loss, base_loss, reg_embedding_loss, reg_embedding_loss
 

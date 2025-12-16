@@ -230,18 +230,20 @@ class VBPR(nn.Module):
         diff = pos_scores - neg_scores
         bpr_loss = -torch.log(torch.sigmoid(diff) + 1e-10).mean()
         
-        # Regularization
-        gamma_u = self.gamma_user(user_ids)
-        gamma_i_pos = self.gamma_item(pos_item_ids)
-        gamma_i_neg = self.gamma_item(neg_item_ids)
-        theta_u = self.theta_user(user_ids)
+        # Regularization (normalized by batch size to match BPR loss scale)
+        gamma_u = self.gamma_user(user_ids)  # [batch_size, dim_gamma]
+        gamma_i_pos = self.gamma_item(pos_item_ids)  # [batch_size, dim_gamma]
+        gamma_i_neg = self.gamma_item(neg_item_ids)  # [batch_size, dim_gamma]
+        theta_u = self.theta_user(user_ids)  # [batch_size, dim_theta]
         
+        # Normalize regularization by batch size to keep it in same scale as BPR loss
+        batch_size = user_ids.size(0)
         reg_loss = lambda_reg * (
             torch.sum(gamma_u ** 2) +
             torch.sum(gamma_i_pos ** 2) +
             torch.sum(gamma_i_neg ** 2) +
             torch.sum(theta_u ** 2)
-        )
+        ) / batch_size  # Normalize by batch size
         
         total_loss = bpr_loss + reg_loss
         

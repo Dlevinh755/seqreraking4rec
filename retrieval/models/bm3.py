@@ -126,14 +126,15 @@ class BM3(nn.Module):
         self._init_embeddings()
     
     def _init_embeddings(self):
-        """Initialize embeddings with small random values."""
-        nn.init.normal_(self.user_embedding.weight, mean=0.0, std=0.01)
-        nn.init.normal_(self.item_embedding.weight, mean=0.0, std=0.01)
-        nn.init.normal_(self.visual_proj.weight, mean=0.0, std=0.01)
-        nn.init.normal_(self.text_proj.weight, mean=0.0, std=0.01)
+        """Initialize embeddings with Xavier normal initialization for better convergence."""
+        # Use Xavier normal for embeddings (standard for recommendation models)
+        nn.init.xavier_normal_(self.user_embedding.weight)
+        nn.init.xavier_normal_(self.item_embedding.weight)
+        nn.init.xavier_normal_(self.visual_proj.weight)
+        nn.init.xavier_normal_(self.text_proj.weight)
         
         for layer in self.fusion_layers:
-            nn.init.normal_(layer.weight, mean=0.0, std=0.01)
+            nn.init.xavier_normal_(layer.weight)
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)
     
@@ -310,16 +311,18 @@ class BM3(nn.Module):
         diff = pos_scores - neg_scores
         bpr_loss = -torch.log(torch.sigmoid(diff) + 1e-10).mean()
         
-        # Regularization
+        # Regularization (normalized by batch size to match BPR loss scale)
         user_emb = self.user_embedding(user_ids)
         item_emb_pos = self.item_embedding(pos_item_ids)
         item_emb_neg = self.item_embedding(neg_item_ids)
         
+        # Normalize regularization by batch size to keep it in same scale as BPR loss
+        batch_size = user_ids.size(0)
         reg_loss = lambda_reg * (
             torch.sum(user_emb ** 2) +
             torch.sum(item_emb_pos ** 2) +
             torch.sum(item_emb_neg ** 2)
-        )
+        ) / batch_size  # Normalize by batch size
         
         total_loss = bpr_loss + reg_loss
         
