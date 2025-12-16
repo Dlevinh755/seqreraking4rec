@@ -144,17 +144,24 @@ class LLMModel:
             remove_columns=hf_train_dataset.column_names,
         )
 
+        # Get num_epochs from config if available
+        try:
+            from config import arg
+            num_epochs = getattr(arg, 'rerank_epochs', 2)
+        except ImportError:
+            num_epochs = 2
+        
         training_args = TrainingArguments(
-        output_dir="./qwen_rerank",
-        per_device_train_batch_size=8,
-        gradient_accumulation_steps=4,
-        learning_rate=2e-5,
-        num_train_epochs=2,
-        logging_steps=50,
-        save_steps=500,
-        report_to="none",
-      #  bf16=True,
-    )
+            output_dir="./qwen_rerank",
+            per_device_train_batch_size=8,
+            gradient_accumulation_steps=4,
+            learning_rate=2e-5,
+            num_train_epochs=num_epochs,
+            logging_steps=50,
+            save_steps=500,
+            report_to="none",
+            # bf16=True,
+        )
 
         trainer = Trainer(
             model=self.model,
@@ -162,6 +169,11 @@ class LLMModel:
             train_dataset=hf_train_dataset,
             tokenizer=self.tokenizer,
         )
+        
+        # ✅ Actually train the model!
+        print(f"[LLMModel] Starting training for {num_epochs} epochs...")
+        trainer.train()
+        print(f"[LLMModel] Training completed!")
 
 
 

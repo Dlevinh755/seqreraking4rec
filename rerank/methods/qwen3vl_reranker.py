@@ -399,6 +399,8 @@ class Qwen3VLReranker(BaseReranker):
             return
         
         from datasets import Dataset
+        # ✅ Import TrainingArguments and Trainer at the top (always needed for fallback)
+        from transformers import TrainingArguments, Trainer
         
         # Try to use Unsloth's training API for vision models
         try:
@@ -409,7 +411,6 @@ class Qwen3VLReranker(BaseReranker):
         except ImportError:
             print("Warning: Unsloth trainer not available. Using standard transformers Trainer.")
             USE_UNSLOTH_TRAINER = False
-            from transformers import TrainingArguments, Trainer
         
         # Prepare training data in Unsloth format (messages format)
         # Note: For raw_image mode, we store item_ids and load images dynamically
