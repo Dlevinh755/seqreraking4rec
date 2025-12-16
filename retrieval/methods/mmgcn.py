@@ -122,45 +122,67 @@ class MMGCNRetriever(BaseRetriever):
         
         val_data = kwargs.get("val_data")
         
+        # Prepare training samples: mỗi positive item trong training data sẽ có 1 negative tương ứng
+        train_samples = []
+        all_items = set(range(1, self.num_item + 1))
+        
+        for user_id, items in train_data.items():
+            if len(items) < 1:
+                continue
+            
+            # Với mỗi positive item trong training data, sample 1 negative tương ứng
+            for pos_item in items:
+                # Sample negative item (not in user's history)
+                neg_candidates = list(all_items - set(items))
+                if len(neg_candidates) == 0:
+                    continue
+                neg_item = np.random.choice(neg_candidates)
+                train_samples.append((user_id, pos_item, neg_item))
+        
+        print(f"[MMGCNRetriever] Generated {len(train_samples)} training samples")
+        
         for epoch in range(self.num_epochs):
             self.model.train()
             total_loss = 0.0
             num_batches = 0
             
-            # Sample training batches
-            for user_id, items in train_data.items():
-                if len(items) < 2:
-                    continue
+            # Shuffle training samples
+            np.random.shuffle(train_samples)
+            
+            # Process in batches
+            for i in range(0, len(train_samples), self.batch_size):
+                batch_samples = train_samples[i:i + self.batch_size]
                 
-                # Sample positive and negative
-                pos_item = items[-1]
-                neg_item = np.random.choice([
-                    i for i in range(1, self.num_item + 1) 
-                    if i not in items
-                ])
+                # Prepare batch tensors
+                user_ids_batch = []
+                pos_items_batch = []
+                neg_items_batch = []
                 
-                # Convert to graph indices:
-                # - Users: 0-indexed (0 to num_user-1)
-                # - Items: offset by num_user (num_user to num_user+num_item-1)
-                user_tensor = torch.tensor([user_id - 1, user_id - 1], dtype=torch.long)  # 0-indexed
-                item_tensor = torch.tensor([
-                    self.num_user + pos_item - 1,  # Graph index: offset by num_user
-                    self.num_user + neg_item - 1   # Graph index: offset by num_user
-                ], dtype=torch.long)
+                for user_id, pos_item, neg_item in batch_samples:
+                    user_ids_batch.append(user_id - 1)  # 0-indexed
+                    pos_items_batch.append(self.num_user + pos_item - 1)  # Graph index
+                    neg_items_batch.append(self.num_user + neg_item - 1)  # Graph index
+                
+                # Convert to tensors: [batch_size] for users, [batch_size*2] for items (pos+neg)
+                user_tensor = torch.tensor(user_ids_batch, dtype=torch.long).to(self.device)
+                # Repeat each user_id twice (for pos and neg)
+                user_tensor = user_tensor.repeat_interleave(2)  # [batch_size*2]
+                
+                item_tensor = torch.tensor(
+                    [[pos, neg] for pos, neg in zip(pos_items_batch, neg_items_batch)],
+                    dtype=torch.long
+                ).view(-1).to(self.device)  # [batch_size*2]
                 
                 optimizer.zero_grad()
                 loss, _, _, _, _ = self.model.loss(
-                    user_tensor.to(self.device),
-                    item_tensor.to(self.device)
+                    user_tensor,
+                    item_tensor
                 )
                 loss.backward()
                 optimizer.step()
                 
                 total_loss += loss.item()
                 num_batches += 1
-                
-                if num_batches >= len(train_data) // self.batch_size:
-                    break
             
             avg_loss = total_loss / max(1, num_batches)
             

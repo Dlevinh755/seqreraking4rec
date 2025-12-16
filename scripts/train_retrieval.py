@@ -42,7 +42,10 @@ def _evaluate_split(
     k: int = None,
     ks: Optional[List[int]] = None,
 ) -> Dict[str, float]:
-    """Evaluate retriever on a split. Wrapper for evaluation.utils.evaluate_split.
+    """Evaluate retriever on a split. 
+    
+    Uses retriever._evaluate_split() if available (optimized with batching),
+    otherwise falls back to evaluate_split(retriever.retrieve, ...).
     
     Args:
         retriever: Retriever instance
@@ -55,7 +58,127 @@ def _evaluate_split(
             ks = [10]  # Default
         else:
             ks = [k]
-    return evaluate_split(retriever.retrieve, split, k=k if k else 10, ks=ks)
+    
+    # Check if retriever has optimized _evaluate_split method (MMGCN, VBPR, BM3)
+    if hasattr(retriever, '_evaluate_split'):
+        # Use retriever's optimized _evaluate_split (supports batching)
+        # Note: retriever._evaluate_split typically returns a single float (recall@k)
+        # We need to call it for each K value and build the result dict
+        result = {"num_users": len(split)}
+        
+        # For efficiency, compute recall for all K values using optimized _evaluate_split
+        for k_val in ks:
+            recall = retriever._evaluate_split(split, k=k_val)
+            result[f"recall@{k_val}"] = float(recall)
+        
+        # For NDCG and Hit, compute from a small sample to avoid calling retrieve() too many times
+        # This is much faster than calling retrieve() for all users
+        from evaluation.metrics import ndcg_at_k, hit_at_k
+        
+        # Sample a small subset for NDCG/Hit computation (much faster)
+        sample_size = min(100, len(split))  # Only sample 100 users for NDCG/Hit
+        if len(split) > sample_size:
+            import random
+            sample_users = random.sample(list(split.keys()), sample_size)
+            sample_split = {uid: split[uid] for uid in sample_users}
+        else:
+            sample_split = split
+        
+        # Pre-compute model forward once for all sampled users (if MMGCN-like)
+        # For MMGCN, we can get all scores in one batch
+        if hasattr(retriever, 'model') and hasattr(retriever.model, 'forward'):
+            # Try to get scores for all sampled users in one batch
+            try:
+                retriever.model.eval()
+                with torch.no_grad():
+                    if hasattr(retriever.model, 'forward'):
+                        retriever.model.forward()  # Update embeddings once
+                
+                # Get user and item embeddings
+                if hasattr(retriever.model, 'result'):
+                    user_tensor = retriever.model.result[:retriever.num_user]
+                    item_tensor = retriever.model.result[retriever.num_user:]
+                    
+                    # Get scores for all sampled users in one batch
+                    sample_user_ids = list(sample_split.keys())
+                    sample_user_indices = torch.tensor([uid - 1 for uid in sample_user_ids if 1 <= uid <= retriever.num_user], dtype=torch.long).to(retriever.device)
+                    if len(sample_user_indices) > 0:
+                        sample_user_emb = user_tensor[sample_user_indices]
+                        sample_scores = torch.matmul(sample_user_emb, item_tensor.t())  # [sample_size, num_items]
+                        
+                        # Compute NDCG and Hit for each K
+                        for k_val in ks:
+                            ndcgs = []
+                            hits = []
+                            for idx, (user_id, gt_items) in enumerate(zip(sample_user_ids, [sample_split[uid] for uid in sample_user_ids])):
+                                if idx >= len(sample_scores) or not gt_items:
+                                    continue
+                                
+                                # Get top-K items
+                                scores = sample_scores[idx].cpu().numpy()
+                                top_k_indices = np.argsort(scores)[::-1][:k_val]
+                                top_items = [int(idx + 1) for idx in top_k_indices]  # Convert to 1-indexed
+                                
+                                # Compute metrics
+                                ndcgs.append(ndcg_at_k(top_items, gt_items, k_val))
+                                hits.append(hit_at_k(top_items, gt_items, k_val))
+                            
+                            result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
+                            result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+                    else:
+                        # Fallback: use retrieve() for sample
+                        for k_val in ks:
+                            ndcgs = []
+                            hits = []
+                            for user_id, gt_items in sample_split.items():
+                                if not gt_items:
+                                    continue
+                                recs = retriever.retrieve(user_id)
+                                if not recs:
+                                    continue
+                                ndcgs.append(ndcg_at_k(recs, gt_items, k_val))
+                                hits.append(hit_at_k(recs, gt_items, k_val))
+                            
+                            result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
+                            result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+            except Exception as e:
+                # Fallback: use retrieve() for sample if batch computation fails
+                print(f"[_evaluate_split] Warning: Batch computation failed: {e}. Using retrieve() for sample.")
+                for k_val in ks:
+                    ndcgs = []
+                    hits = []
+                    for user_id, gt_items in sample_split.items():
+                        if not gt_items:
+                            continue
+                        recs = retriever.retrieve(user_id)
+                        if not recs:
+                            continue
+                        ndcgs.append(ndcg_at_k(recs, gt_items, k_val))
+                        hits.append(hit_at_k(recs, gt_items, k_val))
+                    
+                    result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
+                    result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+        else:
+            # Fallback: use retrieve() for sample
+            for k_val in ks:
+                ndcgs = []
+                hits = []
+                for user_id, gt_items in sample_split.items():
+                    if not gt_items:
+                        continue
+                    recs = retriever.retrieve(user_id)
+                    if not recs:
+                        continue
+                    ndcgs.append(ndcg_at_k(recs, gt_items, k_val))
+                    hits.append(hit_at_k(recs, gt_items, k_val))
+                
+                result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
+                result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+        
+        return result
+    else:
+        # Fallback: Use generic evaluate_split (calls retrieve() for each user)
+        return evaluate_split(retriever.retrieve, split, k=k if k else 10, ks=ks)
 
 
 def _build_edge_index(train_data: Dict[int, List[int]], num_user: int, num_item: int) -> np.ndarray:
