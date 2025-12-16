@@ -244,12 +244,19 @@ class VBPR(nn.Module):
         
         # Normalize regularization by batch size to keep it in same scale as BPR loss
         batch_size = user_ids.size(0)
-        reg_loss = lambda_reg * (
+        # Regularize embeddings (user, item, theta_user)
+        embedding_reg = (
             torch.sum(gamma_u ** 2) +
             torch.sum(gamma_i_pos ** 2) +
             torch.sum(gamma_i_neg ** 2) +
             torch.sum(theta_u ** 2)
-        ) / batch_size  # Normalize by batch size
+        ) / batch_size
+        
+        # Regularize projection matrix E (important: E can grow very large without regularization)
+        # Use a smaller weight for E since it's a global parameter (not per-sample)
+        E_reg = torch.sum(self.E.weight ** 2) / (self.E.weight.numel() / batch_size) if batch_size > 0 else torch.sum(self.E.weight ** 2)
+        
+        reg_loss = lambda_reg * (embedding_reg + 0.1 * E_reg)  # E regularization with smaller weight
         
         total_loss = bpr_loss + reg_loss
         

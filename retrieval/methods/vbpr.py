@@ -133,9 +133,10 @@ class VBPRRetriever(BaseRetriever):
         
         # Initialize model
         print(f"[VBPRRetriever] Model configuration:")
-        print(f"  dim_gamma: {self.dim_gamma} (⚠️ Consider increasing to 64 for better performance)")
-        print(f"  dim_theta: {self.dim_theta} (⚠️ Consider increasing to 64 for better performance)")
-        print(f"  lr: {self.lr} (⚠️ Consider increasing to 1e-3 if performance is low)")
+        print(f"  dim_gamma: {self.dim_gamma} {'(⚠️ Consider increasing to 64 for better performance)' if self.dim_gamma < 64 else ''}")
+        print(f"  dim_theta: {self.dim_theta} {'(⚠️ Consider increasing to 64 for better performance)' if self.dim_theta < 64 else ''}")
+        print(f"  lr: {self.lr} {'(⚠️ Consider increasing to 1e-3 if performance is low)' if self.lr < 1e-3 else ''}")
+        print(f"  lambda_reg: {self.lambda_reg}")
         print(f"  visual_dim: {visual_features.size(1)}")
         
         self.model = VBPR(

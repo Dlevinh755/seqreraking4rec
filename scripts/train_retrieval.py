@@ -84,63 +84,102 @@ def _evaluate_split(
         else:
             sample_split = split
         
-        # Pre-compute model forward once for all sampled users (if MMGCN-like)
-        # For MMGCN, we can get all scores in one batch
-        if hasattr(retriever, 'model') and hasattr(retriever.model, 'forward'):
+        # Pre-compute model forward once for all sampled users
+        # Check if model supports batch prediction (VBPR, BM3) or has result attribute (MMGCN)
+        if hasattr(retriever, 'model'):
             # Try to get scores for all sampled users in one batch
             try:
                 retriever.model.eval()
                 with torch.no_grad():
-                    if hasattr(retriever.model, 'forward'):
-                        retriever.model.forward()  # Update embeddings once
-                
-                # Get user and item embeddings
-                if hasattr(retriever.model, 'result'):
-                    user_tensor = retriever.model.result[:retriever.num_user]
-                    item_tensor = retriever.model.result[retriever.num_user:]
-                    
-                    # Get scores for all sampled users in one batch
-                    sample_user_ids = list(sample_split.keys())
-                    sample_user_indices = torch.tensor([uid - 1 for uid in sample_user_ids if 1 <= uid <= retriever.num_user], dtype=torch.long).to(retriever.device)
-                    if len(sample_user_indices) > 0:
-                        sample_user_emb = user_tensor[sample_user_indices]
-                        sample_scores = torch.matmul(sample_user_emb, item_tensor.t())  # [sample_size, num_items]
+                    # Check if model has predict_batch method (VBPR, BM3)
+                    if hasattr(retriever.model, 'predict_batch'):
+                        # Use predict_batch for VBPR/BM3
+                        sample_user_ids = list(sample_split.keys())
+                        sample_user_indices = torch.tensor([uid - 1 for uid in sample_user_ids if 1 <= uid <= retriever.num_user], dtype=torch.long).to(retriever.device)
+                        if len(sample_user_indices) > 0:
+                            sample_scores = retriever.model.predict_batch(sample_user_indices)  # [sample_size, num_items]
+                            
+                            # Mask history items for each user
+                            for idx, user_id in enumerate(sample_user_ids):
+                                if idx >= len(sample_scores):
+                                    continue
+                                history_items = retriever.user_history.get(user_id, [])
+                                for item in history_items:
+                                    if 1 <= item <= retriever.num_item:
+                                        item_idx = item - 1
+                                        sample_scores[idx, item_idx] = -1e9
+                            
+                            # Compute NDCG and Hit for each K
+                            for k_val in ks:
+                                ndcgs = []
+                                hits = []
+                                for idx, (user_id, gt_items) in enumerate(zip(sample_user_ids, [sample_split[uid] for uid in sample_user_ids])):
+                                    if idx >= len(sample_scores) or not gt_items:
+                                        continue
+                                    
+                                    # Get top-K items
+                                    scores = sample_scores[idx].cpu().numpy()
+                                    top_k_indices = np.argsort(scores)[::-1][:k_val]
+                                    top_items = [int(idx + 1) for idx in top_k_indices]  # Convert to 1-indexed
+                                    
+                                    # Compute metrics
+                                    ndcgs.append(ndcg_at_k(top_items, gt_items, k_val))
+                                    hits.append(hit_at_k(top_items, gt_items, k_val))
+                                
+                                result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
+                                result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+                        else:
+                            raise ValueError("No valid user indices")
+                    # Check if model has result attribute (MMGCN)
+                    elif hasattr(retriever.model, 'result'):
+                        # Use result for MMGCN
+                        if hasattr(retriever.model, 'forward'):
+                            # MMGCN forward() doesn't need arguments
+                            retriever.model.forward()  # Update embeddings once
                         
-                        # Compute NDCG and Hit for each K
-                        for k_val in ks:
-                            ndcgs = []
-                            hits = []
-                            for idx, (user_id, gt_items) in enumerate(zip(sample_user_ids, [sample_split[uid] for uid in sample_user_ids])):
-                                if idx >= len(sample_scores) or not gt_items:
-                                    continue
-                                
-                                # Get top-K items
-                                scores = sample_scores[idx].cpu().numpy()
-                                top_k_indices = np.argsort(scores)[::-1][:k_val]
-                                top_items = [int(idx + 1) for idx in top_k_indices]  # Convert to 1-indexed
-                                
-                                # Compute metrics
-                                ndcgs.append(ndcg_at_k(top_items, gt_items, k_val))
-                                hits.append(hit_at_k(top_items, gt_items, k_val))
+                        user_tensor = retriever.model.result[:retriever.num_user]
+                        item_tensor = retriever.model.result[retriever.num_user:]
+                        
+                        # Get scores for all sampled users in one batch
+                        sample_user_ids = list(sample_split.keys())
+                        sample_user_indices = torch.tensor([uid - 1 for uid in sample_user_ids if 1 <= uid <= retriever.num_user], dtype=torch.long).to(retriever.device)
+                        if len(sample_user_indices) > 0:
+                            sample_user_emb = user_tensor[sample_user_indices]
+                            sample_scores = torch.matmul(sample_user_emb, item_tensor.t())  # [sample_size, num_items]
                             
-                            result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
-                            result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+                            # Mask history items for each user
+                            for idx, user_id in enumerate(sample_user_ids):
+                                if idx >= len(sample_scores):
+                                    continue
+                                history_items = retriever.user_history.get(user_id, [])
+                                for item in history_items:
+                                    if 1 <= item <= retriever.num_item:
+                                        item_idx = item - 1
+                                        sample_scores[idx, item_idx] = -1e9
+                            
+                            # Compute NDCG and Hit for each K
+                            for k_val in ks:
+                                ndcgs = []
+                                hits = []
+                                for idx, (user_id, gt_items) in enumerate(zip(sample_user_ids, [sample_split[uid] for uid in sample_user_ids])):
+                                    if idx >= len(sample_scores) or not gt_items:
+                                        continue
+                                    
+                                    # Get top-K items
+                                    scores = sample_scores[idx].cpu().numpy()
+                                    top_k_indices = np.argsort(scores)[::-1][:k_val]
+                                    top_items = [int(idx + 1) for idx in top_k_indices]  # Convert to 1-indexed
+                                    
+                                    # Compute metrics
+                                    ndcgs.append(ndcg_at_k(top_items, gt_items, k_val))
+                                    hits.append(hit_at_k(top_items, gt_items, k_val))
+                                
+                                result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
+                                result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+                        else:
+                            raise ValueError("No valid user indices")
                     else:
-                        # Fallback: use retrieve() for sample
-                        for k_val in ks:
-                            ndcgs = []
-                            hits = []
-                            for user_id, gt_items in sample_split.items():
-                                if not gt_items:
-                                    continue
-                                recs = retriever.retrieve(user_id)
-                                if not recs:
-                                    continue
-                                ndcgs.append(ndcg_at_k(recs, gt_items, k_val))
-                                hits.append(hit_at_k(recs, gt_items, k_val))
-                            
-                            result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
-                            result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+                        raise ValueError("Model doesn't support batch prediction")
             except Exception as e:
                 # Fallback: use retrieve() for sample if batch computation fails
                 print(f"[_evaluate_split] Warning: Batch computation failed: {e}. Using retrieve() for sample.")
@@ -275,69 +314,165 @@ def _build_retrieved_matrices(
     probs: List[dict] = []
     labels: List[int] = []
 
-    # Check if retriever supports batch prediction (MMGCN, VBPR, BM3)
-    if hasattr(retriever, 'model') and hasattr(retriever.model, 'forward') and hasattr(retriever.model, 'result'):
-        # Batch processing for graph-based models (MMGCN)
-        print(f"[_build_retrieved_matrices] Using batch processing for {retriever.get_name()}...")
-        
-        # Update embeddings once
-        retriever.model.eval()
-        with torch.no_grad():
-            retriever.model.forward()  # Update self.result
-        
-        # Get all user and item embeddings
-        user_tensor = retriever.model.result[:retriever.num_user]  # [num_user, dim]
-        item_tensor = retriever.model.result[retriever.num_user:]   # [num_item, dim]
-        
-        # Process users in batches
-        batch_size = 512
-        device = retriever.device
-        
-        for i in range(0, len(users), batch_size):
-            batch_users = users[i:i + batch_size]
+    # Check if retriever supports batch prediction
+    if hasattr(retriever, 'model'):
+        # Check if model has predict_batch method (VBPR, BM3)
+        if hasattr(retriever.model, 'predict_batch'):
+            # Batch processing for VBPR/BM3
+            print(f"[_build_retrieved_matrices] Using batch processing for {retriever.get_name()}...")
             
-            # Filter valid users
-            valid_user_ids = [u for u in batch_users if 1 <= u <= retriever.num_user]
-            if not valid_user_ids:
-                continue
+            # Process users in batches
+            batch_size = 512
+            device = retriever.device
             
-            # Get user indices (0-indexed)
-            user_indices = torch.tensor([u - 1 for u in valid_user_ids], dtype=torch.long).to(device)
-            batch_user_emb = user_tensor[user_indices]  # [batch_size, dim]
+            for i in range(0, len(users), batch_size):
+                batch_users = users[i:i + batch_size]
+                
+                # Filter valid users
+                valid_user_ids = [u for u in batch_users if 1 <= u <= retriever.num_user]
+                if not valid_user_ids:
+                    continue
+                
+                # Get user indices (0-indexed)
+                user_indices = torch.tensor([u - 1 for u in valid_user_ids], dtype=torch.long).to(device)
+                
+                # Get scores for all users in batch: [batch_size, num_item]
+                retriever.model.eval()
+                with torch.no_grad():
+                    batch_scores = retriever.model.predict_batch(user_indices)  # [batch_size, num_item]
+                
+                # Process each user in batch
+                for j, user_id in enumerate(valid_user_ids):
+                    gt_items = split.get(user_id, [])
+                    if not gt_items:
+                        continue
+                    label = gt_items[0]
+                    
+                    # Get scores for this user
+                    scores = batch_scores[j].cpu().numpy()
+                    
+                    # Mask history items
+                    history_items = retriever.user_history.get(user_id, [])
+                    for item in history_items:
+                        if 1 <= item <= retriever.num_item:
+                            item_idx = item - 1
+                            scores[item_idx] = -1e9
+                    
+                    # Get top-K items
+                    top_k = min(RETRIEVAL_SAVE_TOP_K, retriever.num_item)
+                    top_indices = np.argsort(scores)[::-1][:top_k]
+                    top_items = [int(idx + 1) for idx in top_indices]  # Convert to 1-indexed
+                    
+                    # Build top_ids and top_scores
+                    top_ids: List[int] = []
+                    top_scores: List[float] = []
+                    for rank, item_id in enumerate(top_items):
+                        if 0 < item_id <= item_count:
+                            score = float(len(top_items) - rank)
+                            top_ids.append(int(item_id))
+                            top_scores.append(score)
+                    
+                    probs.append({"ids": top_ids, "scores": top_scores})
+                    labels.append(int(label))
+                
+                # Progress indicator
+                if (i + batch_size) % 5000 == 0 or (i + batch_size) >= len(users):
+                    print(f"  Processed {min(i + batch_size, len(users))}/{len(users)} users...")
+        # Check if model has result attribute (MMGCN)
+        elif hasattr(retriever.model, 'result'):
+            # Batch processing for graph-based models (MMGCN)
+            print(f"[_build_retrieved_matrices] Using batch processing for {retriever.get_name()}...")
             
-            # Compute scores for all users in batch: [batch_size, num_item]
-            batch_scores = torch.matmul(batch_user_emb, item_tensor.t())
+            # Update embeddings once
+            retriever.model.eval()
+            with torch.no_grad():
+                retriever.model.forward()  # Update self.result
             
-            # Process each user in batch
-            for j, user_id in enumerate(valid_user_ids):
-                gt_items = split.get(user_id, [])
+            # Get all user and item embeddings
+            user_tensor = retriever.model.result[:retriever.num_user]  # [num_user, dim]
+            item_tensor = retriever.model.result[retriever.num_user:]   # [num_item, dim]
+            
+            # Process users in batches
+            batch_size = 512
+            device = retriever.device
+            
+            for i in range(0, len(users), batch_size):
+                batch_users = users[i:i + batch_size]
+                
+                # Filter valid users
+                valid_user_ids = [u for u in batch_users if 1 <= u <= retriever.num_user]
+                if not valid_user_ids:
+                    continue
+                
+                # Get user indices (0-indexed)
+                user_indices = torch.tensor([u - 1 for u in valid_user_ids], dtype=torch.long).to(device)
+                batch_user_emb = user_tensor[user_indices]  # [batch_size, dim]
+                
+                # Compute scores for all users in batch: [batch_size, num_item]
+                batch_scores = torch.matmul(batch_user_emb, item_tensor.t())
+                
+                # Process each user in batch
+                for j, user_id in enumerate(valid_user_ids):
+                    gt_items = split.get(user_id, [])
+                    if not gt_items:
+                        continue
+                    label = gt_items[0]
+                    
+                    # Get scores for this user
+                    scores = batch_scores[j].cpu().numpy()
+                    
+                    # Mask history items
+                    history_items = retriever.user_history.get(user_id, [])
+                    for item in history_items:
+                        if 1 <= item <= retriever.num_item:
+                            item_idx = item - 1
+                            scores[item_idx] = -1e9
+                    
+                    # Get top-K items
+                    top_k = min(RETRIEVAL_SAVE_TOP_K, retriever.num_item)
+                    top_indices = np.argsort(scores)[::-1][:top_k]
+                    top_items = [int(idx + 1) for idx in top_indices]  # Convert to 1-indexed
+                    
+                    # Build top_ids and top_scores
+                    top_ids: List[int] = []
+                    top_scores: List[float] = []
+                    for rank, item_id in enumerate(top_items):
+                        if 0 < item_id <= item_count:
+                            score = float(len(top_items) - rank)
+                            top_ids.append(int(item_id))
+                            top_scores.append(score)
+                    
+                    probs.append({"ids": top_ids, "scores": top_scores})
+                    labels.append(int(label))
+                
+                # Progress indicator
+                if (i + batch_size) % 5000 == 0 or (i + batch_size) >= len(users):
+                    print(f"  Processed {min(i + batch_size, len(users))}/{len(users)} users...")
+        else:
+            # Fallback: process users one by one
+            print(f"[_build_retrieved_matrices] Using sequential processing for {retriever.get_name()}...")
+            for u in users:
+                gt_items = split.get(u, [])
                 if not gt_items:
                     continue
                 label = gt_items[0]
-                
-                # Get scores for this user
-                scores = batch_scores[j].cpu().numpy()
-                
-                # Get top-K items
-                top_k = min(RETRIEVAL_SAVE_TOP_K, retriever.num_item)
-                top_indices = np.argsort(scores)[::-1][:top_k]
-                top_items = [int(idx + 1) for idx in top_indices]  # Convert to 1-indexed
-                
-                # Build top_ids and top_scores
+
+                cands = retriever.retrieve(u)
                 top_ids: List[int] = []
                 top_scores: List[float] = []
-                for rank, item_id in enumerate(top_items):
+
+                # Assign descending scores based on candidate rank and keep only top-K
+                for rank, item_id in enumerate(cands):
                     if 0 < item_id <= item_count:
-                        score = float(len(top_items) - rank)
-                        top_ids.append(int(item_id))
-                        top_scores.append(score)
-                
+                        score = float(len(cands) - rank)
+                        if len(top_ids) < RETRIEVAL_SAVE_TOP_K:
+                            top_ids.append(int(item_id))
+                            top_scores.append(score)
+                        else:
+                            break
+
                 probs.append({"ids": top_ids, "scores": top_scores})
                 labels.append(int(label))
-            
-            # Progress indicator
-            if (i + batch_size) % 5000 == 0 or (i + batch_size) >= len(users):
-                print(f"  Processed {min(i + batch_size, len(users))}/{len(users)} users...")
     else:
         # Fallback: process users one by one (for LRURec, etc.)
         print(f"[_build_retrieved_matrices] Using sequential processing for {retriever.get_name()}...")
@@ -512,12 +647,15 @@ def main() -> None:
         visual_features = torch.from_numpy(v_feat).float()
         
         # Print VBPR hyperparameters
+        dim_gamma = retriever_kwargs['dim_gamma']
+        dim_theta = retriever_kwargs['dim_theta']
+        lr = retriever_kwargs['lr']
         print(f"\nVBPR Hyperparameters:")
-        print(f"  dim_gamma: {retriever_kwargs['dim_gamma']} (⚠️ Consider increasing to 64 for better performance)")
-        print(f"  dim_theta: {retriever_kwargs['dim_theta']} (⚠️ Consider increasing to 64 for better performance)")
+        print(f"  dim_gamma: {dim_gamma} {'(⚠️ Consider increasing to 64 for better performance)' if dim_gamma < 64 else ''}")
+        print(f"  dim_theta: {dim_theta} {'(⚠️ Consider increasing to 64 for better performance)' if dim_theta < 64 else ''}")
         print(f"  lambda_reg: {retriever_kwargs['lambda_reg']}")
         print(f"  optimizer: {retriever_kwargs['optimizer']}")
-        print(f"  lr: {retriever_kwargs['lr']} (⚠️ Consider increasing to 1e-3 if performance is low)")
+        print(f"  lr: {lr} {'(⚠️ Consider increasing to 1e-3 if performance is low)' if lr < 1e-3 else ''}")
         print()
         
         fit_kwargs.update({

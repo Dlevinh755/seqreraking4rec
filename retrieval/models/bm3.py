@@ -318,11 +318,28 @@ class BM3(nn.Module):
         
         # Normalize regularization by batch size to keep it in same scale as BPR loss
         batch_size = user_ids.size(0)
-        reg_loss = lambda_reg * (
+        # Regularize embeddings (user, item)
+        embedding_reg = (
             torch.sum(user_emb ** 2) +
             torch.sum(item_emb_pos ** 2) +
             torch.sum(item_emb_neg ** 2)
-        ) / batch_size  # Normalize by batch size
+        ) / batch_size
+        
+        # Regularize projection matrices (visual_proj, text_proj) and fusion layers
+        # These are global parameters, so use smaller weight
+        proj_reg = (
+            torch.sum(self.visual_proj.weight ** 2) +
+            torch.sum(self.text_proj.weight ** 2)
+        ) / (self.visual_proj.weight.numel() / batch_size) if batch_size > 0 else (
+            torch.sum(self.visual_proj.weight ** 2) +
+            torch.sum(self.text_proj.weight ** 2)
+        )
+        
+        # Regularize fusion layers
+        fusion_reg = sum(torch.sum(layer.weight ** 2) for layer in self.fusion_layers)
+        fusion_reg = fusion_reg / (sum(layer.weight.numel() for layer in self.fusion_layers) / batch_size) if batch_size > 0 else fusion_reg
+        
+        reg_loss = lambda_reg * (embedding_reg + 0.1 * proj_reg + 0.1 * fusion_reg)
         
         total_loss = bpr_loss + reg_loss
         
