@@ -89,15 +89,28 @@ def main(args):
                     "split": split_name,
                 })
 
-    add_rows_for_split("train", data.get("train", {}))
-    add_rows_for_split("val", data.get("val", {}))
-    add_rows_for_split("test", data.get("test", {}))
-
+    train_dict = data.get("train", {})
+    val_dict = data.get("val", {})
+    test_dict = data.get("test", {})
+    
+    add_rows_for_split("train", train_dict)
+    add_rows_for_split("val", val_dict)
+    add_rows_for_split("test", test_dict)
+    
+    # Warn if val or test sets are empty
+    if len(val_dict) == 0:
+        print(f"[data_prepare] WARNING: Validation set is empty!")
+        print(f"  This will cause evaluation to fail. Check dataset filtering parameters.")
+    if len(test_dict) == 0:
+        print(f"[data_prepare] WARNING: Test set is empty!")
+        print(f"  This will cause evaluation to fail. Check dataset filtering parameters.")
+    
     if rows:
         df = pd.DataFrame(rows)
         out_csv = preproc_folder.joinpath("dataset_single_export.csv")
         df.to_csv(out_csv, index=False)
         print(f"Saved single CSV export to: {out_csv}")
+        print(f"  Train users: {len(train_dict)}, Val users: {len(val_dict)}, Test users: {len(test_dict)}")
 
 if __name__ == "__main__":
     main(arg)
