@@ -170,6 +170,11 @@ class BM3Retriever(BaseRetriever):
         # Prepare training samples (user, pos_item, neg_item)
         train_samples = self._prepare_training_samples(train_data)
         
+        if len(train_samples) == 0:
+            raise ValueError("No training samples generated! Check train_data and num_item.")
+        
+        print(f"[BM3Retriever] Generated {len(train_samples)} training samples")
+        
         for epoch in range(self.num_epochs):
             self.model.train()
             total_loss = 0.0
