@@ -552,7 +552,6 @@ def main() -> None:
     actual_num_users = len(train)  # Actual number of users (for validation/logging)
     num_items = item_count
     
-    # Debug: Print dataset statistics
     print(f"\nDataset Statistics:")
     print(f"  Train users: {len(train)} (max user_id: {num_users})")
     print(f"  Val users: {len(val)}")

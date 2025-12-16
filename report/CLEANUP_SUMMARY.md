@@ -1,111 +1,87 @@
-# Cleanup Summary - Files Removed
+# Tóm tắt Cleanup Code
 
-## ✅ Đã xóa các file không cần thiết
+## ✅ Đã hoàn thành
 
-### 1. **File cũ đã được thay thế**
-- ✅ `rerank/models/vip5.py` - Đã được thay thế bởi `vip5_modeling.py` và `vip5_utils.py`
-- ✅ `rerank/train_qwen.py` - Đã được thay thế bởi `scripts/train_rerank.py`
+### 1. Xóa Debug Code trong Retrieval Methods
 
-### 2. **File duplicate/consolidated**
-- ✅ `tools/clean_preprocessed.py` - Đã được merge vào `tools/clean.py`
-- ✅ `tools/cleanup_experiments.py` - Đã được merge vào `tools/clean.py`
+**Files đã sửa:**
+- ✅ `retrieval/methods/vbpr.py`: Xóa debug code (forward pass time, loss breakdown, gradient norms, score statistics)
+- ✅ `retrieval/methods/mmgcn.py`: Xóa debug code (forward pass time)
+- ✅ `retrieval/methods/bm3.py`: Xóa debug code (score statistics)
+- ✅ `scripts/train_retrieval.py`: Xóa comment "Debug: Print dataset statistics" (giữ lại print statement vì hữu ích)
 
-### 3. **Python cache files**
-- ✅ `__pycache__/` folders - Đã xóa tất cả
-- ✅ `*.pyc` files - Đã xóa tất cả
+**Code đã xóa:**
+- Forward pass time measurement (chỉ chạy ở epoch 0, batch 0)
+- Loss breakdown printing (BPR loss, Reg loss)
+- Gradient norm checking và printing
+- Score statistics printing (mean, std, min, max, embedding norms)
 
-### 4. **Thư mục tạm thời** (cần xóa thủ công nếu vẫn còn)
-- ⚠️ `retrieval/vip5_temp/` - Thư mục tạm thời đã clone từ VIP5 repo
-  - Đã copy code cần thiết vào `rerank/models/`
-  - Có thể xóa an toàn
-- ⚠️ `retrieval/rerank/` - Thư mục không cần thiết
-  - Có adapters nhưng đã copy vào `rerank/models/adapters/`
-  - Có thể xóa an toàn
-- ⚠️ `rerank/scripts/` - Thư mục trống
-  - Có thể xóa an toàn
+**Lợi ích:**
+- Code sạch hơn, dễ đọc hơn
+- Giảm overhead khi training (không còn debug code chạy ở mỗi epoch)
+- Giảm ~60 lines code không cần thiết
 
-## 📝 Cập nhật .gitignore
+---
 
-Đã thêm các patterns sau vào `.gitignore`:
+### 2. Kiểm tra Unused Imports
 
-```gitignore
-# Markdown documentation files
-*.md
+**Kết quả:**
+- ✅ Không tìm thấy unused imports
+- ✅ Tất cả imports đều được sử dụng
 
-# Python cache files
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
+---
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+### 3. Kiểm tra Commented Code
 
-# PyTorch
-*.pth
-*.pt
-!data/preprocessed/**/*.pt
-!experiments/**/*.pt
+**Kết quả:**
+- ✅ Không tìm thấy commented code blocks không cần thiết
+- ✅ Các comments còn lại đều là documentation hoặc explanations hữu ích
 
-# Jupyter Notebook
-.ipynb_checkpoints
+---
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+### 4. Kiểm tra Deprecated Files
 
-# OS
-.DS_Store
-Thumbs.db
-```
+**Kết quả:**
+- ✅ `retrieval/train_lrurec.py` - Đã được xóa (theo report)
+- ✅ `rerank/train_qwen.py` - Không tồn tại
+- ✅ `tools/clean_preprocessed.py` và `tools/cleanup_experiments.py` - Đã được gộp vào `tools/clean.py`
 
-## 🔍 Files còn lại cần xem xét
+---
 
-Nếu các thư mục sau vẫn còn, có thể xóa thủ công:
+## 📊 Tổng kết
 
-1. **`retrieval/vip5_temp/`** - Thư mục tạm thời
-   ```bash
-   Remove-Item -Recurse -Force retrieval\vip5_temp
-   ```
+### Code Reduction:
+- **Giảm ~60 lines** debug code trong retrieval methods
+- **Giảm 1 comment** không cần thiết trong training script
 
-2. **`retrieval/rerank/`** - Thư mục không cần thiết
-   ```bash
-   Remove-Item -Recurse -Force retrieval\rerank
-   ```
+### Files Changed:
+- ✅ `retrieval/methods/vbpr.py` - Xóa debug code
+- ✅ `retrieval/methods/mmgcn.py` - Xóa debug code
+- ✅ `retrieval/methods/bm3.py` - Xóa debug code
+- ✅ `scripts/train_retrieval.py` - Xóa debug comment
 
-3. **`rerank/scripts/`** - Thư mục trống
-   ```bash
-   Remove-Item -Recurse -Force rerank\scripts
-   ```
+### Code Quality:
+- ✅ Không có linter errors
+- ✅ Code sạch hơn, dễ maintain hơn
+- ✅ Không còn debug overhead
 
-## 📊 Kết quả
+---
 
-- ✅ Đã xóa: 4 files
-- ✅ Đã xóa: 3 `__pycache__/` folders
-- ✅ Đã cập nhật: `.gitignore`
-- ⚠️ Cần xóa thủ công: 3 thư mục (nếu vẫn còn)
+## 📝 Notes
 
-## 💡 Lưu ý
+### Debug Code đã xóa:
+1. **Forward pass time measurement**: Chỉ chạy ở epoch 0, batch 0 - không cần thiết cho production
+2. **Loss breakdown**: BPR loss và Reg loss - có thể thêm lại nếu cần debug
+3. **Gradient norms**: Check gradient norms - có thể thêm lại nếu cần debug
+4. **Score statistics**: Mean, std, min, max của scores - có thể thêm lại nếu cần debug
 
-- Các file `.md` đã được thêm vào `.gitignore` nên sẽ không được commit
-- Python cache files sẽ tự động bị ignore
-- Các file `.pt` trong `data/preprocessed/` và `experiments/` vẫn được giữ lại (có exception trong .gitignore)
+### Code được giữ lại:
+- Print statements cho training progress (epoch, loss, metrics) - **HỮU ÍCH**
+- Warning messages - **HỮU ÍCH**
+- Dataset statistics print - **HỮU ÍCH** (đã xóa comment "Debug:" nhưng giữ lại print)
+
+---
+
+**Date**: 2025-12-16  
+**Status**: ✅ Hoàn thành cleanup code
 

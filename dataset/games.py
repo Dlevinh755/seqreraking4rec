@@ -64,6 +64,13 @@ class GamesDataset(AbstractDataset):
         
         print(f'Total items in metadata: {len(meta_raw)}')
         
+        # ✅ CRITICAL FIX: Filter by min_rating FIRST (before any other filtering)
+        # Spec requires: "Remove all interactions with rating < 3" and "Filtering must be applied globally before splitting"
+        if self.min_rating > 0:
+            initial_count = len(df)
+            df = df[df['rating'] >= self.min_rating]
+            print(f'Ratings after min_rating filter (rating >= {self.min_rating}): {len(df)}/{initial_count}')
+        
         # BƯỚC 1: Lọc text trước (nhanh)
         if self.args.use_text:
             valid_text_items = set()
@@ -181,7 +188,13 @@ class GamesDataset(AbstractDataset):
                 else:
                     description = str(description).strip() if description else ''
                 
-                text = f"{title} {description}".strip()
+                # ✅ CRITICAL FIX: Process text according to spec
+                # 1. Concatenate title + description
+                # 2. Normalize (lowercase, remove special chars)
+                # 3. Truncate to max_text_length (from end)
+                from dataset.utils import process_item_text
+                max_text_length = getattr(self.args, 'max_text_length', 512)
+                text = process_item_text(title, description, max_length=max_text_length)
                 
                 # Extract image URL
                 image = item.get('imUrl', '').strip()

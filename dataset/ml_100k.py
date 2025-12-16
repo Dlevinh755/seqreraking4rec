@@ -67,6 +67,13 @@ class ML100KDataset(AbstractDataset):
         
         print(f'Total items in metadata: {len(meta_raw)}')
         
+        # ✅ CRITICAL FIX: Filter by min_rating FIRST (before any other filtering)
+        # Spec requires: "Remove all interactions with rating < 3" and "Filtering must be applied globally before splitting"
+        if self.min_rating > 0:
+            initial_count = len(df)
+            df = df[df['rating'] >= self.min_rating]
+            print(f'Ratings after min_rating filter (rating >= {self.min_rating}): {len(df)}/{initial_count}')
+        
         # BƯỚC 1: Lọc text trước (nhanh)
         if self.args.use_text:
             valid_text_items = set()
@@ -163,9 +170,17 @@ class ML100KDataset(AbstractDataset):
                 title = title_post + ' ' + title_pre
 
             full_title = title + year
+            # ✅ CRITICAL FIX: Process text according to spec
+            # 1. Concatenate title + description (MovieLens only has title)
+            # 2. Normalize (lowercase, remove special chars)
+            # 3. Truncate to max_text_length (from end)
+            from dataset.utils import process_item_text
+            max_text_length = getattr(self.args, 'max_text_length', 512)
+            text = process_item_text(full_title, "", max_length=max_text_length)  # No description for MovieLens
+            
             # Store metadata with text (MovieLens doesn't have images)
             meta_dict[row[1]] = {
-                'text': full_title.strip() if full_title.strip() else None,
+                'text': text if text else None,
                 'image': None,  # MovieLens doesn't have image data
                 'title': full_title.strip() if full_title.strip() else None
             }

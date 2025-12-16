@@ -164,9 +164,11 @@ class VBPRRetriever(BaseRetriever):
         epochs_no_improve = 0
         
         val_data = kwargs.get("val_data")
+        test_data = kwargs.get("test_data", {})  # Get test_data if provided (for negative sampling)
         
         # Prepare training samples (user, pos_item, neg_item)
-        train_samples = self._prepare_training_samples(train_data)
+        # ✅ CRITICAL FIX: Pass val_data and test_data to exclude them from negative sampling
+        train_samples = self._prepare_training_samples(train_data, val_data=val_data, test_data=test_data)
         
         if len(train_samples) == 0:
             raise ValueError("No training samples generated! Check train_data and num_item.")
@@ -196,63 +198,11 @@ class VBPRRetriever(BaseRetriever):
                 
                 optimizer.zero_grad()
                 
-                # Debug: Measure forward pass time (only for first batch of first epoch)
-                if epoch == 0 and i == 0:
-                    import time
-                    start_time = time.time()
-                
                 loss = self.model.loss(
                     user_ids, pos_ids, neg_ids, lambda_reg=self.lambda_reg
                 )
                 
-                if epoch == 0 and i == 0:
-                    forward_time = time.time() - start_time
-                    print(f"[VBPRRetriever] Forward pass time for batch {i}: {forward_time:.4f}s")
-                    print(f"[VBPRRetriever] Batch size: {len(batch)}, Time per sample: {forward_time/len(batch)*1000:.2f}ms")
-                
                 loss.backward()
-                
-                # Debug: Print loss components (only for first batch of first epoch)
-                if epoch == 0 and i == 0:
-                    # Manually compute loss components for debugging
-                    pos_scores = self.model.forward(user_ids, pos_ids)
-                    neg_scores = self.model.forward(user_ids, neg_ids)
-                    diff = pos_scores - neg_scores
-                    bpr_loss_debug = -torch.log(torch.sigmoid(diff) + 1e-10).mean()
-                    
-                    gamma_u = self.model.gamma_user(user_ids)
-                    gamma_i_pos = self.model.gamma_item(pos_ids)
-                    gamma_i_neg = self.model.gamma_item(neg_ids)
-                    theta_u = self.model.theta_user(user_ids)
-                    batch_size = user_ids.size(0)
-                    reg_loss_debug = self.lambda_reg * (
-                        torch.sum(gamma_u ** 2) +
-                        torch.sum(gamma_i_pos ** 2) +
-                        torch.sum(gamma_i_neg ** 2) +
-                        torch.sum(theta_u ** 2)
-                    ) / batch_size
-                    
-                    print(f"[VBPRRetriever] Loss breakdown (first batch):")
-                    print(f"  BPR loss: {bpr_loss_debug.item():.6f}")
-                    print(f"  Reg loss: {reg_loss_debug.item():.6f} (lambda={self.lambda_reg})")
-                    print(f"  Total loss: {loss.item():.6f}")
-                
-                # Debug: Check gradient norms (only for first batch of first epoch)
-                if epoch == 0 and i == 0:
-                    total_grad_norm = 0.0
-                    param_count = 0
-                    for name, param in self.model.named_parameters():
-                        if param.grad is not None:
-                            param_grad_norm = param.grad.data.norm(2).item()
-                            total_grad_norm += param_grad_norm ** 2
-                            param_count += 1
-                            if param_count <= 3:  # Print first 3 params
-                                print(f"[VBPRRetriever] Gradient norm for {name}: {param_grad_norm:.6f}")
-                    total_grad_norm = total_grad_norm ** 0.5
-                    print(f"[VBPRRetriever] Total gradient norm: {total_grad_norm:.6f}")
-                    if total_grad_norm < 1e-6:
-                        print(f"[VBPRRetriever] WARNING: Gradient norm is very small! Model may not be learning.")
-                
                 optimizer.step()
                 
                 total_loss += loss.item()
@@ -294,30 +244,46 @@ class VBPRRetriever(BaseRetriever):
 
     def _prepare_training_samples(
         self,
-        train_data: Dict[int, List[int]]
+        train_data: Dict[int, List[int]],
+        val_data: Optional[Dict[int, List[int]]] = None,
+        test_data: Optional[Dict[int, List[int]]] = None
     ) -> List[tuple]:
         """Prepare (user_id, pos_item_id, neg_item_id) training samples.
         
         Args:
-            train_data: Dict {user_id: [item_ids]}
+            train_data: Dict {user_id: [item_ids]} - training interactions
+            val_data: Optional dict {user_id: [item_ids]} - validation interactions (for negative exclusion)
+            test_data: Optional dict {user_id: [item_ids]} - test interactions (for negative exclusion)
             
         Returns:
             List of (user_id, pos_item_id, neg_item_id) tuples
         """
         samples = []
         all_items = set(range(1, self.num_item + 1))
+        val_data = val_data or {}
+        test_data = test_data or {}
         
         for user_id, items in train_data.items():
             if len(items) < 1:
                 continue
             
+            # ✅ CRITICAL FIX: Exclude val and test items from negative candidates
+            # Spec requires: "Negative items must never appear in user's interaction history,
+            # exclude validation and test items"
+            user_train_items = set(items)  # Training history
+            user_val_items = set(val_data.get(user_id, []))
+            user_test_items = set(test_data.get(user_id, []))
+            
+            # Negative candidates: all items EXCEPT train, val, and test items
+            excluded_items = user_train_items | user_val_items | user_test_items
+            neg_candidates = list(all_items - excluded_items)
+            
+            if len(neg_candidates) == 0:
+                # Fallback: if no valid negatives (shouldn't happen in practice), skip this user
+                continue
+            
             # For each positive item, sample a negative
             for pos_item in items:
-                # Sample negative item (not in user's history)
-                neg_candidates = list(all_items - set(items))
-                if len(neg_candidates) == 0:
-                    continue
-                
                 neg_item = np.random.choice(neg_candidates)
                 samples.append((user_id - 1, pos_item - 1, neg_item - 1))  # Convert to 0-indexed
         
@@ -367,25 +333,6 @@ class VBPRRetriever(BaseRetriever):
                 
                 # Predict scores for batch [batch_size, n_items]
                 scores_batch = self.model.predict_batch(user_ids_tensor)  # [batch_size, n_items]
-                
-                # Debug: Print score statistics (only for first batch of first evaluation)
-                if i == 0 and len(recalls) == 0:
-                    print(f"[VBPRRetriever] Score statistics (first batch):")
-                    print(f"  Scores shape: {scores_batch.shape}")
-                    print(f"  Score mean: {scores_batch.mean().item():.6f}")
-                    print(f"  Score std: {scores_batch.std().item():.6f}")
-                    print(f"  Score min: {scores_batch.min().item():.6f}")
-                    print(f"  Score max: {scores_batch.max().item():.6f}")
-                    # Check embedding norms
-                    gamma_u_norm = self.model.gamma_user.weight.norm(dim=1).mean().item()
-                    gamma_i_norm = self.model.gamma_item.weight.norm(dim=1).mean().item()
-                    theta_u_norm = self.model.theta_user.weight.norm(dim=1).mean().item()
-                    E_norm = self.model.E.weight.norm().item()
-                    print(f"  Embedding norms:")
-                    print(f"    gamma_user: {gamma_u_norm:.6f}")
-                    print(f"    gamma_item: {gamma_i_norm:.6f}")
-                    print(f"    theta_user: {theta_u_norm:.6f}")
-                    print(f"    E (projection): {E_norm:.6f}")
                 
                 # Mask history items for each user in batch
                 for j, history_items in enumerate(batch_history_items):

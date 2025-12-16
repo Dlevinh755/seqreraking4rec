@@ -260,3 +260,89 @@ def unziptargz(zippath, savepath):
     f = tarfile.open(zippath)
     f.extractall(savepath)
     f.close()
+
+
+def normalize_text(text: str) -> str:
+    """
+    Normalize text according to spec:
+    - lowercase
+    - remove special characters (keep only alphanumeric and spaces)
+    
+    Args:
+        text: Input text string
+        
+    Returns:
+        Normalized text string
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    
+    # Convert to lowercase
+    text = text.lower()
+    
+    # Remove special characters (keep only alphanumeric and spaces)
+    import re
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+    
+    # Collapse multiple spaces into single space
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
+
+
+def truncate_text(text: str, max_length: int, from_end: bool = True) -> str:
+    """
+    Truncate text to max_length characters.
+    
+    Args:
+        text: Input text string
+        max_length: Maximum length in characters
+        from_end: If True, truncate from the end (keep beginning). If False, truncate from beginning.
+        
+    Returns:
+        Truncated text string
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    
+    if len(text) <= max_length:
+        return text
+    
+    if from_end:
+        # Truncate from the end (keep beginning)
+        return text[:max_length - 3] + "..."
+    else:
+        # Truncate from the beginning (keep end)
+        return "..." + text[-(max_length - 3):]
+
+
+def process_item_text(title: str, description: str, max_length: int = 512) -> str:
+    """
+    Process item text according to spec:
+    1. Concatenate title + description
+    2. Normalize (lowercase, remove special chars)
+    3. Truncate to max_length (from end)
+    
+    Args:
+        title: Item title
+        description: Item description
+        max_length: Maximum text length (default: 512, configurable 256-512)
+        
+    Returns:
+        Processed text string
+    """
+    # Step 1: Concatenate title + description
+    title = str(title).strip() if title else ""
+    description = str(description).strip() if description else ""
+    text = f"{title} {description}".strip()
+    
+    if not text:
+        return ""
+    
+    # Step 2: Normalize (lowercase, remove special chars)
+    text = normalize_text(text)
+    
+    # Step 3: Truncate from end
+    text = truncate_text(text, max_length, from_end=True)
+    
+    return text

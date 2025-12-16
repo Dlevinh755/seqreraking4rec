@@ -129,6 +129,7 @@ class MMGCNRetriever(BaseRetriever):
         epochs_no_improve = 0
         
         val_data = kwargs.get("val_data")
+        test_data = kwargs.get("test_data", {})  # Get test_data if provided (for negative sampling)
         
         # Prepare training samples: mỗi positive item trong training data sẽ có 1 negative tương ứng
         train_samples = []
@@ -138,12 +139,23 @@ class MMGCNRetriever(BaseRetriever):
             if len(items) < 1:
                 continue
             
+            # ✅ CRITICAL FIX: Exclude val and test items from negative candidates
+            # Spec requires: "Negative items must never appear in user's interaction history,
+            # exclude validation and test items"
+            user_train_items = set(items)  # Training history
+            user_val_items = set(val_data.get(user_id, [])) if val_data else set()
+            user_test_items = set(test_data.get(user_id, [])) if test_data else set()
+            
+            # Negative candidates: all items EXCEPT train, val, and test items
+            excluded_items = user_train_items | user_val_items | user_test_items
+            neg_candidates = list(all_items - excluded_items)
+            
+            if len(neg_candidates) == 0:
+                # Fallback: if no valid negatives (shouldn't happen in practice), skip this user
+                continue
+            
             # Với mỗi positive item trong training data, sample 1 negative tương ứng
             for pos_item in items:
-                # Sample negative item (not in user's history)
-                neg_candidates = list(all_items - set(items))
-                if len(neg_candidates) == 0:
-                    continue
                 neg_item = np.random.choice(neg_candidates)
                 train_samples.append((user_id, pos_item, neg_item))
         
@@ -186,20 +198,10 @@ class MMGCNRetriever(BaseRetriever):
                 
                 optimizer.zero_grad()
                 
-                # Debug: Measure forward pass time (only for first batch of first epoch)
-                if epoch == 0 and i == 0:
-                    import time
-                    start_time = time.time()
-                
                 loss, _, _, _, _ = self.model.loss(
                     user_tensor,
                     item_tensor
                 )
-                
-                if epoch == 0 and i == 0:
-                    forward_time = time.time() - start_time
-                    print(f"[MMGCNRetriever] Forward pass time for batch {i}: {forward_time:.4f}s")
-                    print(f"[MMGCNRetriever] Batch size: {len(batch_samples)}, Time per sample: {forward_time/len(batch_samples)*1000:.2f}ms")
                 
                 loss.backward()
                 optimizer.step()

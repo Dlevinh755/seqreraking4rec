@@ -174,9 +174,11 @@ class BM3Retriever(BaseRetriever):
         epochs_no_improve = 0
         
         val_data = kwargs.get("val_data")
+        test_data = kwargs.get("test_data", {})  # Get test_data if provided (for negative sampling)
         
         # Prepare training samples (user, pos_item, neg_item)
-        train_samples = self._prepare_training_samples(train_data)
+        # ✅ CRITICAL FIX: Pass val_data and test_data to exclude them from negative sampling
+        train_samples = self._prepare_training_samples(train_data, val_data=val_data, test_data=test_data)
         
         if len(train_samples) == 0:
             raise ValueError("No training samples generated! Check train_data and num_item.")
@@ -250,30 +252,46 @@ class BM3Retriever(BaseRetriever):
 
     def _prepare_training_samples(
         self,
-        train_data: Dict[int, List[int]]
+        train_data: Dict[int, List[int]],
+        val_data: Optional[Dict[int, List[int]]] = None,
+        test_data: Optional[Dict[int, List[int]]] = None
     ) -> List[tuple]:
         """Prepare (user_id, pos_item_id, neg_item_id) training samples.
         
         Args:
-            train_data: Dict {user_id: [item_ids]}
+            train_data: Dict {user_id: [item_ids]} - training interactions
+            val_data: Optional dict {user_id: [item_ids]} - validation interactions (for negative exclusion)
+            test_data: Optional dict {user_id: [item_ids]} - test interactions (for negative exclusion)
             
         Returns:
             List of (user_id, pos_item_id, neg_item_id) tuples (0-indexed)
         """
         samples = []
         all_items = set(range(1, self.num_item + 1))
+        val_data = val_data or {}
+        test_data = test_data or {}
         
         for user_id, items in train_data.items():
             if len(items) < 1:
                 continue
             
+            # ✅ CRITICAL FIX: Exclude val and test items from negative candidates
+            # Spec requires: "Negative items must never appear in user's interaction history,
+            # exclude validation and test items"
+            user_train_items = set(items)  # Training history
+            user_val_items = set(val_data.get(user_id, []))
+            user_test_items = set(test_data.get(user_id, []))
+            
+            # Negative candidates: all items EXCEPT train, val, and test items
+            excluded_items = user_train_items | user_val_items | user_test_items
+            neg_candidates = list(all_items - excluded_items)
+            
+            if len(neg_candidates) == 0:
+                # Fallback: if no valid negatives (shouldn't happen in practice), skip this user
+                continue
+            
             # For each positive item, sample a negative
             for pos_item in items:
-                # Sample negative item (not in user's history)
-                neg_candidates = list(all_items - set(items))
-                if len(neg_candidates) == 0:
-                    continue
-                
                 neg_item = np.random.choice(neg_candidates)
                 samples.append((user_id - 1, pos_item - 1, neg_item - 1))  # Convert to 0-indexed
         
@@ -323,21 +341,6 @@ class BM3Retriever(BaseRetriever):
                 
                 # Predict scores for batch [batch_size, n_items]
                 scores_batch = self.model.predict_batch(user_ids_tensor)  # [batch_size, n_items]
-                
-                # Debug: Print score statistics (only for first batch of first evaluation)
-                if i == 0 and len(recalls) == 0:
-                    print(f"[BM3Retriever] Score statistics (first batch):")
-                    print(f"  Scores shape: {scores_batch.shape}")
-                    print(f"  Score mean: {scores_batch.mean().item():.6f}")
-                    print(f"  Score std: {scores_batch.std().item():.6f}")
-                    print(f"  Score min: {scores_batch.min().item():.6f}")
-                    print(f"  Score max: {scores_batch.max().item():.6f}")
-                    # Check embedding norms
-                    user_emb_norm = self.model.user_embedding.weight.norm(dim=1).mean().item()
-                    item_emb_norm = self.model.item_embedding.weight.norm(dim=1).mean().item()
-                    print(f"  Embedding norms:")
-                    print(f"    user_embedding: {user_emb_norm:.6f}")
-                    print(f"    item_embedding: {item_emb_norm:.6f}")
                 
                 # Mask history items for each user in batch
                 for j, history_items in enumerate(batch_history_items):
