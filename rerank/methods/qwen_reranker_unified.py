@@ -177,6 +177,9 @@ class QwenReranker(BaseReranker):
         self.item_id2text: Dict[int, str] = {}  # item_id -> item_text (for text_only mode)
         self.item_meta: Dict[int, Dict[str, Any]] = {}  # item_id -> {caption, semantic_summary, text} (for multimodal modes)
         self.train_user_history: Dict[int, List[int]] = {}  # user_id -> [item_ids] for training
+        
+        # Debug flag: print sample test prompt only once
+        self._debug_test_prompt_printed = False
     
     def fit(
         self,
@@ -318,11 +321,50 @@ class QwenReranker(BaseReranker):
                 self.item_id2text,
                 max_candidates=self.max_candidates
             )
+            
+            # ✅ Print sample test prompt for debugging (only once)
+            if not self._debug_test_prompt_printed:
+                print("\n[QwenReranker] Sample Test Prompt (for debugging):")
+                print("-" * 80)
+                print(f"User ID: {user_id}")
+                print(f"History items: {history}")
+                print(f"Candidates: {candidates[:10]}..." if len(candidates) > 10 else f"Candidates: {candidates}")
+                print(f"\nPrompt:\n{prompt}")
+                # Count tokens if tokenizer is available
+                if hasattr(self.llm_model, 'tokenizer') and self.llm_model.tokenizer:
+                    try:
+                        tokens = self.llm_model.tokenizer.encode(prompt, add_special_tokens=False)
+                        print(f"\nPrompt tokens: {len(tokens)}")
+                    except:
+                        pass
+                print("-" * 80)
+                self._debug_test_prompt_printed = True
+            
             probs = self.llm_model.predict_probs(prompt, num_candidates=num_candidates)
         else:
             # Use Qwen3VLModel for multimodal modes
             if self.qwen3vl_model is None:
                 raise RuntimeError("Qwen3-VL model chưa được load. Gọi fit() trước!")
+            
+            # ✅ Print sample test prompt for debugging (only once)
+            if not self._debug_test_prompt_printed:
+                # Build a sample prompt to show (similar to training prompt format)
+                sample_prompt = self._build_test_prompt_sample(user_id, history, candidates)
+                print("\n[QwenReranker] Sample Test Prompt (for debugging):")
+                print("-" * 80)
+                print(f"User ID: {user_id}")
+                print(f"History items: {history}")
+                print(f"Candidates: {candidates[:10]}..." if len(candidates) > 10 else f"Candidates: {candidates}")
+                print(f"\nPrompt:\n{sample_prompt}")
+                # Count tokens if tokenizer is available
+                if hasattr(self.qwen3vl_model, 'processor') and hasattr(self.qwen3vl_model.processor, 'tokenizer'):
+                    try:
+                        tokens = self.qwen3vl_model.processor.tokenizer.encode(sample_prompt, add_special_tokens=False)
+                        print(f"\nPrompt tokens: {len(tokens)}")
+                    except:
+                        pass
+                print("-" * 80)
+                self._debug_test_prompt_printed = True
             
             probs = self.qwen3vl_model.predict_probs(
                 user_history=history,
@@ -467,6 +509,17 @@ class QwenReranker(BaseReranker):
             print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} prompts exceed max_length={max_length} and will be truncated!")
         else:
             print(f"  ✅ All prompts fit within max_length={max_length}")
+        
+        # ✅ Print sample training prompt for debugging
+        if prompts:
+            print("\n[QwenReranker] Sample Training Prompt (for debugging):")
+            print("-" * 80)
+            sample_prompt = prompts[0]
+            sample_target = targets[0] if targets else "N/A"
+            print(f"Prompt:\n{sample_prompt}")
+            print(f"\nTarget: {sample_target}")
+            print(f"Prompt tokens: {stats.get('token_counts', [])[0] if stats.get('token_counts') else 'N/A'}")
+            print("-" * 80)
         print()
         
         hf_train_dataset = Dataset.from_list(training_data)
@@ -577,6 +630,17 @@ class QwenReranker(BaseReranker):
             print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} prompts exceed max_length={max_length} and will be truncated!")
         else:
             print(f"  ✅ All prompts fit within max_length={max_length}")
+        
+        # ✅ Print sample training prompt for debugging
+        if prompts:
+            print("\n[QwenReranker] Sample Training Prompt (for debugging):")
+            print("-" * 80)
+            sample_prompt = prompts[0]
+            sample_target = targets[0] if targets else "N/A"
+            print(f"Prompt:\n{sample_prompt}")
+            print(f"\nTarget: {sample_target}")
+            print(f"Prompt tokens: {stats.get('token_counts', [])[0] if stats.get('token_counts') else 'N/A'}")
+            print("-" * 80)
         print()
         
         hf_train_dataset = Dataset.from_list(training_data)
@@ -785,6 +849,84 @@ User history:
 
 Candidate items:
 {cand_str}
+
+Answer with only one number (1-{num_candidates}).
+""".strip()
+        
+        return prompt
+    
+    def _build_test_prompt_sample(
+        self,
+        user_id: int,
+        history: List[int],
+        candidates: List[int]
+    ) -> str:
+        """Build a sample test prompt for debugging (similar format to training prompt)."""
+        # Get history texts based on mode
+        history_texts = []
+        for item_id in history[-self.max_history:]:
+            meta = self.item_meta.get(item_id, {})
+            if self.mode == "caption":
+                caption = meta.get("caption", "")
+                text = meta.get("text", f"item_{item_id}")
+                text = _truncate_item_text(text, max_chars=200)
+                if caption:
+                    history_texts.append(f"{text} (Image: {caption})")
+                else:
+                    history_texts.append(text)
+            elif self.mode == "semantic_summary":
+                semantic_summary = meta.get("semantic_summary", "")
+                text = meta.get("text", f"item_{item_id}")
+                text = _truncate_item_text(text, max_chars=200)
+                if semantic_summary:
+                    history_texts.append(f"{text} (Semantic: {semantic_summary})")
+                else:
+                    history_texts.append(text)
+            else:
+                text = meta.get("text", f"item_{item_id}")
+                text = _truncate_item_text(text, max_chars=200)
+                history_texts.append(text)
+        
+        # Get candidate texts (limit to first 10 for display)
+        candidate_texts = []
+        for item_id in candidates[:10]:  # Show first 10 candidates
+            meta = self.item_meta.get(item_id, {})
+            if self.mode == "caption":
+                caption = meta.get("caption", "")
+                text = meta.get("text", f"item_{item_id}")
+                text = _truncate_item_text(text, max_chars=200)
+                if caption:
+                    candidate_texts.append(f"{text} (Image: {caption})")
+                else:
+                    candidate_texts.append(text)
+            elif self.mode == "semantic_summary":
+                semantic_summary = meta.get("semantic_summary", "")
+                text = meta.get("text", f"item_{item_id}")
+                text = _truncate_item_text(text, max_chars=200)
+                if semantic_summary:
+                    candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+                else:
+                    candidate_texts.append(text)
+            else:
+                text = meta.get("text", f"item_{item_id}")
+                text = _truncate_item_text(text, max_chars=200)
+                candidate_texts.append(text)
+        
+        # Build prompt
+        history_str = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
+        cand_str = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
+        num_candidates = len(candidates)
+        
+        prompt = f"""You are a recommendation ranking assistant.
+
+Choose exactly ONE item the user is most likely to interact with next.
+
+User history:
+{history_str}
+
+Candidate items:
+{cand_str}
+{f'... (and {num_candidates - 10} more candidates)' if num_candidates > 10 else ''}
 
 Answer with only one number (1-{num_candidates}).
 """.strip()
