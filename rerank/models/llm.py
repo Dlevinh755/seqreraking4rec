@@ -335,17 +335,24 @@ class LLMModel:
             input_ids = [int(x) for x in list(input_ids)]
         
         # ✅ Create labels: copy input_ids
-        # Unsloth will automatically mask prompt tokens based on chat template
-        # So we just copy input_ids and let Unsloth handle the masking
-        labels = [int(x) for x in input_ids]
+        # For Unsloth, labels should be a copy of input_ids
+        # Unsloth will handle masking automatically based on chat template
+        labels = input_ids.copy()
         
-        # ✅ Ensure labels has same length as input_ids
-        if len(labels) != len(input_ids):
-            labels = labels[:len(input_ids)] if len(labels) > len(input_ids) else labels + [-100] * (len(input_ids) - len(labels))
-        
-        # ✅ Ensure both are flat lists of ints
+        # ✅ Ensure both are flat lists of ints (critical for Unsloth)
         input_ids = [int(x) for x in input_ids]
         labels = [int(x) for x in labels]
+        
+        # ✅ Critical: ensure exact same length
+        if len(input_ids) != len(labels):
+            min_len = min(len(input_ids), len(labels))
+            input_ids = input_ids[:min_len]
+            labels = labels[:min_len]
+        
+        # ✅ Final check: ensure no nested structures
+        assert all(isinstance(x, int) for x in input_ids), "input_ids must be flat list of ints"
+        assert all(isinstance(x, int) for x in labels), "labels must be flat list of ints"
+        assert len(input_ids) == len(labels), f"Length mismatch: {len(input_ids)} vs {len(labels)}"
         
         tokenized["input_ids"] = input_ids
         tokenized["labels"] = labels
