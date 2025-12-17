@@ -334,110 +334,21 @@ class LLMModel:
             # Convert tensor or other type to list
             input_ids = [int(x) for x in list(input_ids)]
         
-        # ✅ Create labels: copy input_ids (Unsloth will handle masking)
-        # For Unsloth, we create labels as a copy of input_ids
-        # The Trainer will automatically mask prompt tokens based on the chat template
-        labels = input_ids.copy()
+        # ✅ Create labels: copy input_ids
+        # Unsloth will automatically mask prompt tokens based on chat template
+        # So we just copy input_ids and let Unsloth handle the masking
+        labels = [int(x) for x in input_ids]
         
-        # ✅ Find where assistant response starts to mask prompt tokens
-        # Tokenize prompt (without assistant response) to find the split point
-        prompt_messages = messages[:-1] if len(messages) > 1 else []
+        # ✅ Ensure labels has same length as input_ids
+        if len(labels) != len(input_ids):
+            labels = labels[:len(input_ids)] if len(labels) > len(input_ids) else labels + [-100] * (len(input_ids) - len(labels))
         
-        if prompt_messages:
-            prompt_text = self.tokenizer.apply_chat_template(
-                prompt_messages,
-                tokenize=False,
-                add_generation_prompt=False
-            )
-            
-            # Tokenize prompt with same settings (including padding to match input_ids)
-            prompt_tokenized = self.tokenizer(
-                prompt_text,
-                add_special_tokens=True,
-                truncation=True,
-                max_length=2048,
-                padding="max_length",  # ✅ Pad to match input_ids format
-            )
-            
-            prompt_input_ids = prompt_tokenized["input_ids"]
-            # Flatten if nested
-            if isinstance(prompt_input_ids, list) and len(prompt_input_ids) > 0:
-                if isinstance(prompt_input_ids[0], list):
-                    prompt_input_ids = [item for sublist in prompt_input_ids for item in sublist]
-                prompt_input_ids = [int(x) for x in prompt_input_ids]
-            else:
-                prompt_input_ids = [int(x) for x in list(prompt_input_ids)]
-            
-            # Find matching position in input_ids
-            # Since both are padded to max_length, find where they start to differ
-            prompt_len = len(input_ids)  # Default: mask all (conservative)
-            
-            # Find the first position where tokens differ (accounting for padding)
-            pad_token_id = self.tokenizer.pad_token_id if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None else 0
-            
-            for i in range(min(len(prompt_input_ids), len(input_ids))):
-                # If we hit padding in prompt, that's where it ends
-                if prompt_input_ids[i] == pad_token_id:
-                    prompt_len = i
-                    break
-                
-                # Skip padding tokens in input_ids when comparing
-                if input_ids[i] == pad_token_id:
-                    continue
-                
-                # If tokens differ, this is where assistant response starts
-                if prompt_input_ids[i] != input_ids[i]:
-                    prompt_len = i
-                    break
-            
-            # If no difference found, use conservative estimate
-            if prompt_len >= len(input_ids):
-                prompt_len = max(0, len(input_ids) - 20)
-        else:
-            prompt_len = max(0, len(input_ids) - 10)
+        # ✅ Ensure both are flat lists of ints
+        input_ids = [int(x) for x in input_ids]
+        labels = [int(x) for x in labels]
         
-        # ✅ Mask prompt tokens in labels (set to -100 to ignore in loss)
-        # Only mask if we have a valid prompt_len
-        if 0 < prompt_len < len(labels):
-            for i in range(prompt_len):
-                labels[i] = -100
-        
-        # ✅ Ensure labels is a flat list of ints (critical for Unsloth)
-        # Convert all elements to int, ensuring no nested structures
-        final_labels = []
-        for x in labels:
-            if isinstance(x, (list, tuple)):
-                final_labels.extend([int(item) for item in x])
-            elif isinstance(x, torch.Tensor):
-                final_labels.append(int(x.item()))
-            else:
-                try:
-                    final_labels.append(int(x))
-                except (ValueError, TypeError):
-                    final_labels.append(-100)  # Fallback for invalid values
-        
-        # ✅ Final validation: ensure labels has same length as input_ids
-        if len(final_labels) != len(input_ids):
-            if len(final_labels) < len(input_ids):
-                final_labels.extend([-100] * (len(input_ids) - len(final_labels)))
-            else:
-                final_labels = final_labels[:len(input_ids)]
-        
-        # ✅ Ensure input_ids is also properly formatted
-        final_input_ids = []
-        for x in input_ids:
-            if isinstance(x, (list, tuple)):
-                final_input_ids.extend([int(item) for item in x])
-            elif isinstance(x, torch.Tensor):
-                final_input_ids.append(int(x.item()))
-            else:
-                try:
-                    final_input_ids.append(int(x))
-                except (ValueError, TypeError):
-                    final_input_ids.append(self.tokenizer.pad_token_id if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id else 0)
-        
-        tokenized["input_ids"] = final_input_ids
-        tokenized["labels"] = final_labels
+        tokenized["input_ids"] = input_ids
+        tokenized["labels"] = labels
 
         return tokenized
 
