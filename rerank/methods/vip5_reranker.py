@@ -281,8 +281,21 @@ class VIP5Reranker(BaseReranker):
                 config.feat_dim = self.image_feature_dim
                 config.n_vis_tokens = self.image_feature_size_ratio
                 config.use_vis_layer_norm = True
-                config.use_adapter = kwargs.get("use_adapter", False)
-                config.adapter_config = kwargs.get("adapter_config", None)
+                config.use_adapter = kwargs.get("use_adapter", True)  # ✅ Default: True
+                adapter_config = kwargs.get("adapter_config", None)
+                # ✅ Create default adapter_config if use_adapter=True but adapter_config=None
+                if config.use_adapter and adapter_config is None:
+                    try:
+                        from rerank.models.adapters.config import AdapterConfig
+                        adapter_config = AdapterConfig()
+                        adapter_config.tasks = ["direct"]  # Direct Task for reranking
+                        adapter_config.d_model = config.d_model  # For adapter
+                        adapter_config.use_single_adapter = False
+                        adapter_config.reduction_factor = 16  # Default reduction factor
+                    except ImportError:
+                        print("Warning: AdapterConfig not available. Adapters may not work correctly.")
+                        adapter_config = None
+                config.adapter_config = adapter_config
                 config.add_adapter_cross_attn = kwargs.get("add_adapter_cross_attn", False)
                 config.use_lm_head_adapter = kwargs.get("use_lm_head_adapter", False)
                 config.whole_word_embed = True
@@ -306,8 +319,21 @@ class VIP5Reranker(BaseReranker):
             config.feat_dim = self.image_feature_dim
             config.n_vis_tokens = self.image_feature_size_ratio
             config.use_vis_layer_norm = True
-            config.use_adapter = kwargs.get("use_adapter", False)
-            config.adapter_config = kwargs.get("adapter_config", None)
+            config.use_adapter = kwargs.get("use_adapter", True)  # ✅ Default: True
+            adapter_config = kwargs.get("adapter_config", None)
+            # ✅ Create default adapter_config if use_adapter=True but adapter_config=None
+            if config.use_adapter and adapter_config is None:
+                try:
+                    from rerank.models.adapters.config import AdapterConfig
+                    adapter_config = AdapterConfig()
+                    adapter_config.tasks = ["direct"]  # Direct Task for reranking
+                    adapter_config.d_model = config.d_model  # For adapter
+                    adapter_config.use_single_adapter = False
+                    adapter_config.reduction_factor = 16  # Default reduction factor
+                except ImportError:
+                    print("Warning: AdapterConfig not available. Adapters may not work correctly.")
+                    adapter_config = None
+            config.adapter_config = adapter_config
             config.add_adapter_cross_attn = kwargs.get("add_adapter_cross_attn", False)
             config.use_lm_head_adapter = kwargs.get("use_lm_head_adapter", False)
             config.whole_word_embed = True
