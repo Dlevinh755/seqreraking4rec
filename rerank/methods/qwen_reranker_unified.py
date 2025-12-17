@@ -19,6 +19,72 @@ def _truncate_item_text(text: str, max_chars: int = 200) -> str:
     return text[:max_chars - 3] + "..."
 
 
+def _count_prompt_tokens(
+    prompts: List[str],
+    tokenizer,
+    include_target: bool = False,
+    targets: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Count tokens in prompts and return statistics.
+    
+    Args:
+        prompts: List of prompt strings
+        tokenizer: Tokenizer to use for counting
+        include_target: Whether to include target tokens in count
+        targets: List of target strings (required if include_target=True)
+    
+    Returns:
+        Dict with statistics: min, max, mean, median, percentiles, token_counts list, etc.
+    """
+    token_counts = []
+    
+    for i, prompt in enumerate(prompts):
+        # Tokenize prompt
+        prompt_tokens = tokenizer.encode(prompt, add_special_tokens=False)
+        prompt_count = len(prompt_tokens)
+        
+        # Add target tokens if requested
+        if include_target and targets and i < len(targets):
+            target = targets[i]
+            target_tokens = tokenizer.encode(target, add_special_tokens=False)
+            prompt_count += len(target_tokens)
+        
+        token_counts.append(prompt_count)
+    
+    if not token_counts:
+        return {
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "median": 0,
+            "p50": 0,
+            "p75": 0,
+            "p90": 0,
+            "p95": 0,
+            "p99": 0,
+            "total": 0,
+            "count": 0,
+            "token_counts": [],
+        }
+    
+    token_counts_arr = np.array(token_counts)
+    
+    return {
+        "min": int(np.min(token_counts_arr)),
+        "max": int(np.max(token_counts_arr)),
+        "mean": float(np.mean(token_counts_arr)),
+        "median": float(np.median(token_counts_arr)),
+        "p50": float(np.percentile(token_counts_arr, 50)),
+        "p75": float(np.percentile(token_counts_arr, 75)),
+        "p90": float(np.percentile(token_counts_arr, 90)),
+        "p95": float(np.percentile(token_counts_arr, 95)),
+        "p99": float(np.percentile(token_counts_arr, 99)),
+        "total": int(np.sum(token_counts_arr)),
+        "count": len(token_counts_arr),
+        "token_counts": token_counts,  # Keep original list for checking exceeding
+    }
+
+
 # Model name mappings
 MODEL_MAPPING = {
     "qwen3-0.6b": "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
@@ -357,15 +423,51 @@ class QwenReranker(BaseReranker):
         from transformers import TrainingArguments, Trainer
         
         training_data = []
+        prompts = []
+        targets = []
         for sample in train_samples:
             prompt = self._build_training_prompt(sample)
             target = str(sample["target_idx"] + 1)  # 1-indexed
+            
+            prompts.append(prompt)
+            targets.append(target)
             
             training_data.append({
                 "instruction": prompt,
                 "input": "",
                 "output": target,
             })
+        
+        # ✅ Count tokens before training
+        print("\n[QwenReranker] Analyzing prompt token counts...")
+        stats = _count_prompt_tokens(
+            prompts,
+            self.qwen3vl_model.tokenizer,
+            include_target=True,
+            targets=targets
+        )
+        print(f"  Total samples: {stats['count']}")
+        print(f"  Token statistics (prompt + target):")
+        print(f"    Min: {stats['min']} tokens")
+        print(f"    Max: {stats['max']} tokens")
+        print(f"    Mean: {stats['mean']:.1f} tokens")
+        print(f"    Median: {stats['median']:.1f} tokens")
+        print(f"    Percentiles:")
+        print(f"      P50: {stats['p50']:.1f} tokens")
+        print(f"      P75: {stats['p75']:.1f} tokens")
+        print(f"      P90: {stats['p90']:.1f} tokens")
+        print(f"      P95: {stats['p95']:.1f} tokens")
+        print(f"      P99: {stats['p99']:.1f} tokens")
+        print(f"    Total tokens: {stats['total']:,}")
+        
+        # Check if any prompts exceed max_length
+        max_length = 2048  # From tokenize_function
+        num_exceeding = sum(1 for count in stats.get('token_counts', []) if count > max_length)
+        if num_exceeding > 0:
+            print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} prompts exceed max_length={max_length} and will be truncated!")
+        else:
+            print(f"  ✅ All prompts fit within max_length={max_length}")
+        print()
         
         hf_train_dataset = Dataset.from_list(training_data)
         
@@ -427,9 +529,15 @@ class QwenReranker(BaseReranker):
         
         # Prepare training data
         training_data = []
+        prompts = []
+        targets = []
         for sample in train_samples:
             target = str(sample["target_idx"] + 1)  # 1-indexed
             prompt = self._build_training_prompt(sample)
+            
+            prompts.append(prompt)
+            targets.append(target)
+            
             messages = [
                 {"role": "user", "content": prompt},
                 {"role": "assistant", "content": target}
@@ -439,6 +547,37 @@ class QwenReranker(BaseReranker):
                 "prompt": prompt,
                 "target": target,
             })
+        
+        # ✅ Count tokens before training
+        print("\n[QwenReranker] Analyzing prompt token counts...")
+        stats = _count_prompt_tokens(
+            prompts,
+            self.qwen3vl_model.processor.tokenizer,
+            include_target=True,
+            targets=targets
+        )
+        print(f"  Total samples: {stats['count']}")
+        print(f"  Token statistics (prompt + target):")
+        print(f"    Min: {stats['min']} tokens")
+        print(f"    Max: {stats['max']} tokens")
+        print(f"    Mean: {stats['mean']:.1f} tokens")
+        print(f"    Median: {stats['median']:.1f} tokens")
+        print(f"    Percentiles:")
+        print(f"      P50: {stats['p50']:.1f} tokens")
+        print(f"      P75: {stats['p75']:.1f} tokens")
+        print(f"      P90: {stats['p90']:.1f} tokens")
+        print(f"      P95: {stats['p95']:.1f} tokens")
+        print(f"      P99: {stats['p99']:.1f} tokens")
+        print(f"    Total tokens: {stats['total']:,}")
+        
+        # Check if any prompts exceed max_length
+        max_length = 2048  # From collate_fn
+        num_exceeding = sum(1 for count in stats.get('token_counts', []) if count > max_length)
+        if num_exceeding > 0:
+            print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} prompts exceed max_length={max_length} and will be truncated!")
+        else:
+            print(f"  ✅ All prompts fit within max_length={max_length}")
+        print()
         
         hf_train_dataset = Dataset.from_list(training_data)
         
