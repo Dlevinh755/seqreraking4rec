@@ -298,12 +298,12 @@ class LLMModel:
     def tokenize_response_only(self, example):
         """Tokenize training example for Unsloth.
         
-        Uses apply_chat_template to properly format messages and create labels.
+        Uses apply_chat_template and lets Unsloth handle label masking automatically.
+        This is the recommended approach for Unsloth compatibility.
         """
         messages = example["messages"]
         
         # ✅ Use apply_chat_template for proper formatting (Unsloth-compatible)
-        # This ensures proper tokenization and label creation
         text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -311,16 +311,16 @@ class LLMModel:
         )
         
         # Tokenize the full text
+        # ✅ Don't pad here - let Trainer handle padding dynamically
         tokenized = self.tokenizer(
             text,
             truncation=True,
             max_length=2048,
-            padding="max_length",
+            padding=False,  # Let Trainer handle padding
             return_tensors=None,  # Return lists, not tensors (for Dataset.map)
         )
         
-        # Create labels: copy input_ids and mask prompt tokens
-        # ✅ Ensure input_ids is a flat list (not nested)
+        # ✅ Get input_ids and ensure it's a flat list
         input_ids = tokenized["input_ids"]
         
         # Handle different return formats from tokenizer
@@ -334,102 +334,95 @@ class LLMModel:
             # Convert tensor or other type to list
             input_ids = [int(x) for x in list(input_ids)]
         
-        # ✅ Ensure labels is a copy of input_ids as a flat list
+        # ✅ Create labels: copy input_ids (Unsloth will handle masking)
+        # For Unsloth, we create labels as a copy of input_ids
+        # The Trainer will automatically mask prompt tokens based on the chat template
         labels = input_ids.copy()
         
-        # ✅ Simple and reliable approach: Find assistant response by decoding and searching
-        # This works better with chat templates that add special tokens
-        assistant_message = messages[-1] if messages else None
-        if assistant_message and assistant_message.get("role") == "assistant":
-            assistant_content = str(assistant_message.get("content", ""))
+        # ✅ Find where assistant response starts to mask prompt tokens
+        # Tokenize prompt (without assistant response) to find the split point
+        prompt_messages = messages[:-1] if len(messages) > 1 else []
+        
+        if prompt_messages:
+            prompt_text = self.tokenizer.apply_chat_template(
+                prompt_messages,
+                tokenize=False,
+                add_generation_prompt=False
+            )
             
-            # Decode the full text to find where assistant response starts
-            try:
-                decoded_text = self.tokenizer.decode(input_ids, skip_special_tokens=False)
-                
-                # Find the position of assistant content in decoded text
-                # Look for common patterns like "assistant" or the actual content
-                assistant_pos = -1
-                
-                # Try to find assistant role marker or content
-                if "assistant" in decoded_text.lower():
-                    # Find position after "assistant" marker
-                    assistant_marker = "assistant"
-                    pos = decoded_text.lower().rfind(assistant_marker)
-                    if pos >= 0:
-                        # Tokenize from that position to get token index
-                        text_before_assistant = decoded_text[:pos + len(assistant_marker)]
-                        tokens_before = self.tokenizer.encode(text_before_assistant, add_special_tokens=False)
-                        assistant_pos = len(tokens_before)
-                
-                # If not found, try to find the actual assistant content
-                if assistant_pos < 0 and assistant_content:
-                    pos = decoded_text.find(assistant_content)
-                    if pos >= 0:
-                        text_before_content = decoded_text[:pos]
-                        tokens_before = self.tokenizer.encode(text_before_content, add_special_tokens=False)
-                        assistant_pos = len(tokens_before)
-                
-                # Use found position or fallback
-                if assistant_pos > 0 and assistant_pos < len(input_ids):
-                    prompt_len = assistant_pos
-                else:
-                    # Fallback: mask all except last 10% of tokens (assume response is at the end)
-                    prompt_len = int(len(input_ids) * 0.9)
-            except Exception:
-                # If decoding fails, use conservative estimate
-                prompt_len = max(0, len(input_ids) - 10)
-        else:
-            # No assistant message, mask all except last few tokens
-            prompt_len = max(0, len(input_ids) - 5)
-        
-        # ✅ Ensure labels is a flat list before masking
-        if not isinstance(labels, list):
-            labels = list(labels)
-        
-        # ✅ Ensure labels has the same length as input_ids (after padding)
-        # This is critical for proper loss calculation
-        max_len = len(input_ids)
-        if len(labels) < max_len:
-            # Pad labels with -100 to match input_ids length
-            labels.extend([-100] * (max_len - len(labels)))
-        elif len(labels) > max_len:
-            # Truncate labels to match input_ids length
-            labels = labels[:max_len]
-        
-        # Mask prompt tokens in labels (set to -100 to ignore in loss)
-        # Only mask if prompt_len is within the sequence length
-        if prompt_len < len(labels):
-            labels[:prompt_len] = [-100] * prompt_len
-        else:
-            # If prompt is longer than sequence, mask all except last few tokens
-            # This shouldn't happen with proper truncation, but handle it anyway
-            labels[:-1] = [-100] * (len(labels) - 1)
-        
-        # ✅ Ensure labels is a flat list of ints (not nested, not tensors)
-        # Convert all elements to int, handling edge cases
-        flat_labels = []
-        for x in labels:
-            try:
-                if isinstance(x, (list, tuple)):
-                    flat_labels.extend([int(item) for item in x])
-                elif isinstance(x, torch.Tensor):
-                    flat_labels.append(int(x.item()))
-                else:
-                    flat_labels.append(int(x))
-            except (ValueError, TypeError):
-                # Fallback: use -100 for invalid values
-                flat_labels.append(-100)
-        
-        # ✅ Final check: ensure labels has exactly the same length as input_ids
-        if len(flat_labels) != len(input_ids):
-            # This should not happen, but handle it gracefully
-            if len(flat_labels) < len(input_ids):
-                flat_labels.extend([-100] * (len(input_ids) - len(flat_labels)))
+            # Tokenize prompt with same settings
+            prompt_tokenized = self.tokenizer(
+                prompt_text,
+                add_special_tokens=True,
+                truncation=True,
+                max_length=2048,
+                padding=False,  # Don't pad when calculating length
+            )
+            
+            prompt_input_ids = prompt_tokenized["input_ids"]
+            # Flatten if nested
+            if isinstance(prompt_input_ids, list) and len(prompt_input_ids) > 0:
+                if isinstance(prompt_input_ids[0], list):
+                    prompt_input_ids = [item for sublist in prompt_input_ids for item in sublist]
+                prompt_input_ids = [int(x) for x in prompt_input_ids]
             else:
-                flat_labels = flat_labels[:len(input_ids)]
+                prompt_input_ids = [int(x) for x in list(prompt_input_ids)]
+            
+            # Find matching position in input_ids
+            prompt_len = min(len(prompt_input_ids), len(input_ids))
+            
+            # Verify match at the beginning
+            if prompt_len > 0:
+                matches = sum(1 for i in range(min(prompt_len, len(input_ids))) 
+                            if i < len(prompt_input_ids) and prompt_input_ids[i] == input_ids[i])
+                if matches < prompt_len * 0.7:  # Less than 70% match
+                    # Fallback: use conservative estimate
+                    prompt_len = max(0, len(input_ids) - 20)
+        else:
+            prompt_len = max(0, len(input_ids) - 10)
         
-        tokenized["labels"] = flat_labels
+        # ✅ Mask prompt tokens in labels (set to -100 to ignore in loss)
+        # Only mask if we have a valid prompt_len
+        if 0 < prompt_len < len(labels):
+            for i in range(prompt_len):
+                labels[i] = -100
+        
+        # ✅ Ensure labels is a flat list of ints (critical for Unsloth)
+        # Convert all elements to int, ensuring no nested structures
+        final_labels = []
+        for x in labels:
+            if isinstance(x, (list, tuple)):
+                final_labels.extend([int(item) for item in x])
+            elif isinstance(x, torch.Tensor):
+                final_labels.append(int(x.item()))
+            else:
+                try:
+                    final_labels.append(int(x))
+                except (ValueError, TypeError):
+                    final_labels.append(-100)  # Fallback for invalid values
+        
+        # ✅ Final validation: ensure labels has same length as input_ids
+        if len(final_labels) != len(input_ids):
+            if len(final_labels) < len(input_ids):
+                final_labels.extend([-100] * (len(input_ids) - len(final_labels)))
+            else:
+                final_labels = final_labels[:len(input_ids)]
+        
+        # ✅ Ensure input_ids is also properly formatted
+        final_input_ids = []
+        for x in input_ids:
+            if isinstance(x, (list, tuple)):
+                final_input_ids.extend([int(item) for item in x])
+            elif isinstance(x, torch.Tensor):
+                final_input_ids.append(int(x.item()))
+            else:
+                try:
+                    final_input_ids.append(int(x))
+                except (ValueError, TypeError):
+                    final_input_ids.append(self.tokenizer.pad_token_id if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id else 0)
+        
+        tokenized["input_ids"] = final_input_ids
+        tokenized["labels"] = final_labels
 
         return tokenized
 
