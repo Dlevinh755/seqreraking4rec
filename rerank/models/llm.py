@@ -322,11 +322,20 @@ class LLMModel:
         # Create labels: copy input_ids and mask prompt tokens
         # ✅ Ensure input_ids is a flat list (not nested)
         input_ids = tokenized["input_ids"]
-        if isinstance(input_ids, list) and len(input_ids) > 0 and isinstance(input_ids[0], list):
-            # Flatten nested list
-            input_ids = [item for sublist in input_ids for item in sublist]
         
-        labels = input_ids.copy() if isinstance(input_ids, list) else list(input_ids)
+        # Handle different return formats from tokenizer
+        if isinstance(input_ids, list):
+            if len(input_ids) > 0 and isinstance(input_ids[0], list):
+                # Flatten nested list
+                input_ids = [item for sublist in input_ids for item in sublist]
+            # Ensure all elements are ints
+            input_ids = [int(x) for x in input_ids]
+        else:
+            # Convert tensor or other type to list
+            input_ids = [int(x) for x in list(input_ids)]
+        
+        # ✅ Ensure labels is a copy of input_ids as a flat list
+        labels = input_ids.copy()
         
         # Calculate prompt length by tokenizing prompt separately
         # Prompt = all messages except the last (assistant response)
@@ -343,7 +352,31 @@ class LLMModel:
             add_special_tokens=False,
             truncation=False,
         )
-        prompt_len = len(prompt_tokenized["input_ids"])
+        
+        # ✅ Ensure prompt_input_ids is a flat list
+        prompt_input_ids = prompt_tokenized["input_ids"]
+        if isinstance(prompt_input_ids, list) and len(prompt_input_ids) > 0 and isinstance(prompt_input_ids[0], list):
+            # Flatten nested list
+            prompt_input_ids = [item for sublist in prompt_input_ids for item in sublist]
+        elif not isinstance(prompt_input_ids, list):
+            # Convert to list if it's a tensor or other type
+            prompt_input_ids = list(prompt_input_ids)
+        
+        prompt_len = len(prompt_input_ids)
+        
+        # ✅ Ensure labels is a flat list before masking
+        if not isinstance(labels, list):
+            labels = list(labels)
+        
+        # ✅ Ensure labels has the same length as input_ids (after padding)
+        # This is critical for proper loss calculation
+        max_len = len(input_ids)
+        if len(labels) < max_len:
+            # Pad labels with -100 to match input_ids length
+            labels.extend([-100] * (max_len - len(labels)))
+        elif len(labels) > max_len:
+            # Truncate labels to match input_ids length
+            labels = labels[:max_len]
         
         # Mask prompt tokens in labels (set to -100 to ignore in loss)
         # Only mask if prompt_len is within the sequence length
@@ -355,8 +388,29 @@ class LLMModel:
             labels[:-1] = [-100] * (len(labels) - 1)
         
         # ✅ Ensure labels is a flat list of ints (not nested, not tensors)
-        labels = [int(x) for x in labels]
-        tokenized["labels"] = labels
+        # Convert all elements to int, handling edge cases
+        flat_labels = []
+        for x in labels:
+            try:
+                if isinstance(x, (list, tuple)):
+                    flat_labels.extend([int(item) for item in x])
+                elif isinstance(x, torch.Tensor):
+                    flat_labels.append(int(x.item()))
+                else:
+                    flat_labels.append(int(x))
+            except (ValueError, TypeError):
+                # Fallback: use -100 for invalid values
+                flat_labels.append(-100)
+        
+        # ✅ Final check: ensure labels has exactly the same length as input_ids
+        if len(flat_labels) != len(input_ids):
+            # This should not happen, but handle it gracefully
+            if len(flat_labels) < len(input_ids):
+                flat_labels.extend([-100] * (len(input_ids) - len(flat_labels)))
+            else:
+                flat_labels = flat_labels[:len(input_ids)]
+        
+        tokenized["labels"] = flat_labels
 
         return tokenized
 
