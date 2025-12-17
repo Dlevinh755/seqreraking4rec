@@ -134,3 +134,27 @@ def get_clip_embeddings_path(
     folder = get_preprocessed_folder_path(dataset_code, min_rating, min_uc, min_sc)
     return folder / "clip_embeddings.pt"
 
+
+def get_rerank_candidates_path(
+    dataset_code: str,
+    min_rating: int,
+    min_uc: int,
+    min_sc: int
+) -> Path:
+    """Get path to rerank candidates CSV file.
+    
+    This file contains pre-generated candidate lists for val/test splits
+    to ensure consistent evaluation across all rerankers.
+    
+    Args:
+        dataset_code: Dataset code
+        min_rating: Minimum rating threshold
+        min_uc: Minimum user count
+        min_sc: Minimum item count
+        
+    Returns:
+        Path to rerank_candidates.csv
+    """
+    folder = get_preprocessed_folder_path(dataset_code, min_rating, min_uc, min_sc)
+    return folder / "rerank_candidates.csv"
+

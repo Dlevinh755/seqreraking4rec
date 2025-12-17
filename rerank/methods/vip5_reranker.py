@@ -919,28 +919,53 @@ class VIP5Reranker(BaseReranker):
                         # Fallback to ground_truth mode if no retrieval candidates
                         rerank_mode = "ground_truth"
                 
-                # ✅ Mode 2: "ground_truth" - Sample random candidates
+                # ✅ Mode 2: "ground_truth" - Load pre-generated candidates
                 if rerank_mode == "ground_truth":
-                    # Get all items as candidates (for evaluation)
-                    all_items = list(self.item_id_to_idx.keys())
-                    
-                    if not all_items:
-                        continue
-                    
-                    # Exclude history items from candidate pool (avoid recommending already purchased items)
-                    history_set = set(history)
-                    candidate_pool = [item for item in all_items if item not in history_set]
-                    
-                    if not candidate_pool:
-                        continue  # No candidates available after excluding history
-                    
-                    # Sample candidates
-                    max_eval_candidates_actual = min(max_eval_candidates, len(candidate_pool))
-                    candidates = random.sample(candidate_pool, max_eval_candidates_actual) if len(candidate_pool) > max_eval_candidates_actual else candidate_pool
-                    
-                    # Ensure at least one ground truth is in candidates
-                    if not any(item in candidates for item in gt_items):
-                        candidates[0] = gt_items[0]
+                    # Try to load pre-generated candidates from data preparation
+                    try:
+                        from evaluation.utils import load_rerank_candidates
+                        from config import arg
+                        
+                        # Determine split name from context (val or test)
+                        # We'll try to load both and use the appropriate one
+                        all_candidates = load_rerank_candidates(
+                            dataset_code=getattr(arg, 'dataset', 'beauty'),
+                            min_rating=getattr(arg, 'min_rating', 0),
+                            min_uc=getattr(arg, 'min_uc', 5),
+                            min_sc=getattr(arg, 'min_sc', 5),
+                        )
+                        
+                        # Try val first, then test
+                        if user_id in all_candidates.get("val", {}):
+                            candidates = all_candidates["val"][user_id]
+                        elif user_id in all_candidates.get("test", {}):
+                            candidates = all_candidates["test"][user_id]
+                        else:
+                            # Fallback: sample random candidates if pre-generated not available
+                            all_items = list(self.item_id_to_idx.keys())
+                            if not all_items:
+                                continue
+                            history_set = set(history)
+                            candidate_pool = [item for item in all_items if item not in history_set]
+                            if not candidate_pool:
+                                continue
+                            max_eval_candidates_actual = min(max_eval_candidates, len(candidate_pool))
+                            candidates = random.sample(candidate_pool, max_eval_candidates_actual) if len(candidate_pool) > max_eval_candidates_actual else candidate_pool
+                            if not any(item in candidates for item in gt_items):
+                                candidates[0] = gt_items[0]
+                    except Exception as e:
+                        # Fallback: sample random candidates if loading fails
+                        all_items = list(self.item_id_to_idx.keys())
+                        if not all_items:
+                            continue
+                        history_set = set(history)
+                        candidate_pool = [item for item in all_items if item not in history_set]
+                        if not candidate_pool:
+                            continue
+                        max_eval_candidates_actual = min(max_eval_candidates, len(candidate_pool))
+                        candidates = random.sample(candidate_pool, max_eval_candidates_actual) if len(candidate_pool) > max_eval_candidates_actual else candidate_pool
+                        if not any(item in candidates for item in gt_items):
+                            candidates[0] = gt_items[0]
                 
                 # ✅ Shuffle candidates to avoid bias (GT item should not always be first)
                 random.shuffle(candidates)

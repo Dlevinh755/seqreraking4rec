@@ -1,19 +1,18 @@
-"""BERT4Rec-based reranker using bidirectional encoder for sequential recommendation."""
+"""BERT4Rec-based retriever using bidirectional encoder for sequential recommendation."""
 
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Set, Any, Optional
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
-import random
-from collections import defaultdict
+from copy import deepcopy
 
-from rerank.base import BaseReranker
+from retrieval.base import BaseRetriever
 from rerank.models.bert4rec import BERT4Rec
+from evaluation.metrics import recall_at_k, ndcg_at_k
 
 
-class BERT4RecReranker(BaseReranker):
-    """Reranker sử dụng BERT4Rec (Bidirectional Encoder Representations for Sequential Recommendation).
+class BERT4RecRetriever(BaseRetriever):
+    """Retriever sử dụng BERT4Rec (Bidirectional Encoder Representations for Sequential Recommendation).
     
     BERT4Rec uses bidirectional BERT encoder to learn sequential patterns from user history.
     Based on the implementation at https://github.com/FeiSun/BERT4Rec
@@ -43,7 +42,7 @@ class BERT4RecReranker(BaseReranker):
     ) -> None:
         """
         Args:
-            top_k: Số lượng items trả về sau rerank
+            top_k: Số lượng items trả về sau retrieval
             hidden_size: Hidden dimension (default: 64)
             num_hidden_layers: Number of transformer layers (default: 2)
             num_attention_heads: Number of attention heads (default: 2)
@@ -96,7 +95,7 @@ class BERT4RecReranker(BaseReranker):
                 - lr: float - override default lr (optional)
                 - patience: int - override default patience (optional)
         """
-        # Override hyperparameters from kwargs if provided (for standardization)
+        # Override hyperparameters from kwargs if provided
         if "num_epochs" in kwargs:
             self.num_epochs = kwargs["num_epochs"]
         if "batch_size" in kwargs:
@@ -105,25 +104,28 @@ class BERT4RecReranker(BaseReranker):
             self.lr = kwargs["lr"]
         if "patience" in kwargs:
             self.patience = kwargs["patience"]
-        # Get vocab_size
-        self.vocab_size = kwargs.get("vocab_size")
-        if self.vocab_size is None:
+        
+        # Get vocab_size or item_count
+        # vocab_size = item_count + 1 (for padding token 0)
+        if "vocab_size" in kwargs:
+            self.vocab_size = kwargs["vocab_size"]
+        elif "item_count" in kwargs:
+            self.vocab_size = kwargs["item_count"] + 1  # +1 for padding token (0)
+        else:
             # Infer from train_data
             all_items = set()
             for items in train_data.values():
                 all_items.update(items)
-            self.vocab_size = max(all_items) if all_items else 0
-            if self.vocab_size == 0:
+            max_item = max(all_items) if all_items else 0
+            if max_item == 0:
                 raise ValueError("Cannot infer vocab_size from train_data")
-            # Add 1 for padding token (0)
-            self.vocab_size += 1
+            # vocab_size = max_item + 1 (max_item is the highest item_id, +1 for padding)
+            self.vocab_size = max_item + 1
         
         # Validate and filter items to ensure all are within valid range [1, vocab_size-1]
-        # vocab_size includes padding token (0), so valid item IDs are 1..vocab_size-1
         self.user_history = {}
         invalid_items_count = 0
         for uid, items in train_data.items():
-            # Filter out invalid items (0 or >= vocab_size)
             valid_items = [item for item in items if 1 <= item < self.vocab_size]
             if len(valid_items) > 0:
                 self.user_history[uid] = valid_items
@@ -131,7 +133,7 @@ class BERT4RecReranker(BaseReranker):
                 invalid_items_count += len(items) - len(valid_items)
         
         if invalid_items_count > 0:
-            print(f"[BERT4RecReranker] Warning: Filtered {invalid_items_count} invalid items "
+            print(f"[BERT4RecRetriever] Warning: Filtered {invalid_items_count} invalid items "
                   f"(outside range [1, {self.vocab_size-1}]) from training data")
         
         # Initialize model
@@ -213,7 +215,8 @@ class BERT4RecReranker(BaseReranker):
             
             # Validation
             if val_data is not None:
-                val_recall = self._evaluate_split(val_data, k=min(10, self.top_k))
+                val_metrics = self._evaluate_split(val_data, k=min(10, self.top_k))
+                val_recall = val_metrics["recall"]
                 
                 if val_recall > best_val_recall:
                     best_val_recall = val_recall
@@ -222,14 +225,15 @@ class BERT4RecReranker(BaseReranker):
                 else:
                     epochs_no_improve += 1
                 
-                print(f"[BERT4RecReranker] Epoch {epoch+1}/{self.num_epochs} - "
-                      f"loss: {avg_loss:.4f}, val_Recall@{min(10, self.top_k)}: {val_recall:.4f}")
+                print(f"[BERT4RecRetriever] Epoch {epoch+1}/{self.num_epochs} - "
+                      f"loss: {avg_loss:.4f}, val_Recall@{min(10, self.top_k)}: {val_metrics['recall']:.4f}, "
+                      f"val_NDCG@{min(10, self.top_k)}: {val_metrics['ndcg']:.4f}")
                 
                 if self.patience and epochs_no_improve >= self.patience:
                     print(f"Early stopping at epoch {epoch+1}")
                     break
             else:
-                print(f"[BERT4RecReranker] Epoch {epoch+1}/{self.num_epochs} - loss: {avg_loss:.4f}")
+                print(f"[BERT4RecRetriever] Epoch {epoch+1}/{self.num_epochs} - loss: {avg_loss:.4f}")
         
         if best_state is not None:
             self.model.load_state_dict(best_state)
@@ -299,7 +303,7 @@ class BERT4RecReranker(BaseReranker):
     def _prepare_batch(
         self,
         batch: List[Dict]
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Prepare batch for training.
         
         Args:
@@ -324,162 +328,152 @@ class BERT4RecReranker(BaseReranker):
         
         return input_ids, masked_lm_labels, attention_mask
 
-    def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> float:
-        """Compute average Recall@K for validation.
+    def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> Dict[str, float]:
+        """Compute average Recall@K and NDCG@K for validation.
         
-        NOTE: BERT4Rec is a reranker, so it only predicts on sampled candidates
-        (not full ranking). This matches the behavior of other rerankers (VIP5, Qwen3VL).
+        Used for per-epoch validation during training.
+        Similar to LRURecRetriever - full ranking evaluation.
         """
         if self.model is None:
-            return 0.0
+            return {"recall": 0.0, "ndcg": 0.0, "num_users": 0}
         
-        self.model.eval()
-        recalls = []
-        
-        with torch.no_grad():
-            for user_id, gt_items in split.items():
-                if user_id not in self.user_history:
-                    continue
-                
-                # Get user history
-                history = self.user_history.get(user_id, [])
-                if len(history) == 0:
-                    continue
-                
-                # Filter history to valid range [1, vocab_size-1]
-                valid_history = [item for item in history if 1 <= item < self.vocab_size]
-                if len(valid_history) == 0:
-                    continue
-                
-                # Get all items as candidates (for evaluation)
-                all_items = list(range(1, self.vocab_size))
-                
-                # ✅ FIX: Exclude history items from candidate pool (avoid recommending already purchased items)
-                history_set = set(valid_history)
-                candidate_pool = [item for item in all_items if item not in history_set]
-                
-                if not candidate_pool:
-                    continue  # No candidates available after excluding history
-                
-                # Limit candidates for efficiency (during training evaluation)
-                # BERT4Rec is a reranker, so it only needs to rerank candidates, not full ranking
-                # Get eval_candidates from config (default: 20)
-                try:
-                    from config import arg
-                    max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
-                except ImportError:
-                    max_eval_candidates = 20
-                max_eval_candidates = min(max_eval_candidates, len(candidate_pool))
-                candidates = random.sample(candidate_pool, max_eval_candidates) if len(candidate_pool) > max_eval_candidates else candidate_pool
-                
-                # Filter gt_items to valid range [1, vocab_size-1]
-                valid_gt_items = [item for item in gt_items if 1 <= item < self.vocab_size]
-                
-                # Ensure at least one ground truth is in candidates
-                if valid_gt_items and not any(item in candidates for item in valid_gt_items):
-                    # Add one ground truth item (if valid)
-                    candidates[0] = valid_gt_items[0]
-                
-                # ✅ Shuffle candidates to avoid bias (GT item should not always be first)
-                random.shuffle(candidates)
-                
-                # Filter candidates to valid range [1, vocab_size-1]
-                candidates = [item for item in candidates if 1 <= item < self.vocab_size]
-                if not candidates:
-                    continue
-                
-                # Prepare history tensor (use valid_history)
-                history_seq = valid_history[-self.max_seq_length:]
-                history_tensor = torch.tensor([history_seq], dtype=torch.long).to(self.device)
-                
-                # Prepare candidates tensor
-                candidates_tensor = torch.tensor([candidates], dtype=torch.long).to(self.device)
-                
-                # Predict scores (only on candidates, not all items)
-                scores = self.model.predict_scores(history_tensor, candidates_tensor)  # [1, num_candidates]
-                scores = scores.squeeze(0).cpu().numpy()  # [num_candidates]
-                
-                # Create (item_id, score) pairs
-                scored = list(zip(candidates, scores))
-                
-                # Sort by score descending
-                scored.sort(key=lambda x: x[1], reverse=True)
-                
-                # Get top-K item IDs
-                top_k_items = [item_id for item_id, _ in scored[:k]]
-                
-                # Compute recall (use valid_gt_items)
-                hits = len(set(top_k_items) & set(valid_gt_items))
-                if len(valid_gt_items) > 0:
-                    recalls.append(hits / min(k, len(valid_gt_items)))
-        
-        return float(np.mean(recalls)) if recalls else 0.0
+        users = [u for u in sorted(split.keys()) if u in self.user_history and split.get(u)]
+        recalls, ndcgs = [], []
 
-    def rerank(
-        self,
-        user_id: int,
-        candidates: List[int],
-        **kwargs: Any
-    ) -> List[Tuple[int, float]]:
-        """Rerank candidates cho một user.
+        if not users:
+            return {"recall": 0.0, "ndcg": 0.0, "num_users": 0}
+
+        batch_size = max(1, self.batch_size)
+        self.model.eval()
+
+        with torch.no_grad():
+            for start in range(0, len(users), batch_size):
+                batch_users = users[start : start + batch_size]
+                
+                # Get sequences for batch
+                seq_batch = []
+                for uid in batch_users:
+                    seq = self.user_history.get(uid, [])
+                    # Filter to valid range
+                    seq = [item for item in seq if 1 <= item < self.vocab_size]
+                    if len(seq) == 0:
+                        continue
+                    seq_batch.append(seq[-self.max_seq_length:])
+                
+                if not seq_batch:
+                    continue
+                
+                # Pad sequences
+                max_len = max(len(seq) for seq in seq_batch)
+                max_len = min(max_len, self.max_seq_length)
+                
+                input_ids = torch.zeros(len(seq_batch), max_len, dtype=torch.long).to(self.device)
+                attention_mask = torch.zeros(len(seq_batch), max_len, dtype=torch.long).to(self.device)
+                
+                for i, seq in enumerate(seq_batch):
+                    seq_len = min(len(seq), max_len)
+                    input_ids[i, :seq_len] = torch.tensor(seq[:seq_len])
+                    attention_mask[i, :seq_len] = 1
+                
+                # Predict scores for all items [batch_size, max_len, vocab_size]
+                prediction_scores = self.model(input_ids, attention_mask)
+                
+                # Get scores at last position [batch_size, vocab_size]
+                last_scores = prediction_scores[:, -1, :]  # [batch_size, vocab_size]
+                
+                # Process each user in batch
+                for i, uid in enumerate(batch_users):
+                    if i >= len(seq_batch):
+                        continue
+                    
+                    scores = last_scores[i].cpu().numpy()  # [vocab_size]
+                    seq = self.user_history.get(uid, [])
+                    gt_items = split.get(uid, [])
+                    
+                    # Filter gt_items to valid range
+                    valid_gt_items = [item for item in gt_items if 1 <= item < self.vocab_size]
+                    if not valid_gt_items:
+                        continue
+                    
+                    # Mask out history items and padding (0)
+                    history_set = set(seq)
+                    for item in history_set:
+                        if 1 <= item < self.vocab_size:
+                            scores[item] = -1e9
+                    scores[0] = -1e9  # Padding token
+                    
+                    # Get top-K items
+                    top_k_indices = np.argsort(scores)[::-1][:k]
+                    top_k_items = [int(idx) for idx in top_k_indices if 1 <= idx < self.vocab_size]
+                    
+                    # Compute metrics
+                    recall = recall_at_k(valid_gt_items, top_k_items, k)
+                    ndcg = ndcg_at_k(valid_gt_items, top_k_items, k)
+                    
+                    recalls.append(recall)
+                    ndcgs.append(ndcg)
+
+        return {
+            "recall": float(np.mean(recalls)) if recalls else 0.0,
+            "ndcg": float(np.mean(ndcgs)) if ndcgs else 0.0,
+            "num_users": len(users),
+        }
+
+    def retrieve(self, user_id: int, exclude_items: Set[int] = None) -> List[int]:
+        """Retrieve top-K candidates cho một user.
         
         Args:
-            user_id: ID của user (1-indexed)
-            candidates: List các item IDs cần rerank (1-indexed)
-            **kwargs: Additional arguments:
-                - user_history: List[int] - user's interaction history (optional, uses stored if not provided)
-        
+            user_id: ID của user
+            exclude_items: Set các items cần loại trừ (đã tương tác)
+            
         Returns:
-            List[Tuple[int, float]]: [(item_id, score)] đã sort giảm dần
+            List[int]: Top-K item IDs (sorted by score descending)
         """
         self._validate_fitted()
         
         if self.model is None:
-            raise RuntimeError("BERT4RecReranker model not initialized")
+            raise RuntimeError("BERT4RecRetriever model not initialized")
         
-        if not candidates:
-            return []
+        exclude_items = exclude_items or set()
         
         # Get user history
-        user_history = kwargs.get("user_history")
-        if user_history is None:
-            user_history = self.user_history.get(user_id, [])
-        
-        if len(user_history) == 0:
-            # No history, return candidates in original order with uniform scores
-            return [(item_id, 1.0) for item_id in candidates[:self.top_k]]
+        history = self.user_history.get(user_id, [])
+        if len(history) == 0:
+            return []
         
         # Filter history to valid range [1, vocab_size-1]
-        valid_history = [item for item in user_history if 1 <= item < self.vocab_size]
+        valid_history = [item for item in history if 1 <= item < self.vocab_size]
         if not valid_history:
-            # No valid history, return candidates in original order with uniform scores
-            return [(item_id, 1.0) for item_id in candidates[:self.top_k] if 1 <= item_id < self.vocab_size]
+            return []
         
         # Prepare history tensor
         history_seq = valid_history[-self.max_seq_length:]  # Truncate to max length
         history_tensor = torch.tensor([history_seq], dtype=torch.long).to(self.device)
+        attention_mask = torch.ones(1, len(history_seq), dtype=torch.long).to(self.device)
         
-        # Filter candidates to valid range [1, vocab_size-1]
-        valid_candidates = [item for item in candidates if 1 <= item < self.vocab_size]
-        if not valid_candidates:
-            # No valid candidates, return empty
-            return []
-        
-        # Prepare candidates tensor
-        candidates_tensor = torch.tensor([valid_candidates], dtype=torch.long).to(self.device)
-        
-        # Predict scores
+        # Predict scores for all items
         self.model.eval()
         with torch.no_grad():
-            scores = self.model.predict_scores(history_tensor, candidates_tensor)  # [1, num_candidates]
-            scores = scores.squeeze(0).cpu().numpy()  # [num_candidates]
+            prediction_scores = self.model(history_tensor, attention_mask)  # [1, seq_len, vocab_size]
+            # Get scores at last position [1, vocab_size]
+            scores = prediction_scores[0, -1, :].cpu().numpy()  # [vocab_size]
         
-        # Create (item_id, score) pairs (use valid_candidates, not original candidates)
-        scored = list(zip(valid_candidates, scores))
+        # Mask out history items and padding (0)
+        history_set = set(valid_history)
+        for item in history_set:
+            if 1 <= item < self.vocab_size:
+                scores[item] = -1e9
+        scores[0] = -1e9  # Padding token
         
-        # Sort by score descending
-        scored.sort(key=lambda x: x[1], reverse=True)
+        # Mask out exclude_items
+        for item in exclude_items:
+            if 1 <= item < self.vocab_size:
+                scores[item] = -1e9
         
-        # Return top-K
-        return scored[:self.top_k]
+        # Get top-K items
+        k = min(self.top_k, self.vocab_size - 1)
+        top_k_indices = np.argsort(scores)[::-1][:k]
+        top_k_items = [int(idx) for idx in top_k_indices if 1 <= idx < self.vocab_size]
+        
+        return top_k_items
 

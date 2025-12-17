@@ -193,3 +193,56 @@ def load_dataset_from_csv(
         "item_count": item_count,
     }
 
+
+def load_rerank_candidates(
+    dataset_code: str,
+    min_rating: int,
+    min_uc: int,
+    min_sc: int,
+) -> Dict[str, Dict[int, List[int]]]:
+    """Load pre-generated candidate lists for val/test splits.
+    
+    This function loads the candidate lists created during data preparation.
+    These candidates are used by all rerankers during evaluation to ensure
+    consistent evaluation across different rerankers.
+    
+    Args:
+        dataset_code: Dataset code (beauty, games, ml-100k)
+        min_rating: Minimum rating threshold
+        min_uc: Minimum user count
+        min_sc: Minimum item count
+        
+    Returns:
+        Dict with keys: "val", "test"
+        Each value is Dict[int, List[int]] mapping user_id to candidate item_ids
+    """
+    import pandas as pd
+    import json
+    from dataset.paths import get_rerank_candidates_path
+    
+    candidates_path = get_rerank_candidates_path(dataset_code, min_rating, min_uc, min_sc)
+    
+    if not candidates_path.exists():
+        # Return empty dicts if file doesn't exist (backward compatibility)
+        return {"val": {}, "test": {}}
+    
+    df = pd.read_csv(candidates_path)
+    
+    val_candidates = {}
+    test_candidates = {}
+    
+    for _, row in df.iterrows():
+        user_id = int(row["user_id"])
+        split = row["split"]
+        candidates = json.loads(row["candidates"])
+        
+        if split == "val":
+            val_candidates[user_id] = candidates
+        elif split == "test":
+            test_candidates[user_id] = candidates
+    
+    return {
+        "val": val_candidates,
+        "test": test_candidates,
+    }
+

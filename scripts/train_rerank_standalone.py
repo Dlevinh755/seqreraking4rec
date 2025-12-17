@@ -32,9 +32,9 @@ def main():
     # Get script-specific arguments from arg (with defaults and validation)
     rerank_method_val = getattr(arg, 'rerank_method', None)
     if rerank_method_val is None:
-        raise ValueError("--rerank_method is required. Please specify: --rerank_method qwen|qwen3vl|vip5|bert4rec")
+        raise ValueError("--rerank_method is required. Please specify: --rerank_method qwen|qwen3vl|vip5")
     
-    valid_rerank_methods = ["qwen", "qwen3vl", "vip5", "bert4rec"]
+    valid_rerank_methods = ["qwen", "qwen3vl", "vip5"]
     if rerank_method_val not in valid_rerank_methods:
         raise ValueError(f"Invalid rerank_method: {rerank_method_val}. Must be one of {valid_rerank_methods}")
     
@@ -101,7 +101,6 @@ def main():
     
     # Prepare training kwargs
     training_kwargs = {
-        "vocab_size": item_count + 1,  # For BERT4Rec
         "val_data": val,  # For early stopping
         "num_epochs": arg.rerank_epochs,
         "batch_size": arg.rerank_batch_size,

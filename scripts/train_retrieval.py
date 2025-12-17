@@ -41,6 +41,8 @@ def _evaluate_split(
     split: Dict[int, List[int]],
     k: int = None,
     ks: Optional[List[int]] = None,
+    eval_mode: str = "full_ranking",
+    candidate_lists: Optional[Dict[int, List[int]]] = None,
 ) -> Dict[str, float]:
     """Evaluate retriever on a split. 
     
@@ -52,6 +54,8 @@ def _evaluate_split(
         split: Dict {user_id: [item_ids]} - ground truth
         k: Single cutoff (used if ks is None)
         ks: List of K values to evaluate (e.g., [5, 10, 20])
+        eval_mode: "full_ranking" (evaluate on all items) or "candidate_list" (evaluate only on pre-generated candidates)
+        candidate_lists: Dict {user_id: [candidate_item_ids]} - pre-generated candidates (required if eval_mode == "candidate_list")
     """
     if ks is None:
         if k is None:
@@ -59,6 +63,52 @@ def _evaluate_split(
         else:
             ks = [k]
     
+    # ✅ Mode 2: "candidate_list" - Evaluate only on pre-generated candidates
+    if eval_mode == "candidate_list":
+        if candidate_lists is None:
+            raise ValueError("candidate_lists must be provided when eval_mode == 'candidate_list'")
+        
+        from evaluation.metrics import recall_at_k, ndcg_at_k, hit_at_k
+        
+        result = {"num_users": len(split)}
+        
+        for k_val in ks:
+            recalls = []
+            ndcgs = []
+            hits = []
+            
+            for user_id, gt_items in split.items():
+                if not gt_items:
+                    continue
+                
+                # Get pre-generated candidates for this user
+                candidates = candidate_lists.get(user_id, [])
+                if not candidates:
+                    continue
+                
+                # Get full ranking from retriever
+                all_recs = retriever.retrieve(user_id)
+                
+                # Filter to only include candidates, preserving order from full ranking
+                candidate_set = set(candidates)
+                ranked_items = [item for item in all_recs if item in candidate_set]
+                
+                # If some candidates are not in full ranking, append them at the end
+                missing_candidates = [item for item in candidates if item not in ranked_items]
+                ranked_items.extend(missing_candidates)
+                
+                # Compute metrics
+                recalls.append(recall_at_k(ranked_items, gt_items, k_val))
+                ndcgs.append(ndcg_at_k(ranked_items, gt_items, k_val))
+                hits.append(hit_at_k(ranked_items, gt_items, k_val))
+            
+            result[f"recall@{k_val}"] = float(sum(recalls) / len(recalls)) if recalls else 0.0
+            result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
+            result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+        
+        return result
+    
+    # ✅ Mode 1: "full_ranking" - Evaluate on all items (original behavior)
     # Check if retriever has optimized _evaluate_split method (MMGCN, VBPR, BM3)
     if hasattr(retriever, '_evaluate_split'):
         # Use retriever's optimized _evaluate_split (supports batching)
@@ -524,7 +574,7 @@ def main() -> None:
         retrieval_method = 'lrurec'
     
     # Validate retrieval_method
-    valid_methods = ["lrurec", "mmgcn", "vbpr", "bm3"]
+    valid_methods = ["lrurec", "mmgcn", "vbpr", "bm3", "bert4rec"]
     if retrieval_method not in valid_methods:
         raise ValueError(f"Invalid retrieval_method: {retrieval_method}. Must be one of {valid_methods}")
 
@@ -727,6 +777,21 @@ def main() -> None:
             "min_sc": arg.min_sc,
         })
     
+    elif retrieval_method == "bert4rec":
+        # BERT4Rec uses vocab_size (item_count + 1 for padding token)
+        # No special requirements (no CLIP embeddings needed)
+        print(f"\nBERT4Rec Hyperparameters:")
+        print(f"  hidden_size: {retriever_kwargs.get('hidden_size', 64)}")
+        print(f"  num_hidden_layers: {retriever_kwargs.get('num_hidden_layers', 2)}")
+        print(f"  max_seq_length: {retriever_kwargs.get('max_seq_length', 200)}")
+        print(f"  lr: {retriever_kwargs['lr']}")
+        print()
+        
+        fit_kwargs.update({
+            "vocab_size": item_count + 1,  # +1 for padding token (0)
+            "item_count": item_count,  # Also pass item_count for compatibility
+        })
+    
     retriever = RetrieverCls(**retriever_kwargs)
     retriever.fit(train, **fit_kwargs)
 
@@ -736,8 +801,35 @@ def main() -> None:
     print(f"Load best model state from training: {best_epoch_info}")
     print("=" * 80 + "\n")
     print("Evaluating Stage 1 Retrieval on test set...")
+    
+    # ✅ Load candidate lists if eval_mode == "candidate_list"
+    eval_mode = getattr(arg, 'retrieval_eval_mode', 'full_ranking')
+    candidate_lists = None
+    if eval_mode == "candidate_list":
+        try:
+            from evaluation.utils import load_rerank_candidates
+            all_candidates = load_rerank_candidates(
+                dataset_code=arg.dataset_code,
+                min_rating=arg.min_rating,
+                min_uc=arg.min_uc,
+                min_sc=arg.min_sc,
+            )
+            # Use test candidates
+            candidate_lists = all_candidates.get("test", {})
+            print(f"[train_retrieval] Loaded {len(candidate_lists)} test candidate lists for evaluation")
+        except Exception as e:
+            print(f"[train_retrieval] WARNING: Failed to load candidate lists: {e}")
+            print(f"[train_retrieval] Falling back to full_ranking mode")
+            eval_mode = "full_ranking"
+    
     # Evaluate with multiple K values: 5, 10, 20
-    test_metrics = _evaluate_split(retriever, test, ks=[5, 10, 20])
+    test_metrics = _evaluate_split(
+        retriever, 
+        test, 
+        ks=[5, 10, 20],
+        eval_mode=eval_mode,
+        candidate_lists=candidate_lists,
+    )
 
     print("=" * 80)
     print(f"Stage 1 Retrieval Evaluation - Method: {retrieval_method}")
@@ -746,6 +838,7 @@ def main() -> None:
     print(f"min_uc      : {arg.min_uc}")
     print(f"min_sc      : {arg.min_sc}")
     print(f"Retrieval K : {RETRIEVAL_TOP_K}")
+    print(f"Eval Mode   : {eval_mode}")
     print("-" * 80)
     
     # Format output as requested: Recall@10, NDCG@10, Hit@10, Recall@5, NDCG@5, Hit@5, Recall@20, NDCG@20, Hit@20

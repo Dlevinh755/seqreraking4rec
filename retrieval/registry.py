@@ -7,6 +7,7 @@ from retrieval.methods.lrurec import LRURecRetriever
 from retrieval.methods.mmgcn import MMGCNRetriever
 from retrieval.methods.vbpr import VBPRRetriever
 from retrieval.methods.bm3 import BM3Retriever
+from retrieval.methods.bert4rec import BERT4RecRetriever
 
 
 RETRIEVER_REGISTRY: Dict[str, Type[BaseRetriever]] = {
@@ -14,6 +15,7 @@ RETRIEVER_REGISTRY: Dict[str, Type[BaseRetriever]] = {
     "mmgcn": MMGCNRetriever,
     "vbpr": VBPRRetriever,
     "bm3": BM3Retriever,
+    "bert4rec": BERT4RecRetriever,
 }
 
 

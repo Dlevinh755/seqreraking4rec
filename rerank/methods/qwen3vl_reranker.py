@@ -1165,27 +1165,54 @@ Answer with only one number (1-{num_candidates}).
             if not all_items:
                 continue
             
-            # ✅ FIX: Exclude history items from candidate pool (avoid recommending already purchased items)
-            history_set = set(history)
-            candidate_pool = [item for item in all_items if item not in history_set]
-            
-            if not candidate_pool:
-                continue  # No candidates available after excluding history
-            
-            # Limit candidates for efficiency
-            # Get eval_candidates from config (default: 20)
+            # ✅ Load pre-generated candidates from data preparation
             try:
+                from evaluation.utils import load_rerank_candidates
                 from config import arg
-                max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
-            except ImportError:
-                max_eval_candidates = 20
-            max_eval_candidates = min(max_eval_candidates, len(candidate_pool))
-            candidates = random.sample(candidate_pool, max_eval_candidates) if len(candidate_pool) > max_eval_candidates else candidate_pool
-            
-            # Ensure at least one ground truth is in candidates
-            if not any(item in candidates for item in gt_items):
-                # Add one ground truth item
-                candidates[0] = gt_items[0]
+                
+                # Load pre-generated candidates
+                all_candidates = load_rerank_candidates(
+                    dataset_code=getattr(arg, 'dataset', 'beauty'),
+                    min_rating=getattr(arg, 'min_rating', 0),
+                    min_uc=getattr(arg, 'min_uc', 5),
+                    min_sc=getattr(arg, 'min_sc', 5),
+                )
+                
+                # Try val first, then test
+                if user_id in all_candidates.get("val", {}):
+                    candidates = all_candidates["val"][user_id]
+                elif user_id in all_candidates.get("test", {}):
+                    candidates = all_candidates["test"][user_id]
+                else:
+                    # Fallback: sample random candidates if pre-generated not available
+                    history_set = set(history)
+                    candidate_pool = [item for item in all_items if item not in history_set]
+                    if not candidate_pool:
+                        continue
+                    try:
+                        from config import arg
+                        max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
+                    except ImportError:
+                        max_eval_candidates = 20
+                    max_eval_candidates = min(max_eval_candidates, len(candidate_pool))
+                    candidates = random.sample(candidate_pool, max_eval_candidates) if len(candidate_pool) > max_eval_candidates else candidate_pool
+                    if not any(item in candidates for item in gt_items):
+                        candidates[0] = gt_items[0]
+            except Exception as e:
+                # Fallback: sample random candidates if loading fails
+                history_set = set(history)
+                candidate_pool = [item for item in all_items if item not in history_set]
+                if not candidate_pool:
+                    continue
+                try:
+                    from config import arg
+                    max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
+                except ImportError:
+                    max_eval_candidates = 20
+                max_eval_candidates = min(max_eval_candidates, len(candidate_pool))
+                candidates = random.sample(candidate_pool, max_eval_candidates) if len(candidate_pool) > max_eval_candidates else candidate_pool
+                if not any(item in candidates for item in gt_items):
+                    candidates[0] = gt_items[0]
             
             # ✅ Shuffle candidates to avoid bias (GT item should not always be first)
             random.shuffle(candidates)

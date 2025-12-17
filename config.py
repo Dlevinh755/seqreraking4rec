@@ -113,6 +113,11 @@ parser.add_argument('--qwen_max_candidates', type=int, default=20,
 					help='Maximum number of candidates for Qwen reranker. If None, uses retrieval_top_k from pipeline config.')
 parser.add_argument('--vip5_max_candidates', type=int, default=100,
 					help='Maximum number of candidates for VIP5 Direct Task training (default: 100). Number of negatives + 1 positive = total candidates.')
+parser.add_argument('--rerank_eval_candidates_prepare', type=int, default=20,
+					help='Number of candidates to prepare for val/test during data preparation (default: 20). These candidates will be reused by all rerankers during evaluation.')
+parser.add_argument('--retrieval_eval_mode', type=str, default='full_ranking',
+					choices=['full_ranking', 'candidate_list'],
+					help='Evaluation mode for retrieval models: full_ranking (evaluate on all items) or candidate_list (evaluate only on pre-generated candidates, default: full_ranking).')
 parser.add_argument('--qwen3vl_mode', type=str, default='raw_image',
 					choices=['raw_image', 'caption', 'semantic_summary', 'semantic_summary_small'],
 					help='Prompt mode for Qwen3-VL reranker: raw_image, caption, semantic_summary, semantic_summary_small')

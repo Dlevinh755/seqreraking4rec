@@ -7,6 +7,7 @@ from pytorch_lightning import seed_everything
 import torch
 import json
 import pandas as pd
+import random
 from pathlib import Path
 
 
@@ -111,6 +112,99 @@ def main(args):
         df.to_csv(out_csv, index=False)
         print(f"Saved single CSV export to: {out_csv}")
         print(f"  Train users: {len(train_dict)}, Val users: {len(val_dict)}, Test users: {len(test_dict)}")
+    
+    # ✅ Generate candidate lists for val and test (for rerank evaluation)
+    num_candidates = getattr(args, 'rerank_eval_candidates_prepare', 20)
+    print(f"\n[data_prepare] Generating candidate lists for val/test (num_candidates={num_candidates})...")
+    
+    # Get all items from dataset
+    all_items = set()
+    for items in train_dict.values():
+        all_items.update(items)
+    for items in val_dict.values():
+        all_items.update(items)
+    for items in test_dict.values():
+        all_items.update(items)
+    all_items = sorted(list(all_items))
+    
+    if not all_items:
+        print("[data_prepare] WARNING: No items found. Skipping candidate list generation.")
+    else:
+        # Generate candidates for val split
+        val_candidates = {}
+        for user_id, gt_items in val_dict.items():
+            # Get user's history (train items)
+            user_history = set(train_dict.get(user_id, []))
+            # Exclude history items from candidate pool
+            candidate_pool = [item for item in all_items if item not in user_history]
+            
+            if len(candidate_pool) < num_candidates:
+                print(f"[data_prepare] WARNING: User {user_id} has only {len(candidate_pool)} candidates (requested {num_candidates})")
+                candidates = candidate_pool
+            else:
+                # Sample random candidates
+                candidates = random.sample(candidate_pool, num_candidates)
+            
+            # Ensure at least one ground truth is in candidates (if available)
+            if gt_items and not any(item in candidates for item in gt_items):
+                if len(candidates) < num_candidates:
+                    candidates.append(gt_items[0])
+                else:
+                    candidates[0] = gt_items[0]
+            
+            # Shuffle to avoid bias
+            random.shuffle(candidates)
+            val_candidates[user_id] = candidates
+        
+        # Generate candidates for test split
+        test_candidates = {}
+        for user_id, gt_items in test_dict.items():
+            # Get user's history (train + val items)
+            user_history = set(train_dict.get(user_id, []))
+            user_history.update(val_dict.get(user_id, []))
+            # Exclude history items from candidate pool
+            candidate_pool = [item for item in all_items if item not in user_history]
+            
+            if len(candidate_pool) < num_candidates:
+                print(f"[data_prepare] WARNING: User {user_id} has only {len(candidate_pool)} candidates (requested {num_candidates})")
+                candidates = candidate_pool
+            else:
+                # Sample random candidates
+                candidates = random.sample(candidate_pool, num_candidates)
+            
+            # Ensure at least one ground truth is in candidates (if available)
+            if gt_items and not any(item in candidates for item in gt_items):
+                if len(candidates) < num_candidates:
+                    candidates.append(gt_items[0])
+                else:
+                    candidates[0] = gt_items[0]
+            
+            # Shuffle to avoid bias
+            random.shuffle(candidates)
+            test_candidates[user_id] = candidates
+        
+        # Save candidate lists to CSV
+        candidate_rows = []
+        for user_id, candidates in val_candidates.items():
+            candidate_rows.append({
+                "user_id": user_id,
+                "split": "val",
+                "candidates": json.dumps(candidates),
+            })
+        for user_id, candidates in test_candidates.items():
+            candidate_rows.append({
+                "user_id": user_id,
+                "split": "test",
+                "candidates": json.dumps(candidates),
+            })
+        
+        if candidate_rows:
+            candidates_df = pd.DataFrame(candidate_rows)
+            candidates_csv = preproc_folder.joinpath("rerank_candidates.csv")
+            candidates_df.to_csv(candidates_csv, index=False)
+            print(f"Saved rerank candidate lists to: {candidates_csv}")
+            print(f"  Val users with candidates: {len(val_candidates)}")
+            print(f"  Test users with candidates: {len(test_candidates)}")
 
 if __name__ == "__main__":
     main(arg)
