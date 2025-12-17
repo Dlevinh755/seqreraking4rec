@@ -323,6 +323,42 @@ class VIP5Reranker(BaseReranker):
         
         self.model = self.model.to(self.device)
         
+        # ✅ OPTIMIZE: Freeze base model and only train adapters if adapters are enabled
+        # Access config from model (may have been updated during model initialization)
+        use_adapter = self.model.config.use_adapter or self.model.config.use_lm_head_adapter
+        if use_adapter:
+            print("Adapters enabled: Freezing base model, only training adapter parameters...")
+            # Freeze all parameters first
+            for name, param in self.model.named_parameters():
+                param.requires_grad = False
+            
+            # Unfreeze only adapter parameters
+            adapter_param_names = []
+            for name, param in self.model.named_parameters():
+                if "adapter" in name.lower() or "output_adapter" in name.lower():
+                    param.requires_grad = True
+                    adapter_param_names.append(name)
+            
+            if len(adapter_param_names) == 0:
+                print("Warning: Adapters enabled but no adapter parameters found! Training all parameters.")
+                # Fallback: unfreeze all if no adapters found
+                for param in self.model.parameters():
+                    param.requires_grad = True
+            else:
+                print(f"Found {len(adapter_param_names)} adapter parameter groups:")
+                for name in adapter_param_names[:5]:  # Show first 5
+                    print(f"  - {name}")
+                if len(adapter_param_names) > 5:
+                    print(f"  ... and {len(adapter_param_names) - 5} more")
+            
+            # Calculate trainable parameters percentage
+            total_params = sum(p.numel() for p in self.model.parameters())
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            trainable_percentage = (trainable_params / total_params * 100) if total_params > 0 else 0
+            print(f"Trainable parameters: {trainable_percentage:.2f}% ({trainable_params:,}/{total_params:,})")
+        else:
+            print("Adapters disabled: Training all model parameters (full fine-tuning)...")
+        
         # Training
         print("Preparing training samples...")
         train_samples = self._prepare_training_samples(train_data)
@@ -335,8 +371,11 @@ class VIP5Reranker(BaseReranker):
         
         print(f"Generated {len(train_samples)} training samples")
         
-        # Setup optimizer
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=1e-4)
+        # Setup optimizer - only optimize trainable parameters
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        if len(trainable_params) == 0:
+            raise ValueError("No trainable parameters found! Check adapter configuration.")
+        optimizer = torch.optim.AdamW(trainable_params, lr=self.lr, weight_decay=1e-4)
         
         # Training loop
         best_state = None
@@ -378,7 +417,7 @@ class VIP5Reranker(BaseReranker):
                     vis_feats=vis_feats,
                     labels=target_ids,
                     return_dict=True,
-                    task="sequential",
+                    task="direct",  # ✅ Use Direct Task for training
                     reduce_loss=False  # Get per-token loss
                 )
                 
@@ -416,7 +455,15 @@ class VIP5Reranker(BaseReranker):
             
             # Validation
             if val_data is not None:
-                val_recall = self._evaluate_split(val_data, k=min(10, self.top_k))
+                # ✅ Pass rerank_mode and retrieval_candidates from kwargs
+                rerank_mode = kwargs.get("rerank_mode", "ground_truth")
+                retrieval_candidates = kwargs.get("retrieval_candidates", None)
+                val_recall = self._evaluate_split(
+                    val_data, 
+                    k=min(10, self.top_k),
+                    rerank_mode=rerank_mode,
+                    retrieval_candidates=retrieval_candidates
+                )
                 
                 if val_recall > best_val_recall:
                     best_val_recall = val_recall
@@ -470,15 +517,6 @@ class VIP5Reranker(BaseReranker):
         # Get user history
         user_history = kwargs.get("user_history", [])
         
-        # Build prompt following VIP5 format
-        # Use template A-1: "Given the following purchase history of user_{} : \n {} \n predict next possible item to be purchased by the user ?"
-        prompt = build_rerank_prompt(
-            user_id,
-            user_history,
-            candidates,
-            template="Given the following purchase history of user_{} : \n {} \n predict next possible item to be purchased by the user ?"
-        )
-        
         # Get visual features for candidates
         candidate_visual = []
         valid_candidates = []
@@ -492,13 +530,33 @@ class VIP5Reranker(BaseReranker):
         if not valid_candidates:
             return []
         
-        # Convert to tensor [num_candidates, feat_dim]
-        visual_tensor = torch.stack(candidate_visual)
+        scores = []
         
-        # Prepare VIP5 input
+        # ✅ VIP5 Direct Task (B-5): Recommend từ danh sách candidates
+        # Theo code gốc VIP5 (data.py line 452-471), với direct task:
+        # - Template: "Which item of the following to recommend for {} ? \n {}"
+        # - Prompt chứa TẤT CẢ candidates: "item_1 <extra_id_0> <extra_id_0>, item_2 <extra_id_0> <extra_id_0>, ..."
+        # - Visual features cho TẤT CẢ candidates (không chỉ history)
+        # - Model chọn item từ candidates list
+        # Reference: https://github.com/jeykigung/VIP5/blob/main/src/data.py#L452-L471
+        
+        # Build prompt với Direct Task template (B-5)
+        # Template: "Which item of the following to recommend for user_{} ? \n {}"
+        visual_token_placeholder = " <extra_id_0>" * self.image_feature_size_ratio
+        candidates_with_visual = visual_token_placeholder.join([f"item_{c}" for c in valid_candidates]) + visual_token_placeholder
+        direct_prompt = f"Which item of the following to recommend for user_{user_id} ? \n {candidates_with_visual}"
+        
+        # Prepare visual features cho TẤT CẢ candidates (theo Direct Task format)
+        if len(candidate_visual) > 0:
+            all_candidates_visual_tensor = torch.stack(candidate_visual)  # [num_candidates, feat_dim]
+        else:
+            # No candidates, use zeros
+            all_candidates_visual_tensor = torch.zeros(1, self.image_feature_dim, device=self.device)
+        
+        # ✅ OPTIMIZE: Encode prompt MỘT LẦN với tất cả candidates
         vip5_input = prepare_vip5_input(
-            prompt,
-            visual_tensor,
+            direct_prompt,
+            all_candidates_visual_tensor,
             self.tokenizer,
             max_length=self.max_text_length,
             image_feature_size_ratio=self.image_feature_size_ratio,
@@ -511,89 +569,78 @@ class VIP5Reranker(BaseReranker):
         vis_feats = vip5_input["vis_feats"].to(self.device)
         attention_mask = vip5_input["attention_mask"].to(self.device)
         
-        # For reranking with VIP5, we encode user history + each candidate
-        # and use encoder output to compute scores
-        # Following VIP5's approach: encode and use encoder hidden states
-        
-        scores = []
-        
-        # Encode user history + each candidate separately
-        for i, item_id in enumerate(valid_candidates):
-            # Build prompt for this specific candidate
-            candidate_prompt = build_rerank_prompt(
-                user_id,
-                user_history,
-                [item_id],  # Single candidate
-                template="Given the following purchase history of user_{} : \n {} \n predict next possible item to be purchased by the user ?"
-            )
-            
-            # Get visual feature for this candidate
-            item_visual = candidate_visual[i].unsqueeze(0)  # [1, feat_dim]
-            
-            # Prepare VIP5 input
-            vip5_input = prepare_vip5_input(
-                candidate_prompt,
-                item_visual,
-                self.tokenizer,
-                max_length=self.max_text_length,
-                image_feature_size_ratio=self.image_feature_size_ratio,
-            )
-            
-            # Move to device
-            input_ids = vip5_input["input_ids"].to(self.device)
-            whole_word_ids = vip5_input["whole_word_ids"].to(self.device)
-            category_ids = vip5_input["category_ids"].to(self.device)
-            vis_feats = vip5_input["vis_feats"].to(self.device)
-            attention_mask = vip5_input["attention_mask"].to(self.device)
-            
-            # Encode with VIP5 encoder
-            self.model.eval()
-            with torch.no_grad():
-                encoder_outputs = self.model.encoder(
-                    input_ids=input_ids,
-                    whole_word_ids=whole_word_ids,
-                    category_ids=category_ids,
-                    vis_feats=vis_feats,
-                    attention_mask=attention_mask,
-                    return_dict=True,
-                    task="sequential",  # VIP5 task type
-                )
-            
-            # Get encoder hidden states [1, seq_len, d_model]
-            encoder_hidden = encoder_outputs.last_hidden_state
-            encoder_attention_mask = attention_mask
-            
-            # ✅ FIX: Use decoder to predict probability of item_id (not just encoder norm)
-            # VIP5 is a seq2seq model, should use decoder to predict item_id
-            # Decoder input: "item_{item_id}" (same format as training target)
-            target_text = f"item_{item_id}"
-            decoder_input_ids = self.tokenizer.encode(target_text, return_tensors="pt", add_special_tokens=False).to(self.device)
-            
-            # Decode with VIP5 decoder
-            decoder_outputs = self.model.decoder(
-                input_ids=decoder_input_ids,
-                encoder_hidden_states=encoder_hidden,
-                encoder_attention_mask=encoder_attention_mask,
+        # Encode with VIP5 encoder (ONE TIME for all candidates)
+        self.model.eval()
+        with torch.no_grad():
+            encoder_outputs = self.model.encoder(
+                input_ids=input_ids,
+                whole_word_ids=whole_word_ids,
+                category_ids=category_ids,
+                vis_feats=vis_feats,
+                attention_mask=attention_mask,
                 return_dict=True,
-                task="sequential",
+                task="direct",  # ✅ Use Direct Task
             )
-            
-            # Get decoder output [1, target_len, d_model]
-            decoder_hidden = decoder_outputs.last_hidden_state
-            
-            # Apply lm_head to get logits [1, target_len, vocab_size]
-            if self.model.config.tie_word_embeddings:
-                decoder_hidden = decoder_hidden * (self.model.model_dim ** -0.5)
-            logits = self.model.lm_head(decoder_hidden)  # [1, target_len, vocab_size]
-            
-            # Get logits for the last token (final prediction)
-            last_token_logits = logits[0, -1, :]  # [vocab_size]
-            
-            # Extract logit for item_id token
-            item_token_id = decoder_input_ids[0, -1].item()  # Last token is item_id token
-            
-            # Score = logit of item_id token (higher = more likely)
-            score = float(last_token_logits[item_token_id].item())
+        
+        # Get encoder hidden states [1, seq_len, d_model]
+        encoder_hidden = encoder_outputs.last_hidden_state  # [1, seq_len, d_model]
+        encoder_attention_mask = attention_mask  # [1, seq_len]
+        
+        # ✅ OPTIMIZE: Batch decode tất cả candidates cùng lúc
+        # Prepare decoder inputs for all candidates (target = "item_{item_id}")
+        decoder_input_texts = [f"item_{item_id}" for item_id in valid_candidates]
+        
+        # Tokenize all decoder inputs with padding
+        decoder_inputs_tokenized = self.tokenizer(
+            decoder_input_texts,
+            padding="max_length",
+            truncation=True,
+            max_length=64,  # gen_max_length from VIP5
+            return_tensors="pt",
+            add_special_tokens=False
+        )
+        decoder_input_ids = decoder_inputs_tokenized["input_ids"].to(self.device)  # [batch_size, max_len]
+        decoder_attention_mask = decoder_inputs_tokenized["attention_mask"].to(self.device)  # [batch_size, max_len]
+        
+        # Expand encoder_hidden và encoder_attention_mask để match batch_size
+        batch_size = len(valid_candidates)
+        encoder_hidden_batch = encoder_hidden.expand(batch_size, -1, -1)  # [batch_size, seq_len, d_model]
+        encoder_attention_mask_batch = encoder_attention_mask.expand(batch_size, -1)  # [batch_size, seq_len]
+        
+        # Batch decode tất cả candidates cùng lúc
+        decoder_outputs = self.model.decoder(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_hidden_batch,
+            encoder_attention_mask=encoder_attention_mask_batch,
+            return_dict=True,
+            task="direct",  # ✅ Use Direct Task
+        )
+        
+        # Get decoder output [batch_size, target_len, d_model]
+        decoder_hidden = decoder_outputs.last_hidden_state
+        
+        # Apply lm_head to get logits [batch_size, target_len, vocab_size]
+        if self.model.config.tie_word_embeddings:
+            decoder_hidden = decoder_hidden * (self.model.model_dim ** -0.5)
+        logits = self.model.lm_head(decoder_hidden)  # [batch_size, target_len, vocab_size]
+        
+        # Extract logit for each candidate's token
+        for i, item_id in enumerate(valid_candidates):
+            # Get the last non-padding token position for this candidate
+            non_padding_mask = decoder_attention_mask[i] == 1  # [max_len]
+            if non_padding_mask.any():
+                # Find last non-padding token position
+                last_token_idx = non_padding_mask.nonzero(as_tuple=True)[0][-1].item()
+                # Get the token ID at that position
+                item_token_id = decoder_input_ids[i, last_token_idx].item()
+                # Get logit for that token at that position
+                score = float(logits[i, last_token_idx, item_token_id].item())
+            else:
+                # Fallback: use last position and last token
+                last_token_idx = -1
+                item_token_id = decoder_input_ids[i, -1].item()
+                score = float(logits[i, last_token_idx, item_token_id].item())
             
             scores.append((item_id, score))
         
@@ -607,53 +654,66 @@ class VIP5Reranker(BaseReranker):
         self,
         train_data: Dict[int, List[int]]
     ) -> List[Dict]:
-        """Prepare training samples for VIP5 sequential task (A-1).
+        """Prepare training samples for VIP5 Direct Task (B-5).
         
         Args:
             train_data: Dict {user_id: [item_ids]} - training interactions
             
         Returns:
-            List of training samples with keys: user_id, history, target_item, source_text, target_text
+            List of training samples with keys: user_id, candidates, target_item, source_text, target_text
         """
         samples = []
         
-        # Sequential task template A-1
-        template = "Given the following purchase history of user_{} : \n {} \n predict next possible item to be purchased by the user ?"
+        # Direct Task template B-5
+        template = "Which item of the following to recommend for user_{} ? \n {}"
+        
+        # Get all items for negative sampling
+        all_items = set()
+        for items in train_data.values():
+            all_items.update(items)
+        all_items = list(all_items)
         
         for user_id, items in train_data.items():
             if len(items) < 2:
-                continue  # Need at least 2 items for history and target
+                continue  # Need at least 2 items
             
-            # For training, randomly select a split point
-            # History: items[0:end_pos], Target: items[end_pos]
-            # Similar to VIP5 original implementation
-            if len(items) > 6:
-                end_candidates = list(range(max(2, len(items) - 6), len(items) - 1))
-                end_pos = random.choice(end_candidates)
-                start_candidates = list(range(1, min(4, end_pos)))
-                start_pos = random.choice(start_candidates) if start_candidates else 1
+            # For Direct Task, we need: candidates list + target item
+            # Similar to VIP5 original implementation (data.py line 452-471)
+            target_item = items[-1]  # Last item is target
+            
+            # Sample negative candidates (exclude user's history)
+            user_items_set = set(items)
+            negative_candidates = [item for item in all_items if item not in user_items_set]
+            
+            # ✅ Get max_candidates from config (default: 100)
+            try:
+                from config import arg
+                max_candidates = getattr(arg, 'vip5_max_candidates', 100)
+            except (ImportError, AttributeError):
+                max_candidates = 100
+            
+            # Sample (max_candidates - 1) negatives + 1 positive = max_candidates total
+            num_negatives = min(max_candidates - 1, len(negative_candidates))
+            if num_negatives > 0:
+                sampled_negatives = random.sample(negative_candidates, num_negatives)
             else:
-                start_pos = 1
-                end_pos = len(items) - 1
+                sampled_negatives = []
             
-            purchase_history = items[start_pos:end_pos+1]
-            target_item = items[end_pos+1] if end_pos+1 < len(items) else items[-1]
-            
-            # Format history: item_1, item_2, ...
-            # Use visual token placeholders
-            history_str = ", ".join([f"item_{item_id}" for item_id in purchase_history])
+            # Combine: negatives + positive target
+            candidates = sampled_negatives + [target_item]
+            random.shuffle(candidates)  # Shuffle to avoid bias
             
             # Build source text with visual token placeholders
             # Format: "item_1 <extra_id_0> <extra_id_0>, item_2 <extra_id_0> <extra_id_0>, ..."
             visual_token_placeholder = " <extra_id_0>" * self.image_feature_size_ratio
-            history_with_visual = visual_token_placeholder.join([f"item_{item_id}" for item_id in purchase_history]) + visual_token_placeholder
+            candidates_with_visual = visual_token_placeholder.join([f"item_{item_id}" for item_id in candidates]) + visual_token_placeholder
             
-            source_text = template.format(user_id, history_with_visual)
+            source_text = template.format(user_id, candidates_with_visual)
             target_text = f"item_{target_item}"
             
             samples.append({
                 "user_id": user_id,
-                "history": purchase_history,
+                "candidates": candidates,  # All candidates (for visual features)
                 "target_item": target_item,
                 "source_text": source_text,
                 "target_text": target_text,
@@ -726,22 +786,27 @@ class VIP5Reranker(BaseReranker):
         vis_feats_list = []
         
         for sample in batch:
-            history = sample["history"]
-            # Get visual features for history items
-            history_visual = []
-            for item_id in history:
+            # ✅ Direct Task (B-5): Visual features cho TẤT CẢ candidates (không chỉ history)
+            candidates = sample.get("candidates", [])  # Direct Task uses candidates
+            if not candidates:
+                # Fallback to history if candidates not available (backward compatibility)
+                candidates = sample.get("history", [])
+            
+            # Get visual features for all candidates
+            candidates_visual = []
+            for item_id in candidates:
                 if item_id in self.item_id_to_idx:
                     idx = self.item_id_to_idx[item_id]
-                    history_visual.append(self.visual_embeddings[idx])
+                    candidates_visual.append(self.visual_embeddings[idx])
             
-            if len(history_visual) == 0:
+            if len(candidates_visual) == 0:
                 # No valid items, use zeros (on same device as visual_embeddings)
                 vis_feats = torch.zeros(max_vis_tokens, self.image_feature_dim, device=self.device)
             else:
                 # Stack and repeat for image_feature_size_ratio
-                history_visual_tensor = torch.stack(history_visual)  # [num_items, feat_dim]
+                candidates_visual_tensor = torch.stack(candidates_visual)  # [num_candidates, feat_dim]
                 # Repeat each item image_feature_size_ratio times
-                vis_feats = history_visual_tensor.repeat_interleave(self.image_feature_size_ratio, dim=0)  # [num_items * ratio, feat_dim]
+                vis_feats = candidates_visual_tensor.repeat_interleave(self.image_feature_size_ratio, dim=0)  # [num_candidates * ratio, feat_dim]
                 
                 # Pad or truncate to max_vis_tokens
                 if vis_feats.size(0) < max_vis_tokens:
@@ -773,18 +838,32 @@ class VIP5Reranker(BaseReranker):
             "loss_weights": loss_weights,
         }
     
-    def _evaluate_split(self, split: Dict[int, List[int]], k: int) -> float:
+    def _evaluate_split(self, split: Dict[int, List[int]], k: int, **kwargs: Any) -> float:
         """Compute average Recall@K for validation.
         
         Args:
             split: Dict {user_id: [gt_item_ids]} - validation/test split
             k: Top-K for recall calculation
+            **kwargs: Additional arguments:
+                - rerank_mode: str - "retrieval" or "ground_truth" (default: "ground_truth")
+                - retrieval_candidates: Dict[int, List[int]] - candidates from Stage 1 (for "retrieval" mode)
             
         Returns:
             Average Recall@K
         """
         if self.model is None or self.tokenizer is None:
             return 0.0
+        
+        # ✅ Get rerank_mode from kwargs (default: "ground_truth")
+        rerank_mode = kwargs.get("rerank_mode", "ground_truth")
+        retrieval_candidates = kwargs.get("retrieval_candidates", None)
+        
+        # ✅ Get eval_candidates from config (default: 20)
+        try:
+            from config import arg
+            max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
+        except (ImportError, AttributeError):
+            max_eval_candidates = 20
         
         self.model.eval()
         recalls = []
@@ -799,119 +878,146 @@ class VIP5Reranker(BaseReranker):
                 if len(history) == 0:
                     continue
                 
-                # Get all items as candidates (for evaluation)
-                all_items = list(self.item_id_to_idx.keys())
+                # ✅ Mode 1: "retrieval" - Use candidates from Stage 1
+                if rerank_mode == "retrieval" and retrieval_candidates is not None:
+                    if user_id in retrieval_candidates:
+                        candidates = retrieval_candidates[user_id][:max_eval_candidates]
+                        # Ensure at least one ground truth is in candidates
+                        if not any(item in candidates for item in gt_items):
+                            if len(candidates) < max_eval_candidates:
+                                candidates.append(gt_items[0])
+                            else:
+                                candidates[0] = gt_items[0]
+                    else:
+                        # Fallback to ground_truth mode if no retrieval candidates
+                        rerank_mode = "ground_truth"
                 
-                if not all_items:
-                    continue
-                
-                # ✅ FIX: Exclude history items from candidate pool (avoid recommending already purchased items)
-                history_set = set(history)
-                candidate_pool = [item for item in all_items if item not in history_set]
-                
-                if not candidate_pool:
-                    continue  # No candidates available after excluding history
-                
-                # Limit candidates for efficiency (during training)
-                # Get eval_candidates from config (default: 20)
-                try:
-                    from config import arg
-                    max_eval_candidates = getattr(arg, 'rerank_eval_candidates', 20)
-                except ImportError:
-                    max_eval_candidates = 20
-                max_eval_candidates = min(max_eval_candidates, len(candidate_pool))
-                candidates = random.sample(candidate_pool, max_eval_candidates) if len(candidate_pool) > max_eval_candidates else candidate_pool
-                
-                # Ensure at least one ground truth is in candidates
-                if not any(item in candidates for item in gt_items):
-                    # Add one ground truth item
-                    candidates[0] = gt_items[0]
+                # ✅ Mode 2: "ground_truth" - Sample random candidates
+                if rerank_mode == "ground_truth":
+                    # Get all items as candidates (for evaluation)
+                    all_items = list(self.item_id_to_idx.keys())
+                    
+                    if not all_items:
+                        continue
+                    
+                    # Exclude history items from candidate pool (avoid recommending already purchased items)
+                    history_set = set(history)
+                    candidate_pool = [item for item in all_items if item not in history_set]
+                    
+                    if not candidate_pool:
+                        continue  # No candidates available after excluding history
+                    
+                    # Sample candidates
+                    max_eval_candidates_actual = min(max_eval_candidates, len(candidate_pool))
+                    candidates = random.sample(candidate_pool, max_eval_candidates_actual) if len(candidate_pool) > max_eval_candidates_actual else candidate_pool
+                    
+                    # Ensure at least one ground truth is in candidates
+                    if not any(item in candidates for item in gt_items):
+                        candidates[0] = gt_items[0]
                 
                 # ✅ Shuffle candidates to avoid bias (GT item should not always be first)
                 random.shuffle(candidates)
                 
-                # Rerank candidates using internal logic (bypass validation check)
-                # Encode user history + each candidate separately (same as rerank method)
+                # Rerank candidates using Direct Task (B-5) - same as rerank() method
                 scores = []
                 
+                # ✅ VIP5 Direct Task (B-5): Recommend từ danh sách candidates
+                # Get visual features cho TẤT CẢ candidates
+                candidate_visual = []
+                valid_candidates = []
                 for item_id in candidates:
-                    if item_id not in self.item_id_to_idx:
-                        continue
-                    
-                    # ✅ FIX: Build prompt with ONLY history (not including candidate)
-                    # Model should predict item_id from history, not from history + candidate
-                    # This matches training format where target is predicted from history only
-                    history_str = ", ".join([f"item_{h}" for h in history])
-                    candidate_prompt = f"Given the following purchase history of user_{user_id} : \n {history_str} \n predict next possible item to be purchased by the user ?"
-                    
-                    # Get visual feature for this candidate
-                    idx = self.item_id_to_idx[item_id]
-                    item_visual = self.visual_embeddings[idx].unsqueeze(0)  # [1, feat_dim]
-                    
-                    # Prepare VIP5 input
-                    vip5_input = prepare_vip5_input(
-                        candidate_prompt,
-                        item_visual,
-                        self.tokenizer,
-                        max_length=self.max_text_length,
-                        image_feature_size_ratio=self.image_feature_size_ratio,
-                    )
-                    
-                    # Move to device
-                    input_ids = vip5_input["input_ids"].to(self.device)
-                    whole_word_ids = vip5_input["whole_word_ids"].to(self.device)
-                    category_ids = vip5_input["category_ids"].to(self.device)
-                    vis_feats = vip5_input["vis_feats"].to(self.device)
-                    attention_mask = vip5_input["attention_mask"].to(self.device)
-                    
-                    # Encode with VIP5 encoder
-                    encoder_outputs = self.model.encoder(
-                        input_ids=input_ids,
-                        whole_word_ids=whole_word_ids,
-                        category_ids=category_ids,
-                        vis_feats=vis_feats,
-                        attention_mask=attention_mask,
-                        return_dict=True,
-                        task="sequential",
-                    )
-                    
-                    # Get encoder hidden states [1, seq_len, d_model]
-                    encoder_hidden = encoder_outputs.last_hidden_state
-                    encoder_attention_mask = attention_mask
-                    
-                    # ✅ FIX: Use decoder to predict probability of item_id (not just encoder norm)
-                    # VIP5 is a seq2seq model, should use decoder to predict item_id
-                    # Decoder input: "item_{item_id}" (same format as training target)
-                    target_text = f"item_{item_id}"
-                    decoder_input_ids = self.tokenizer.encode(target_text, return_tensors="pt", add_special_tokens=False).to(self.device)
-                    
-                    # Decode with VIP5 decoder
-                    decoder_outputs = self.model.decoder(
-                        input_ids=decoder_input_ids,
-                        encoder_hidden_states=encoder_hidden,
-                        encoder_attention_mask=encoder_attention_mask,
-                        return_dict=True,
-                        task="sequential",
-                    )
-                    
-                    # Get decoder output [1, target_len, d_model]
-                    decoder_hidden = decoder_outputs.last_hidden_state
-                    
-                    # Apply lm_head to get logits [1, target_len, vocab_size]
-                    if self.model.config.tie_word_embeddings:
-                        decoder_hidden = decoder_hidden * (self.model.model_dim ** -0.5)
-                    logits = self.model.lm_head(decoder_hidden)  # [1, target_len, vocab_size]
-                    
-                    # Get logits for the last token (final prediction)
-                    last_token_logits = logits[0, -1, :]  # [vocab_size]
-                    
-                    # Extract logit for item_id token
-                    # Find token_id for "item_{item_id}" in vocabulary
-                    item_token_id = decoder_input_ids[0, -1].item()  # Last token is item_id token
-                    
-                    # Score = logit of item_id token (higher = more likely)
-                    score = float(last_token_logits[item_token_id].item())
-                    
+                    if item_id in self.item_id_to_idx:
+                        idx = self.item_id_to_idx[item_id]
+                        valid_candidates.append(item_id)
+                        candidate_visual.append(self.visual_embeddings[idx])
+                
+                if not valid_candidates:
+                    continue
+                
+                # Build prompt với Direct Task template (B-5)
+                visual_token_placeholder = " <extra_id_0>" * self.image_feature_size_ratio
+                candidates_with_visual = visual_token_placeholder.join([f"item_{c}" for c in valid_candidates]) + visual_token_placeholder
+                direct_prompt = f"Which item of the following to recommend for user_{user_id} ? \n {candidates_with_visual}"
+                
+                # Prepare visual features cho TẤT CẢ candidates
+                if len(candidate_visual) > 0:
+                    all_candidates_visual_tensor = torch.stack(candidate_visual)  # [num_candidates, feat_dim]
+                else:
+                    all_candidates_visual_tensor = torch.zeros(1, self.image_feature_dim, device=self.device)
+                
+                # Encode prompt MỘT LẦN với tất cả candidates
+                vip5_input = prepare_vip5_input(
+                    direct_prompt,
+                    all_candidates_visual_tensor,
+                    self.tokenizer,
+                    max_length=self.max_text_length,
+                    image_feature_size_ratio=self.image_feature_size_ratio,
+                )
+                
+                # Move to device
+                input_ids = vip5_input["input_ids"].to(self.device)
+                whole_word_ids = vip5_input["whole_word_ids"].to(self.device)
+                category_ids = vip5_input["category_ids"].to(self.device)
+                vis_feats = vip5_input["vis_feats"].to(self.device)
+                attention_mask = vip5_input["attention_mask"].to(self.device)
+                
+                # Encode with VIP5 encoder (ONE TIME for all candidates)
+                encoder_outputs = self.model.encoder(
+                    input_ids=input_ids,
+                    whole_word_ids=whole_word_ids,
+                    category_ids=category_ids,
+                    vis_feats=vis_feats,
+                    attention_mask=attention_mask,
+                    return_dict=True,
+                    task="direct",  # ✅ Use Direct Task
+                )
+                
+                # Get encoder hidden states [1, seq_len, d_model]
+                encoder_hidden = encoder_outputs.last_hidden_state
+                encoder_attention_mask = attention_mask
+                
+                # Batch decode tất cả candidates cùng lúc
+                decoder_input_texts = [f"item_{item_id}" for item_id in valid_candidates]
+                decoder_inputs_tokenized = self.tokenizer(
+                    decoder_input_texts,
+                    padding="max_length",
+                    truncation=True,
+                    max_length=64,
+                    return_tensors="pt",
+                    add_special_tokens=False
+                )
+                decoder_input_ids = decoder_inputs_tokenized["input_ids"].to(self.device)
+                decoder_attention_mask = decoder_inputs_tokenized["attention_mask"].to(self.device)
+                
+                batch_size = len(valid_candidates)
+                encoder_hidden_batch = encoder_hidden.expand(batch_size, -1, -1)
+                encoder_attention_mask_batch = encoder_attention_mask.expand(batch_size, -1)
+                
+                decoder_outputs = self.model.decoder(
+                    input_ids=decoder_input_ids,
+                    attention_mask=decoder_attention_mask,
+                    encoder_hidden_states=encoder_hidden_batch,
+                    encoder_attention_mask=encoder_attention_mask_batch,
+                    return_dict=True,
+                    task="direct",  # ✅ Use Direct Task
+                )
+                
+                decoder_hidden = decoder_outputs.last_hidden_state
+                if self.model.config.tie_word_embeddings:
+                    decoder_hidden = decoder_hidden * (self.model.model_dim ** -0.5)
+                logits = self.model.lm_head(decoder_hidden)  # [batch_size, target_len, vocab_size]
+                
+                # Extract scores for all candidates
+                for i, item_id in enumerate(valid_candidates):
+                    non_padding_mask = decoder_attention_mask[i] == 1
+                    if non_padding_mask.any():
+                        last_token_idx = non_padding_mask.nonzero(as_tuple=True)[0][-1].item()
+                        item_token_id = decoder_input_ids[i, last_token_idx].item()
+                        score = float(logits[i, last_token_idx, item_token_id].item())
+                    else:
+                        last_token_idx = -1
+                        item_token_id = decoder_input_ids[i, -1].item()
+                        score = float(logits[i, last_token_idx, item_token_id].item())
                     scores.append((item_id, score))
                 
                 # Sort by score descending
