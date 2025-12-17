@@ -39,11 +39,15 @@ class RerankConfig:
             - "retrieval": Use candidates from Stage 1 (default)
             - "ground_truth": Use ground truth + 19 random negatives (for rerank quality evaluation)
         num_negatives: Number of random negatives for ground_truth mode (default: 19)
-        qwen3vl_mode: Qwen3-VL mode (only used if method=qwen3vl)
-            - "raw_image": Use raw images directly
+        qwen_mode: Qwen reranker mode (only used if method=qwen or qwen3vl)
+            - "text_only": Use description only (default)
             - "caption": Use image captions
-            - "semantic_summary": Use semantic summaries with Qwen3-VL
-            - "semantic_summary_small": Use semantic summaries with smaller model
+            - "semantic_summary": Use semantic summaries
+        qwen_model: Qwen model (only used if method=qwen or qwen3vl)
+            - "qwen3-0.6b": Text model (for text_only mode)
+            - "qwen3-2bvl": Vision-Language model (for caption/semantic_summary modes)
+            - "qwen3-1.6b": Text model (for text_only or semantic_summary mode)
+        qwen3vl_mode: [DEPRECATED] Legacy Qwen3-VL mode (use qwen_mode instead)
     
     Note:
         - `top_k` is the final number of recommendations returned
@@ -56,7 +60,9 @@ class RerankConfig:
     top_k: int = 50
     mode: str = "retrieval"  # "retrieval" or "ground_truth"
     num_negatives: int = 19  # For ground_truth mode
-    qwen3vl_mode: Optional[str] = None  # For Qwen3-VL: "raw_image", "caption", "semantic_summary", "semantic_summary_small"
+    qwen_mode: Optional[str] = None  # For Qwen: "text_only", "caption", "semantic_summary"
+    qwen_model: Optional[str] = None  # For Qwen: "qwen3-0.6b", "qwen3-2bvl", "qwen3-1.6b"
+    qwen3vl_mode: Optional[str] = None  # [DEPRECATED] Legacy: use qwen_mode instead
 
 
 @dataclass
@@ -96,17 +102,33 @@ class TwoStagePipeline:
             
             # For Qwen rerankers, pass max_candidates from config
             reranker_kwargs = {"top_k": cfg.rerank.top_k}
-            if rerank_method == "qwen":
+            if rerank_method in ["qwen", "qwen3vl"]:
+                # Use unified reranker options
+                qwen_mode = cfg.rerank.qwen_mode or getattr(arg, 'qwen_mode', None)
+                qwen_model = cfg.rerank.qwen_model or getattr(arg, 'qwen_model', None)
+                
+                # Backward compatibility: if qwen3vl_mode is set, use it
+                if qwen_mode is None and cfg.rerank.qwen3vl_mode:
+                    qwen3vl_mode_legacy = cfg.rerank.qwen3vl_mode
+                    mode_mapping = {
+                        'caption': 'caption',
+                        'semantic_summary': 'semantic_summary',
+                        'semantic_summary_small': 'semantic_summary'
+                    }
+                    qwen_mode = mode_mapping.get(qwen3vl_mode_legacy, 'text_only')
+                    if qwen3vl_mode_legacy == 'semantic_summary_small' and qwen_model is None:
+                        qwen_model = 'qwen3-0.6b'
+                
+                # Default to text_only if no mode specified
+                if qwen_mode is None:
+                    qwen_mode = 'text_only'
+                if qwen_model is None:
+                    qwen_model = 'qwen3-0.6b' if qwen_mode == 'text_only' else 'qwen3-2bvl'
+                
+                reranker_kwargs["mode"] = qwen_mode
+                reranker_kwargs["model"] = qwen_model
+                
                 # Use qwen_max_candidates from config, or default to retrieval_top_k
-                max_candidates = arg.qwen_max_candidates if hasattr(arg, 'qwen_max_candidates') and arg.qwen_max_candidates is not None else cfg.retrieval.top_k
-                reranker_kwargs["max_candidates"] = max_candidates
-            elif rerank_method == "qwen3vl":
-                # For Qwen3-VL, pass mode and max_candidates
-                # Prefer qwen3vl_mode from RerankConfig, fallback to arg.qwen3vl_mode, then default
-                qwen3vl_mode = cfg.rerank.qwen3vl_mode
-                if qwen3vl_mode is None:
-                    qwen3vl_mode = getattr(arg, 'qwen3vl_mode', 'raw_image') if hasattr(arg, 'qwen3vl_mode') else 'raw_image'
-                reranker_kwargs["mode"] = qwen3vl_mode
                 max_candidates = arg.qwen_max_candidates if hasattr(arg, 'qwen_max_candidates') and arg.qwen_max_candidates is not None else cfg.retrieval.top_k
                 reranker_kwargs["max_candidates"] = max_candidates
             

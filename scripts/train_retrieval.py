@@ -72,39 +72,120 @@ def _evaluate_split(
         
         result = {"num_users": len(split)}
         
-        for k_val in ks:
-            recalls = []
-            ndcgs = []
-            hits = []
+        # ✅ OPTIMIZATION: Pre-compute scores for all users at once (for MMGCN, VBPR, BM3)
+        # This avoids calling retrieve() for each user individually, which is very slow
+        all_user_scores = {}
+        
+        # Check if retriever supports batch prediction
+        if hasattr(retriever, 'model') and hasattr(retriever.model, 'predict_batch'):
+            # VBPR, BM3: Use predict_batch
+            print(f"[_evaluate_split] Using batch prediction for candidate_list mode...")
+            retriever.model.eval()
+            device = retriever.device
             
-            for user_id, gt_items in split.items():
-                if not gt_items:
+            # Get all valid user IDs from split
+            all_user_ids = [uid for uid in split.keys() if 1 <= uid <= retriever.num_user]
+            
+            # Process in batches
+            batch_size = 512
+            with torch.no_grad():
+                for batch_start in range(0, len(all_user_ids), batch_size):
+                    batch_user_ids = all_user_ids[batch_start:batch_start + batch_size]
+                    batch_user_indices = torch.tensor([uid - 1 for uid in batch_user_ids], dtype=torch.long).to(device)
+                    batch_scores = retriever.model.predict_batch(batch_user_indices)  # [batch_size, num_items]
+                    
+                    # Store scores for each user (copy to avoid modifying original)
+                    for idx, user_id in enumerate(batch_user_ids):
+                        scores = batch_scores[idx].cpu().numpy().copy()  # Copy to avoid modifying
+                        all_user_scores[user_id] = scores
+                    
+                    if (batch_start + batch_size) % 5000 == 0 or (batch_start + batch_size) >= len(all_user_ids):
+                        print(f"  Processed {min(batch_start + batch_size, len(all_user_ids))}/{len(all_user_ids)} users...")
+        
+        elif hasattr(retriever, 'model') and hasattr(retriever.model, 'result'):
+            # MMGCN: Use result attribute (forward pass once)
+            print(f"[_evaluate_split] Using MMGCN result for candidate_list mode...")
+            retriever.model.eval()
+            with torch.no_grad():
+                retriever.model.forward()  # Forward pass once for all users
+            
+            user_tensor = retriever.model.result[:retriever.num_user]  # [num_user, dim]
+            item_tensor = retriever.model.result[retriever.num_user:]  # [num_item, dim]
+            
+            # Compute scores for all users at once: [num_user, num_item]
+            all_scores = torch.matmul(user_tensor, item_tensor.t())  # [num_user, num_item]
+            
+            # Store scores for each user (copy to avoid modifying original)
+            print(f"  Computing scores for {len(split)} users...")
+            for user_id in split.keys():
+                if 1 <= user_id <= retriever.num_user:
+                    scores = all_scores[user_id - 1].cpu().numpy().copy()  # [num_item] - copy to avoid modifying
+                    all_user_scores[user_id] = scores
+            print(f"  Pre-computed scores for {len(all_user_scores)} users")
+        
+        # ✅ OPTIMIZATION: Compute all K values in one pass (more efficient)
+        # Initialize result dicts for each K
+        for k_val in ks:
+            result[f"recall@{k_val}"] = []
+            result[f"ndcg@{k_val}"] = []
+            result[f"hit@{k_val}"] = []
+        
+        processed = 0
+        total_users = len(split)
+        
+        for user_id, gt_items in split.items():
+            if not gt_items:
+                continue
+            
+            # Get pre-generated candidates for this user
+            candidates = candidate_lists.get(user_id, [])
+            if not candidates:
+                continue
+            
+            # Get scores for this user
+            if user_id in all_user_scores:
+                # ✅ FIX: Copy scores to avoid modifying original (affects multiple K values)
+                scores = all_user_scores[user_id].copy()
+                
+                # Mask history items
+                history_items = retriever.user_history.get(user_id, [])
+                for item in history_items:
+                    if 1 <= item <= retriever.num_item:
+                        item_idx = item - 1
+                        scores[item_idx] = -1e9
+                
+                # Get top items from candidates only
+                candidate_indices = [item - 1 for item in candidates if 1 <= item <= retriever.num_item]
+                if not candidate_indices:
                     continue
                 
-                # Get pre-generated candidates for this user
-                candidates = candidate_lists.get(user_id, [])
-                if not candidates:
-                    continue
-                
-                # Get full ranking from retriever
+                candidate_scores = scores[candidate_indices]
+                # Sort candidates by score (descending)
+                sorted_indices = np.argsort(candidate_scores)[::-1]
+                ranked_items = [candidates[i] for i in sorted_indices]
+            else:
+                # Fallback: use retrieve() (slower)
                 all_recs = retriever.retrieve(user_id)
-                
-                # Filter to only include candidates, preserving order from full ranking
                 candidate_set = set(candidates)
                 ranked_items = [item for item in all_recs if item in candidate_set]
-                
-                # If some candidates are not in full ranking, append them at the end
                 missing_candidates = [item for item in candidates if item not in ranked_items]
                 ranked_items.extend(missing_candidates)
-                
-                # Compute metrics
-                recalls.append(recall_at_k(ranked_items, gt_items, k_val))
-                ndcgs.append(ndcg_at_k(ranked_items, gt_items, k_val))
-                hits.append(hit_at_k(ranked_items, gt_items, k_val))
             
-            result[f"recall@{k_val}"] = float(sum(recalls) / len(recalls)) if recalls else 0.0
-            result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
-            result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+            # Compute metrics for all K values at once
+            for k_val in ks:
+                result[f"recall@{k_val}"].append(recall_at_k(ranked_items, gt_items, k_val))
+                result[f"ndcg@{k_val}"].append(ndcg_at_k(ranked_items, gt_items, k_val))
+                result[f"hit@{k_val}"].append(hit_at_k(ranked_items, gt_items, k_val))
+            
+            processed += 1
+            if processed % 1000 == 0:
+                print(f"  Processed {processed}/{total_users} users...")
+        
+        # Compute averages for each K
+        for k_val in ks:
+            result[f"recall@{k_val}"] = float(sum(result[f"recall@{k_val}"]) / len(result[f"recall@{k_val}"])) if result[f"recall@{k_val}"] else 0.0
+            result[f"ndcg@{k_val}"] = float(sum(result[f"ndcg@{k_val}"]) / len(result[f"ndcg@{k_val}"])) if result[f"ndcg@{k_val}"] else 0.0
+            result[f"hit@{k_val}"] = float(sum(result[f"hit@{k_val}"]) / len(result[f"hit@{k_val}"])) if result[f"hit@{k_val}"] else 0.0
         
         return result
     
@@ -121,122 +202,157 @@ def _evaluate_split(
             recall = retriever._evaluate_split(split, k=k_val)
             result[f"recall@{k_val}"] = float(recall)
         
-        # For NDCG and Hit, compute from a small sample to avoid calling retrieve() too many times
-        # This is much faster than calling retrieve() for all users
-        from evaluation.metrics import ndcg_at_k, hit_at_k
+        # ✅ FIX: Compute NDCG and Hit on ALL users (same as Recall) for consistency
+        # Previously, NDCG/Hit were computed on a small sample (100 users), which could lead to
+        # inconsistent results (e.g., Recall@5 > 0 but NDCG@5 = 0 if sample has no hits)
+        from evaluation.metrics import ndcg_at_k, hit_at_k, recall_at_k
         
-        # Sample a small subset for NDCG/Hit computation (much faster)
-        sample_size = min(100, len(split))  # Only sample 100 users for NDCG/Hit
-        if len(split) > sample_size:
-            import random
-            sample_users = random.sample(list(split.keys()), sample_size)
-            sample_split = {uid: split[uid] for uid in sample_users}
-        else:
-            sample_split = split
+        # Use ALL users for NDCG/Hit computation (same as Recall)
+        # This ensures consistency: if Recall > 0, then Hit and NDCG should also be > 0
+        all_user_ids = list(split.keys())
         
-        # Pre-compute model forward once for all sampled users
+        # Pre-compute model forward once for all users (in batches for efficiency)
         # Check if model supports batch prediction (VBPR, BM3) or has result attribute (MMGCN)
         if hasattr(retriever, 'model'):
-            # Try to get scores for all sampled users in one batch
+            # Try to get scores for all users in batches
             try:
                 retriever.model.eval()
+                batch_size_eval = 512  # Batch size for evaluation
+                
                 with torch.no_grad():
                     # Check if model has predict_batch method (VBPR, BM3)
                     if hasattr(retriever.model, 'predict_batch'):
-                        # Use predict_batch for VBPR/BM3
-                        sample_user_ids = list(sample_split.keys())
-                        sample_user_indices = torch.tensor([uid - 1 for uid in sample_user_ids if 1 <= uid <= retriever.num_user], dtype=torch.long).to(retriever.device)
-                        if len(sample_user_indices) > 0:
-                            sample_scores = retriever.model.predict_batch(sample_user_indices)  # [sample_size, num_items]
+                        # Use predict_batch for VBPR/BM3 - process ALL users in batches
+                        for k_val in ks:
+                            ndcgs = []
+                            hits = []
                             
-                            # Mask history items for each user
-                            for idx, user_id in enumerate(sample_user_ids):
-                                if idx >= len(sample_scores):
+                            for batch_start in range(0, len(all_user_ids), batch_size_eval):
+                                batch_user_ids = all_user_ids[batch_start:batch_start + batch_size_eval]
+                                
+                                # ✅ FIX: Filter users the same way as retriever._evaluate_split() does
+                                # This ensures Recall and Hit are computed on the SAME set of users
+                                valid_batch_user_ids = [uid for uid in batch_user_ids if 1 <= uid <= retriever.num_user]
+                                if not valid_batch_user_ids:
                                     continue
-                                history_items = retriever.user_history.get(user_id, [])
-                                for item in history_items:
-                                    if 1 <= item <= retriever.num_item:
-                                        item_idx = item - 1
-                                        sample_scores[idx, item_idx] = -1e9
-                            
-                            # Compute NDCG and Hit for each K
-                            for k_val in ks:
-                                ndcgs = []
-                                hits = []
-                                for idx, (user_id, gt_items) in enumerate(zip(sample_user_ids, [sample_split[uid] for uid in sample_user_ids])):
-                                    if idx >= len(sample_scores) or not gt_items:
+                                
+                                batch_user_indices = torch.tensor([uid - 1 for uid in valid_batch_user_ids], dtype=torch.long).to(retriever.device)
+                                batch_scores = retriever.model.predict_batch(batch_user_indices)  # [batch_size, num_items]
+                                
+                                # Mask history items for each user in batch
+                                for idx, user_id in enumerate(valid_batch_user_ids):
+                                    if idx >= len(batch_scores):
+                                        continue
+                                    history_items = retriever.user_history.get(user_id, [])
+                                    for item in history_items:
+                                        if 1 <= item <= retriever.num_item:
+                                            item_idx = item - 1
+                                            batch_scores[idx, item_idx] = -1e9
+                                
+                                # Get top-K for each user in batch
+                                scores_np = batch_scores.cpu().numpy()
+                                for idx, user_id in enumerate(valid_batch_user_ids):
+                                    if idx >= len(batch_scores):
+                                        continue
+                                    gt_items = split.get(user_id, [])
+                                    if not gt_items:
                                         continue
                                     
-                                    # Get top-K items
-                                    scores = sample_scores[idx].cpu().numpy()
+                                    scores = scores_np[idx]
                                     top_k_indices = np.argsort(scores)[::-1][:k_val]
                                     top_items = [int(idx + 1) for idx in top_k_indices]  # Convert to 1-indexed
                                     
                                     # Compute metrics
+                                    # ✅ With len(gt_items) = 1, Recall@K and Hit@K should be identical
+                                    recall_val = recall_at_k(top_items, gt_items, k_val)
+                                    hit_val = hit_at_k(top_items, gt_items, k_val)
                                     ndcgs.append(ndcg_at_k(top_items, gt_items, k_val))
-                                    hits.append(hit_at_k(top_items, gt_items, k_val))
-                                
-                                result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
-                                result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
-                        else:
-                            raise ValueError("No valid user indices")
+                                    hits.append(hit_val)
+                                    
+                                    # ✅ VERIFY: With len(gt_items) = 1, recall and hit must be equal
+                                    if len(gt_items) == 1 and abs(recall_val - hit_val) > 1e-6:
+                                        print(f"[WARNING] User {user_id}: Recall@{k_val}={recall_val:.6f} != Hit@{k_val}={hit_val:.6f} (len(gt_items)={len(gt_items)})")
+                            
+                            result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
+                            result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+                        
+                        # All metrics computed, return result
+                        return result
+                    
                     # Check if model has result attribute (MMGCN)
                     elif hasattr(retriever.model, 'result'):
-                        # Use result for MMGCN
+                        # Use result for MMGCN - process ALL users in batches
                         if hasattr(retriever.model, 'forward'):
-                            # MMGCN forward() doesn't need arguments
                             retriever.model.forward()  # Update embeddings once
                         
                         user_tensor = retriever.model.result[:retriever.num_user]
                         item_tensor = retriever.model.result[retriever.num_user:]
                         
-                        # Get scores for all sampled users in one batch
-                        sample_user_ids = list(sample_split.keys())
-                        sample_user_indices = torch.tensor([uid - 1 for uid in sample_user_ids if 1 <= uid <= retriever.num_user], dtype=torch.long).to(retriever.device)
-                        if len(sample_user_indices) > 0:
-                            sample_user_emb = user_tensor[sample_user_indices]
-                            sample_scores = torch.matmul(sample_user_emb, item_tensor.t())  # [sample_size, num_items]
+                        for k_val in ks:
+                            ndcgs = []
+                            hits = []
                             
-                            # Mask history items for each user
-                            for idx, user_id in enumerate(sample_user_ids):
-                                if idx >= len(sample_scores):
+                            for batch_start in range(0, len(all_user_ids), batch_size_eval):
+                                batch_user_ids = all_user_ids[batch_start:batch_start + batch_size_eval]
+                                
+                                # ✅ FIX: Filter users the same way as retriever._evaluate_split() does
+                                # This ensures Recall and Hit are computed on the SAME set of users
+                                valid_batch_user_ids = [uid for uid in batch_user_ids if 1 <= uid <= retriever.num_user]
+                                if not valid_batch_user_ids:
                                     continue
-                                history_items = retriever.user_history.get(user_id, [])
-                                for item in history_items:
-                                    if 1 <= item <= retriever.num_item:
-                                        item_idx = item - 1
-                                        sample_scores[idx, item_idx] = -1e9
-                            
-                            # Compute NDCG and Hit for each K
-                            for k_val in ks:
-                                ndcgs = []
-                                hits = []
-                                for idx, (user_id, gt_items) in enumerate(zip(sample_user_ids, [sample_split[uid] for uid in sample_user_ids])):
-                                    if idx >= len(sample_scores) or not gt_items:
+                                
+                                batch_user_indices = torch.tensor([uid - 1 for uid in valid_batch_user_ids], dtype=torch.long).to(retriever.device)
+                                batch_user_emb = user_tensor[batch_user_indices]
+                                batch_scores = torch.matmul(batch_user_emb, item_tensor.t())  # [batch_size, num_items]
+                                
+                                # Mask history items for each user in batch
+                                for idx, user_id in enumerate(valid_batch_user_ids):
+                                    if idx >= len(batch_scores):
+                                        continue
+                                    history_items = retriever.user_history.get(user_id, [])
+                                    for item in history_items:
+                                        if 1 <= item <= retriever.num_item:
+                                            item_idx = item - 1
+                                            batch_scores[idx, item_idx] = -1e9
+                                
+                                # Get top-K for each user in batch
+                                scores_np = batch_scores.cpu().numpy()
+                                for idx, user_id in enumerate(valid_batch_user_ids):
+                                    if idx >= len(batch_scores):
+                                        continue
+                                    gt_items = split.get(user_id, [])
+                                    if not gt_items:
                                         continue
                                     
-                                    # Get top-K items
-                                    scores = sample_scores[idx].cpu().numpy()
+                                    scores = scores_np[idx]
                                     top_k_indices = np.argsort(scores)[::-1][:k_val]
                                     top_items = [int(idx + 1) for idx in top_k_indices]  # Convert to 1-indexed
                                     
                                     # Compute metrics
+                                    # ✅ With len(gt_items) = 1, Recall@K and Hit@K should be identical
+                                    recall_val = recall_at_k(top_items, gt_items, k_val)
+                                    hit_val = hit_at_k(top_items, gt_items, k_val)
                                     ndcgs.append(ndcg_at_k(top_items, gt_items, k_val))
-                                    hits.append(hit_at_k(top_items, gt_items, k_val))
-                                
-                                result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
-                                result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
-                        else:
-                            raise ValueError("No valid user indices")
+                                    hits.append(hit_val)
+                                    
+                                    # ✅ VERIFY: With len(gt_items) = 1, recall and hit must be equal
+                                    if len(gt_items) == 1 and abs(recall_val - hit_val) > 1e-6:
+                                        print(f"[WARNING] User {user_id}: Recall@{k_val}={recall_val:.6f} != Hit@{k_val}={hit_val:.6f} (len(gt_items)={len(gt_items)})")
+                            
+                            result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
+                            result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+                        
+                        # All metrics computed, return result
+                        return result
                     else:
                         raise ValueError("Model doesn't support batch prediction")
             except Exception as e:
-                # Fallback: use retrieve() for sample if batch computation fails
-                print(f"[_evaluate_split] Warning: Batch computation failed: {e}. Using retrieve() for sample.")
+                # Fallback: use retrieve() for all users if batch computation fails
+                print(f"[_evaluate_split] Warning: Batch computation failed: {e}. Using retrieve() for all users.")
                 for k_val in ks:
                     ndcgs = []
                     hits = []
-                    for user_id, gt_items in sample_split.items():
+                    for user_id, gt_items in split.items():
                         if not gt_items:
                             continue
                         recs = retriever.retrieve(user_id)
@@ -248,11 +364,11 @@ def _evaluate_split(
                     result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
                     result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
         else:
-            # Fallback: use retrieve() for sample
+            # Fallback: use retrieve() for all users
             for k_val in ks:
                 ndcgs = []
                 hits = []
-                for user_id, gt_items in sample_split.items():
+                for user_id, gt_items in split.items():
                     if not gt_items:
                         continue
                     recs = retriever.retrieve(user_id)
@@ -263,6 +379,8 @@ def _evaluate_split(
                 
                 result[f"ndcg@{k_val}"] = float(sum(ndcgs) / len(ndcgs)) if ndcgs else 0.0
                 result[f"hit@{k_val}"] = float(sum(hits) / len(hits)) if hits else 0.0
+        
+        return result
         
         return result
     else:
@@ -430,7 +548,10 @@ def _build_retrieved_matrices(
                 
                 # Progress indicator - use actual number of processed users (len(probs))
                 processed_count = len(probs)
-                if processed_count % 5000 == 0 or processed_count >= len(users):
+                # ✅ FIX: Only print when exactly divisible by 5000 or at the end (not >= len(users))
+                if processed_count % 5000 == 0:
+                    print(f"  Processed {processed_count}/{len(users)} users...")
+                elif processed_count == len(users):
                     print(f"  Processed {processed_count}/{len(users)} users...")
         # Check if model has result attribute (MMGCN)
         elif hasattr(retriever.model, 'result'):
@@ -504,7 +625,10 @@ def _build_retrieved_matrices(
                 
                 # Progress indicator - use actual number of processed users (len(probs))
                 processed_count = len(probs)
-                if processed_count % 5000 == 0 or processed_count >= len(users):
+                # ✅ FIX: Only print when exactly divisible by 5000 or at the end (not >= len(users))
+                if processed_count % 5000 == 0:
+                    print(f"  Processed {processed_count}/{len(users)} users...")
+                elif processed_count == len(users):
                     print(f"  Processed {processed_count}/{len(users)} users...")
         else:
             # Fallback: process users one by one
@@ -822,11 +946,11 @@ def main() -> None:
             print(f"[train_retrieval] Falling back to full_ranking mode")
             eval_mode = "full_ranking"
     
-    # Evaluate with multiple K values: 5, 10, 20
+    # Evaluate with multiple K values: 1, 5, 10, 20
     test_metrics = _evaluate_split(
         retriever, 
         test, 
-        ks=[5, 10, 20],
+        ks=[1, 5, 10, 20],
         eval_mode=eval_mode,
         candidate_lists=candidate_lists,
     )
@@ -841,8 +965,11 @@ def main() -> None:
     print(f"Eval Mode   : {eval_mode}")
     print("-" * 80)
     
-    # Format output as requested: Recall@10, NDCG@10, Hit@10, Recall@5, NDCG@5, Hit@5, Recall@20, NDCG@20, Hit@20
+    # Format output: Recall@1, NDCG@1, Hit@1, Recall@5, NDCG@5, Hit@5, Recall@10, NDCG@10, Hit@10, Recall@20, NDCG@20, Hit@20
     num_users = test_metrics.get('num_users', 0)
+    recall_1 = test_metrics.get('recall@1', 0.0)
+    ndcg_1 = test_metrics.get('ndcg@1', 0.0)
+    hit_1 = test_metrics.get('hit@1', 0.0)
     recall_5 = test_metrics.get('recall@5', 0.0)
     ndcg_5 = test_metrics.get('ndcg@5', 0.0)
     hit_5 = test_metrics.get('hit@5', 0.0)
@@ -854,8 +981,9 @@ def main() -> None:
     hit_20 = test_metrics.get('hit@20', 0.0)
     
     print(f"TEST - users: {num_users}, "
-          f"Recall@10: {recall_10:.4f}, NDCG@10: {ndcg_10:.4f}, Hit@10: {hit_10:.4f}, "
+          f"Recall@1: {recall_1:.4f}, NDCG@1: {ndcg_1:.4f}, Hit@1: {hit_1:.4f}, "
           f"Recall@5: {recall_5:.4f}, NDCG@5: {ndcg_5:.4f}, Hit@5: {hit_5:.4f}, "
+          f"Recall@10: {recall_10:.4f}, NDCG@10: {ndcg_10:.4f}, Hit@10: {hit_10:.4f}, "
           f"Recall@20: {recall_20:.4f}, NDCG@20: {ndcg_20:.4f}, Hit@20: {hit_20:.4f}")
     print("=" * 80)
 

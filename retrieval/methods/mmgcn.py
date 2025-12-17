@@ -314,7 +314,7 @@ class MMGCNRetriever(BaseRetriever):
                     top_items_list = top_items.tolist()
                     hits = len(set(top_items_list) & set(gt_items))
                     if len(gt_items) > 0:
-                        recalls.append(hits / min(k, len(gt_items)))
+                        recalls.append(hits / len(gt_items))  # ✅ FIX: Use standard recall formula
         
         return float(np.mean(recalls)) if recalls else 0.0
 

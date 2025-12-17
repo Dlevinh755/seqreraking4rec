@@ -118,9 +118,16 @@ parser.add_argument('--rerank_eval_candidates_prepare', type=int, default=20,
 parser.add_argument('--retrieval_eval_mode', type=str, default='full_ranking',
 					choices=['full_ranking', 'candidate_list'],
 					help='Evaluation mode for retrieval models: full_ranking (evaluate on all items) or candidate_list (evaluate only on pre-generated candidates, default: full_ranking).')
-parser.add_argument('--qwen3vl_mode', type=str, default='raw_image',
-					choices=['raw_image', 'caption', 'semantic_summary', 'semantic_summary_small'],
-					help='Prompt mode for Qwen3-VL reranker: raw_image, caption, semantic_summary, semantic_summary_small')
+parser.add_argument('--qwen_mode', type=str, default='text_only',
+					choices=['text_only', 'caption', 'semantic_summary'],
+					help='Prompt mode for Qwen reranker: text_only (description only), caption, semantic_summary')
+parser.add_argument('--qwen_model', type=str, default='qwen3-0.6b',
+					choices=['qwen3-0.6b', 'qwen3-2bvl', 'qwen3-1.6b'],
+					help='Model for Qwen reranker: qwen3-0.6b (text), qwen3-2bvl (VL), qwen3-1.6b (text)')
+# Legacy: Keep qwen3vl_mode for backward compatibility
+parser.add_argument('--qwen3vl_mode', type=str, default='caption',
+					choices=['caption', 'semantic_summary', 'semantic_summary_small'],
+					help='[DEPRECATED] Use --qwen_mode instead. Prompt mode for Qwen3-VL reranker: caption, semantic_summary, semantic_summary_small')
 
 parser.add_argument('--max_text_length', type=int, default=256,
 					help='Maximum text length in characters for item metadata (default: 512, range: 256-512). Text will be truncated from the end if longer.')

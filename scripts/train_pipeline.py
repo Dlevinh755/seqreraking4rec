@@ -55,7 +55,9 @@ def main():
         rerank_top_k = getattr(arg, 'rerank_top_k', 50) or 50
         metric_k = getattr(arg, 'metric_k', 10) or 10
         rerank_mode = getattr(arg, 'rerank_mode', 'retrieval') or 'retrieval'
-        qwen3vl_mode = getattr(arg, 'qwen3vl_mode', 'raw_image') or 'raw_image'
+        qwen_mode = getattr(arg, 'qwen_mode', None)
+        qwen_model = getattr(arg, 'qwen_model', None)
+        qwen3vl_mode = getattr(arg, 'qwen3vl_mode', None)  # Legacy
     
     args = Args()
     
@@ -97,6 +99,10 @@ def main():
         top_k=args.rerank_top_k,
         mode=args.rerank_mode,
         num_negatives=19,  # Ground truth + 19 negatives
+        # Use unified reranker options
+        qwen_mode=getattr(arg, 'qwen_mode', None) if args.rerank_method.lower() in ["qwen", "qwen3vl"] else None,
+        qwen_model=getattr(arg, 'qwen_model', None) if args.rerank_method.lower() in ["qwen", "qwen3vl"] else None,
+        # Legacy: backward compatibility
         qwen3vl_mode=args.qwen3vl_mode if args.rerank_method.lower() == "qwen3vl" else None
     )
     pipeline_cfg = PipelineConfig(
@@ -144,21 +150,12 @@ def main():
             reranker_kwargs["item_id2text"] = item_id2text
             reranker_kwargs["user_history"] = user_history_text
         
-        # Add item_meta for Qwen3-VL
-        if args.rerank_method.lower() == "qwen3vl":
-            reranker_kwargs["item_meta"] = item_meta
-            # ✅ For raw_image mode, pass item_ids (not image paths) so we can load full metadata
-            if args.qwen3vl_mode == "raw_image":
-                # Build user history with item_ids for raw_image mode
-                # This allows loading both text and image from item_meta
-                user_history_item_ids = {}
-                for user_id, items in train.items():
-                    # Only include items that have metadata
-                    user_history_item_ids[user_id] = [
-                        item_id for item_id in items
-                        if item_id in item_meta
-                    ]
-                reranker_kwargs["user_history"] = user_history_item_ids
+        # Add item_meta for multimodal modes (caption, semantic_summary)
+        if args.rerank_method.lower() in ["qwen", "qwen3vl"]:
+            # Get mode from config
+            qwen_mode_val = qwen_mode or (args.qwen3vl_mode if args.rerank_method.lower() == "qwen3vl" else "text_only")
+            if qwen_mode_val in ["caption", "semantic_summary"]:
+                reranker_kwargs["item_meta"] = item_meta
     
     # Train Stage 1
     print(f"\n[2/4] Training Stage 1 ({args.retrieval_method})...")

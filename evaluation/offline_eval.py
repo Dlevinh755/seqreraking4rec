@@ -255,8 +255,8 @@ def main() -> None:
 
     eval_split = val if args.split == "val" else test
 
-    # Evaluate at K=5, 10, 20
-    ks = [5, 10, 20]
+    # Evaluate at K=1, 5, 10, 20
+    ks = [1, 5, 10, 20]
     
     if args.mode == "retrieval":
         metrics = run_retrieval_only(
@@ -306,11 +306,11 @@ def main() -> None:
     print(f"Retriever : {args.retrieval_method} (top_k={args.retrieval_top_k})")
     print(f"Reranker  : {args.rerank_method} (top_k={args.rerank_top_k}, mode={args.rerank_mode})")
     print("-" * 80)
-    print(f"{'Metric':<12} {'@5':>10} {'@10':>10} {'@20':>10}")
+    print(f"{'Metric':<12} {'@1':>10} {'@5':>10} {'@10':>10} {'@20':>10}")
     print("-" * 80)
     for metric_name in ["recall", "ndcg", "hit"]:
         values = [metrics.get(f"{metric_name}@{k}", 0.0) for k in ks]
-        print(f"{metric_name.capitalize():<12} {values[0]:>10.4f} {values[1]:>10.4f} {values[2]:>10.4f}")
+        print(f"{metric_name.capitalize():<12} {values[0]:>10.4f} {values[1]:>10.4f} {values[2]:>10.4f} {values[3]:>10.4f}")
     print("=" * 80)
 
 

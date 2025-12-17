@@ -33,14 +33,12 @@ def _truncate_item_text(text: str, max_chars: int = 200) -> str:
 class Qwen3VLReranker(BaseReranker):
     """Reranker sử dụng Qwen3-VL với nhiều prompt modes.
     
-    **4 Prompt Modes**:
-    1. `raw_image`: Sử dụng trực tiếp raw image truyền vào prompt
-    2. `caption`: Sử dụng image caption
-    3. `semantic_summary`: Sử dụng image semantic summary với Qwen3-VL
-    4. `semantic_summary_small`: Sử dụng semantic summary với model nhỏ hơn (Qwen3-0.6B)
+    **3 Prompt Modes**:
+    1. `caption`: Sử dụng image caption
+    2. `semantic_summary`: Sử dụng image semantic summary với Qwen3-VL
+    3. `semantic_summary_small`: Sử dụng semantic summary với model nhỏ hơn (Qwen3-0.6B)
     
     **Requirements**:
-    - Mode `raw_image`: Requires images in item_meta
     - Mode `caption`: Requires captions in item_meta (run data_prepare.py with --generate_caption)
     - Mode `semantic_summary`: Requires semantic summaries in item_meta (run data_prepare.py with --generate_semantic_summary)
     - Mode `semantic_summary_small`: Requires semantic summaries in item_meta
@@ -49,7 +47,7 @@ class Qwen3VLReranker(BaseReranker):
     def __init__(
         self,
         top_k: int = 50,
-        mode: str = "raw_image",
+        mode: str = "caption",
         model_name: Optional[str] = None,
         max_history: int = 5,
         max_candidates: Optional[int] = None,
@@ -61,7 +59,7 @@ class Qwen3VLReranker(BaseReranker):
         """
         Args:
             top_k: Số lượng items trả về sau rerank
-            mode: Prompt mode - "raw_image", "caption", "semantic_summary", "semantic_summary_small"
+            mode: Prompt mode - "caption", "semantic_summary", "semantic_summary_small"
             model_name: Model name (auto-selected based on mode if None)
             max_history: Số lượng items trong history để dùng cho prompt (default: 5, chỉ giữ 5 items cuối cùng)
             max_candidates: Maximum number of candidates to process (None = no limit)
@@ -130,8 +128,8 @@ class Qwen3VLReranker(BaseReranker):
         
         # Training support cho tất cả modes
         # semantic_summary_small: text model với tokenizer (Unsloth)
-        # raw_image, caption, semantic_summary: VL model với processor (transformers Trainer)
-        if self.mode in ["raw_image", "caption", "semantic_summary", "semantic_summary_small"]:
+        # caption, semantic_summary: VL model với processor (transformers Trainer)
+        if self.mode in ["caption", "semantic_summary", "semantic_summary_small"]:
             # Prepare training samples
             print("Preparing training samples...")
             train_samples = self._prepare_training_samples(train_data)
@@ -146,7 +144,6 @@ class Qwen3VLReranker(BaseReranker):
             # Train model
             self._train_model(train_samples, val_data)
         else:
-            # raw_image mode: không train, chỉ load pretrained
             print(f"Training not supported for mode '{self.mode}'. Using pretrained model only.")
         
         self.is_fitted = True
@@ -181,23 +178,11 @@ class Qwen3VLReranker(BaseReranker):
         
         # Lấy user history
         if user_history is None:
-            # ✅ For raw_image mode, prefer item_ids from train_user_history if available
-            # Otherwise fallback to self.user_history (which may be texts/image_paths)
-            if self.mode == "raw_image" and user_id in self.train_user_history:
-                history = self.train_user_history[user_id]  # List[int] - item_ids
-            else:
-                history = self.user_history.get(user_id, [])  # List[str] - texts/image_paths
+            history = self.user_history.get(user_id, [])  # List[str] - texts
         else:
             history = user_history
         # Chỉ giữ lại max_history (5) items cuối cùng nếu history quá dài
         history = history[-self.max_history:]  # Chỉ lấy max_history items cuối cùng (default: 5)
-        
-        # ✅ For raw_image mode, ensure history is List[int] (item_ids) so we can load full metadata
-        if self.mode == "raw_image" and history and isinstance(history[0], str):
-            # History is List[str] (texts/image_paths) - try to convert to item_ids
-            # This is a fallback - ideally history should already be item_ids
-            # We'll pass it as-is and let _predict_probs_raw_image handle it
-            pass
         
         # Predict probabilities
         num_candidates = len(candidates)
@@ -329,7 +314,7 @@ class Qwen3VLReranker(BaseReranker):
             # Text model with tokenizer (Unsloth)
             self._train_text_model(train_samples, val_data)
         else:
-            # VL model with processor (raw_image, caption, semantic_summary)
+            # VL model with processor (caption, semantic_summary)
             self._train_vl_model(train_samples, val_data)
     
     def _train_text_model(
@@ -442,34 +427,22 @@ class Qwen3VLReranker(BaseReranker):
             USE_UNSLOTH_TRAINER = False
         
         # Prepare training data in Unsloth format (messages format)
-        # Note: For raw_image mode, we store item_ids and load images dynamically
-        # because PIL Images cannot be serialized in HuggingFace Dataset
         training_data = []
         for sample in train_samples:
             target = str(sample["target_idx"] + 1)  # 1-indexed
             
-            if self.mode == "raw_image":
-                # For raw_image, store item_ids and load images in collate_fn
-                # UnslothVisionDataCollator will handle the image loading
-                training_data.append({
-                    "user_id": sample["user_id"],
-                    "history": sample["history"],
-                    "candidates": sample["candidates"],
-                    "target": target,
-                })
-            else:
-                # For caption and semantic_summary, create text-only messages
-                prompt = self._build_training_prompt(sample)
-                messages = [
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": target}
-                ]
-                # Store both messages (for Unsloth) and prompt/target (for fallback)
-                training_data.append({
-                    "messages": messages,
-                    "prompt": prompt,
-                    "target": target,
-                })
+            # For caption and semantic_summary, create text-only messages
+            prompt = self._build_training_prompt(sample)
+            messages = [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": target}
+            ]
+            # Store both messages (for Unsloth) and prompt/target (for fallback)
+            training_data.append({
+                "messages": messages,
+                "prompt": prompt,
+                "target": target,
+            })
         
         hf_train_dataset = Dataset.from_list(training_data)
         
@@ -477,8 +450,7 @@ class Qwen3VLReranker(BaseReranker):
         def collate_fn(batch):
             """Custom collate function for Qwen3-VL training.
             
-            Handles both text-only prompts (caption, semantic_summary) and 
-            multimodal prompts with images (raw_image mode).
+            Handles text-only prompts (caption, semantic_summary).
             """
             processor = self.qwen3vl_model.processor
             
@@ -489,112 +461,18 @@ class Qwen3VLReranker(BaseReranker):
             for item in batch:
                 target = item["target"]
                 
-                # Check if we have messages (raw_image mode) or prompt (text-only mode)
-                if "candidates" in item:
-                    # raw_image mode: need to build messages with images from item_ids
-                    # Load images fresh in collate_fn to avoid serialization issues
-                    sample = {
-                        "user_id": item.get("user_id"),
-                        "history": item.get("history", []),
-                        "candidates": item.get("candidates", []),
-                    }
-                    prompt_data = self._build_training_prompt_with_images(sample)
-                    messages = prompt_data["messages"]
-                elif "messages" in item:
-                    # raw_image mode: messages already built (shouldn't happen with new approach)
-                    messages = item["messages"]
-                    # Ensure images are PIL Images, not dicts
-                    for msg in messages:
-                        if isinstance(msg.get("content"), list):
-                            for content_item in msg["content"]:
-                                if isinstance(content_item, dict) and content_item.get("type") == "image":
-                                    img = content_item.get("image")
-                                    if not isinstance(img, Image.Image):
-                                        # Try to convert from dict/string if needed
-                                        if isinstance(img, dict):
-                                            # Image was serialized, skip this item
-                                            content_item["image"] = None
-                                        elif isinstance(img, str):
-                                            # Image path, load it
-                                            try:
-                                                content_item["image"] = Image.open(img).convert("RGB")
-                                                content_item["image"] = resize_image_for_qwen3vl(content_item["image"], max_size=448)
-                                            except:
-                                                content_item["image"] = None
-                else:
-                    # text-only mode: create message from prompt
-                    prompt = item["prompt"]
-                    # For text-only mode, use tokenizer directly instead of apply_chat_template
-                    # because apply_chat_template expects multimodal format (content as list)
-                    # Tokenize the prompt directly
-                    inputs = processor.tokenizer(
-                        prompt,
-                        return_tensors="pt",
-                        padding=False,
-                        truncation=True,
-                        max_length=2048,
-                    )
-                    # Ensure inputs are on CPU (in case processor returns GPU tensors)
-                    def ensure_cpu(obj):
-                        """Recursively ensure tensors are on CPU."""
-                        if isinstance(obj, torch.Tensor):
-                            return obj.cpu()
-                        elif isinstance(obj, dict):
-                            return {k: ensure_cpu(v) for k, v in obj.items()}
-                        elif isinstance(obj, (list, tuple)):
-                            return type(obj)(ensure_cpu(item) for item in obj)
-                        else:
-                            return obj
-                    
-                    inputs = ensure_cpu(inputs)
-                    
-                    # Extract input_ids and attention_mask
-                    input_ids = inputs["input_ids"].squeeze(0)  # [seq_len]
-                    attention_mask = inputs.get("attention_mask", torch.ones_like(input_ids))
-                    if attention_mask.dim() > 1:
-                        attention_mask = attention_mask.squeeze(0)
-                    
-                    # Tokenize target (ensure on CPU)
-                    target_tokens = processor.tokenizer.encode(
-                        target,
-                        add_special_tokens=False,
-                        return_tensors="pt"
-                    ).squeeze(0).cpu()  # [target_len]
-                    
-                    # Create full sequence: input_ids + target_tokens
-                    full_input_ids = torch.cat([input_ids, target_tokens])
-                    full_attention_mask = torch.cat([
-                        attention_mask,
-                        torch.ones(len(target_tokens), dtype=attention_mask.dtype)
-                    ])
-                    
-                    # Create labels: -100 for input, target tokens for output
-                    labels = torch.cat([
-                        torch.full_like(input_ids, -100),
-                        target_tokens
-                    ])
-                    
-                    batch_input_ids.append(full_input_ids)
-                    batch_attention_mask.append(full_attention_mask)
-                    batch_labels.append(labels)
-                    continue  # Skip the multimodal processing below
-                
-                # Apply chat template (for multimodal inputs only - raw_image mode)
-                # Note: Keep tensors on CPU - Trainer will handle device placement and pin memory
-                # ✅ For raw_image mode, use larger max_length because images consume many visual tokens
-                # Each image can consume 256-1024 visual tokens, so with 20 candidates we need more space
-                # Qwen3-VL supports up to 8192 tokens, but we use 4096 to balance memory and completeness
-                max_len = 4096 if self.mode == "raw_image" else 2048
-                inputs = processor.apply_chat_template(
-                    messages,
-                    tokenize=True,
-                    add_generation_prompt=True,
-                    return_dict=True,
+                # text-only mode: create message from prompt
+                prompt = item["prompt"]
+                # For text-only mode, use tokenizer directly instead of apply_chat_template
+                # because apply_chat_template expects multimodal format (content as list)
+                # Tokenize the prompt directly
+                inputs = processor.tokenizer(
+                    prompt,
                     return_tensors="pt",
-                    truncation=True,  # ✅ Truncate if too long
-                    max_length=max_len,  # ✅ Larger for raw_image mode (4096), smaller for text-only (2048)
+                    padding=False,
+                    truncation=True,
+                    max_length=2048,
                 )
-                
                 # Ensure inputs are on CPU (in case processor returns GPU tensors)
                 def ensure_cpu(obj):
                     """Recursively ensure tensors are on CPU."""
@@ -609,17 +487,18 @@ class Qwen3VLReranker(BaseReranker):
                 
                 inputs = ensure_cpu(inputs)
                 
+                # Extract input_ids and attention_mask
                 input_ids = inputs["input_ids"].squeeze(0)  # [seq_len]
                 attention_mask = inputs.get("attention_mask", torch.ones_like(input_ids))
                 if attention_mask.dim() > 1:
                     attention_mask = attention_mask.squeeze(0)
                 
-                # Tokenize target
+                # Tokenize target (ensure on CPU)
                 target_tokens = processor.tokenizer.encode(
                     target,
                     add_special_tokens=False,
                     return_tensors="pt"
-                ).squeeze(0)  # [target_len]
+                ).squeeze(0).cpu()  # [target_len]
                 
                 # Create full sequence: input_ids + target_tokens
                 full_input_ids = torch.cat([input_ids, target_tokens])
@@ -696,94 +575,45 @@ class Qwen3VLReranker(BaseReranker):
             except Exception as e:
                 print(f"Warning: Could not enable training mode: {e}")
             
-            # Custom data collator that handles raw_image mode (loads images from item_ids)
-            # For text-only modes, UnslothVisionDataCollator should work with vision models
-            if self.mode == "raw_image":
-                # For raw_image mode, we need to build messages with images from item_ids
-                # Track if we've already warned about UnslothVisionDataCollator failure
-                _unsloth_warned = [False]  # Use list to allow modification in nested function
-                
-                def custom_collate_fn(batch):
-                    """Custom collate function that loads images and uses UnslothVisionDataCollator."""
-                    # Build messages with images for each item in batch
-                    messages_batch = []
-                    batch_with_target = []
-                    for item in batch:
-                        sample = {
-                            "user_id": item.get("user_id"),
-                            "history": item.get("history", []),
-                            "candidates": item.get("candidates", []),
-                        }
-                        prompt_data = self._build_training_prompt_with_images(sample)
-                        messages = prompt_data["messages"]
-                        # Add assistant response
-                        target = item.get("target", "")
-                        messages.append({"role": "assistant", "content": target})
-                        messages_batch.append({"messages": messages})
-                        # Also keep original item format for fallback
-                        batch_with_target.append({
-                            "user_id": item.get("user_id"),
-                            "history": item.get("history", []),
-                            "candidates": item.get("candidates", []),
-                            "target": target,
-                        })
-                    
-                    # Use UnslothVisionDataCollator to process the messages
-                    try:
-                        data_collator = UnslothVisionDataCollator(
-                            self.qwen3vl_model.model,
-                            self.qwen3vl_model.processor.tokenizer
-                        )
-                        return data_collator(messages_batch)
-                    except (TypeError, ValueError) as e:
-                        # If UnslothVisionDataCollator fails, fallback to standard collate
-                        # Only warn once to avoid spam
-                        if not _unsloth_warned[0]:
-                            print(f"Warning: UnslothVisionDataCollator failed: {e}")
-                            print("Falling back to standard collate function...")
-                            _unsloth_warned[0] = True
-                        # Use batch_with_target which has the correct format for collate_fn
-                        return collate_fn(batch_with_target)
-            else:
-                # For text-only modes, try UnslothVisionDataCollator (only works with vision models)
-                # But also prepare a fallback collate_fn in case it fails
-                # Track if we've already warned about UnslothVisionDataCollator failure
-                _text_unsloth_warned = [False]  # Use list to allow modification in nested function
-                
-                def text_only_collate_fn(batch):
-                    """Custom collate function for text-only modes with fallback."""
-                    # Try UnslothVisionDataCollator first
-                    try:
-                        data_collator = UnslothVisionDataCollator(
-                            self.qwen3vl_model.model,
-                            self.qwen3vl_model.processor.tokenizer
-                        )
-                        # Extract messages from batch
-                        messages_batch = [{"messages": item.get("messages", [])} for item in batch]
-                        return data_collator(messages_batch)
-                    except (TypeError, ValueError) as e:
-                        # Fallback to standard collate_fn
-                        # Only warn once to avoid spam
-                        if not _text_unsloth_warned[0]:
-                            print(f"Warning: UnslothVisionDataCollator failed for text-only mode: {e}")
-                            print("Falling back to standard collate function...")
-                            _text_unsloth_warned[0] = True
-                        # Use standard collate_fn which expects prompt and target
-                        return collate_fn(batch)
-                
+            # For text-only modes, try UnslothVisionDataCollator (only works with vision models)
+            # But also prepare a fallback collate_fn in case it fails
+            # Track if we've already warned about UnslothVisionDataCollator failure
+            _text_unsloth_warned = [False]  # Use list to allow modification in nested function
+            
+            def text_only_collate_fn(batch):
+                """Custom collate function for text-only modes with fallback."""
+                # Try UnslothVisionDataCollator first
                 try:
-                    # Test if UnslothVisionDataCollator works
-                    test_collator = UnslothVisionDataCollator(
+                    data_collator = UnslothVisionDataCollator(
                         self.qwen3vl_model.model,
                         self.qwen3vl_model.processor.tokenizer
                     )
-                    # If it works, use text_only_collate_fn which will use it
-                    data_collator = text_only_collate_fn
+                    # Extract messages from batch
+                    messages_batch = [{"messages": item.get("messages", [])} for item in batch]
+                    return data_collator(messages_batch)
                 except (TypeError, ValueError) as e:
-                    print(f"Warning: UnslothVisionDataCollator failed for text-only mode: {e}")
-                    print("Falling back to standard Trainer...")
-                    USE_UNSLOTH_TRAINER = False  # Force fallback
-                    data_collator = None
+                    # Fallback to standard collate_fn
+                    # Only warn once to avoid spam
+                    if not _text_unsloth_warned[0]:
+                        print(f"Warning: UnslothVisionDataCollator failed for text-only mode: {e}")
+                        print("Falling back to standard collate function...")
+                        _text_unsloth_warned[0] = True
+                    # Use standard collate_fn which expects prompt and target
+                    return collate_fn(batch)
+            
+            try:
+                # Test if UnslothVisionDataCollator works
+                test_collator = UnslothVisionDataCollator(
+                    self.qwen3vl_model.model,
+                    self.qwen3vl_model.processor.tokenizer
+                )
+                # If it works, use text_only_collate_fn which will use it
+                data_collator = text_only_collate_fn
+            except (TypeError, ValueError) as e:
+                print(f"Warning: UnslothVisionDataCollator failed for text-only mode: {e}")
+                print("Falling back to standard Trainer...")
+                USE_UNSLOTH_TRAINER = False  # Force fallback
+                data_collator = None
             
             if USE_UNSLOTH_TRAINER:
                 # Training config with vision-specific settings
@@ -809,25 +639,14 @@ class Qwen3VLReranker(BaseReranker):
                     max_length=2048,
                 )
                 
-                # Use SFTTrainer with UnslothVisionDataCollator
-                if self.mode == "raw_image":
-                    # For raw_image mode, use custom collate_fn
-                    trainer = SFTTrainer(
-                        model=self.qwen3vl_model.model,
-                        tokenizer=self.qwen3vl_model.processor.tokenizer,
-                        data_collator=custom_collate_fn,  # Custom collate function for raw_image
-                        train_dataset=hf_train_dataset,
-                        args=training_args,
-                    )
-                else:
-                    # For text-only modes, use UnslothVisionDataCollator directly
-                    trainer = SFTTrainer(
-                        model=self.qwen3vl_model.model,
-                        tokenizer=self.qwen3vl_model.processor.tokenizer,
-                        data_collator=data_collator,  # Must use UnslothVisionDataCollator!
-                        train_dataset=hf_train_dataset,
-                        args=training_args,
-                    )
+                # Use SFTTrainer with UnslothVisionDataCollator for text-only modes
+                trainer = SFTTrainer(
+                    model=self.qwen3vl_model.model,
+                    tokenizer=self.qwen3vl_model.processor.tokenizer,
+                    data_collator=data_collator,  # Must use UnslothVisionDataCollator!
+                    train_dataset=hf_train_dataset,
+                    args=training_args,
+                )
             else:
                 # Fallback to standard Trainer
                 USE_UNSLOTH_TRAINER = False
@@ -842,22 +661,20 @@ class Qwen3VLReranker(BaseReranker):
             print("Using standard transformers Trainer (fallback)...")
             
             # Tokenize dataset (simplified - we'll use collate_fn for full processing)
-            # For raw_image mode, we already have messages, no need to map
             # For text-only modes, we need to keep prompts
-            if self.mode != "raw_image":
-                def prepare_dataset(examples):
-                    # Store prompts and targets for collate_fn
-                    result = {
-                        "target": examples.get("target", []),
-                    }
-                    if "prompt" in examples:
-                        result["prompt"] = examples["prompt"]
-                    return result
-                
-                hf_train_dataset = hf_train_dataset.map(
-                    prepare_dataset,
-                    batched=True,
-                )
+            def prepare_dataset(examples):
+                # Store prompts and targets for collate_fn
+                result = {
+                    "target": examples.get("target", []),
+                }
+                if "prompt" in examples:
+                    result["prompt"] = examples["prompt"]
+                return result
+            
+            hf_train_dataset = hf_train_dataset.map(
+                prepare_dataset,
+                batched=True,
+            )
             
             # Training arguments - set num_train_epochs=1 because we'll call trainer.train() in a loop
             training_args = TrainingArguments(
@@ -944,85 +761,6 @@ class Qwen3VLReranker(BaseReranker):
         # Set back to eval mode
         self.qwen3vl_model.model.eval()
     
-    def _build_training_prompt_with_images(self, sample: Dict) -> Dict:
-        """Build training prompt with raw images for raw_image mode.
-        
-        NOTE: This is the ONLY method that loads and uses images directly.
-        Other modes (caption, semantic_summary) use _build_training_prompt() which only uses text.
-        
-        Args:
-            sample: Training sample
-            
-        Returns:
-            Dict with messages (containing images) and target
-        """
-        history = sample["history"]
-        candidates = sample["candidates"]
-        
-        # Build history text (text-only, consistent with inference)
-        # Chỉ giữ lại max_history (5) items cuối cùng
-        history_texts = []
-        for item_id in history[-self.max_history:]:
-            meta = self.item_meta.get(item_id, {})
-            text = meta.get("text", f"item_{item_id}")
-            # ✅ Truncate item text metadata to prevent it from being too long
-            text = _truncate_item_text(text, max_chars=200)
-            history_texts.append(text)
-        
-        history_text = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
-        
-        # Build candidate images and texts
-        candidate_images = []
-        candidate_texts = []
-        for item_id in candidates:
-            meta = self.item_meta.get(item_id, {})
-            text = meta.get("text", f"item_{item_id}")
-            # ✅ Truncate item text metadata to prevent it from being too long
-            text = _truncate_item_text(text, max_chars=200)
-            image_path = meta.get("image_path") or meta.get("image")
-            
-            if image_path and os.path.isfile(image_path):
-                try:
-                    img = Image.open(image_path).convert("RGB")
-                    # Resize image for Qwen3-VL (max 448px on longer side)
-                    img = resize_image_for_qwen3vl(img, max_size=448)
-                    candidate_images.append(img)
-                    candidate_texts.append(text)
-                except Exception:
-                    candidate_images.append(None)
-                    candidate_texts.append(text)
-            else:
-                candidate_images.append(None)
-                candidate_texts.append(text)
-        
-        # Build content with images (consistent with inference format)
-        content = [
-            {"type": "text", "text": f"""You are a recommendation ranking assistant.
-
-Choose exactly ONE item the user is most likely to interact with next.
-
-User history:
-{history_text}
-
-Candidate items:"""}
-        ]
-        
-        # Add candidate images and text labels
-        num_candidates = len(candidates)
-        for i, (text, img) in enumerate(zip(candidate_texts, candidate_images)):
-            if img is not None:
-                content.append({"type": "image", "image": img})
-            content.append({"type": "text", "text": f"{i+1}. {text}"})
-        
-        content.append({
-            "type": "text",
-            "text": f"\nAnswer with only one number (1-{num_candidates})."
-        })
-        
-        messages = [{"role": "user", "content": content}]
-        
-        return {"messages": messages}
-    
     def _build_training_prompt_text_only(self, sample: Dict) -> Dict:
         """Build text-only training prompt for caption and semantic_summary modes.
         
@@ -1039,7 +777,6 @@ Candidate items:"""}
         """Build training prompt from sample.
         
         NOTE: This method does NOT load images. It only uses text, caption, or semantic_summary.
-        Only raw_image mode uses _build_training_prompt_with_images() which loads images directly.
         
         Args:
             sample: Training sample with history, candidates, target_item

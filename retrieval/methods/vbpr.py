@@ -304,7 +304,8 @@ class VBPRRetriever(BaseRetriever):
         
         skipped_users = 0
         for user_id, gt_items in split.items():
-            if user_id > self.num_user:
+            # ✅ FIX: Check both user_id > num_user and user_id < 1 to match Hit calculation
+            if user_id > self.num_user or user_id < 1:
                 skipped_users += 1
                 continue
             user_ids_list.append(user_id - 1)  # Convert to 0-indexed
@@ -312,7 +313,7 @@ class VBPRRetriever(BaseRetriever):
             history_items_list.append(self.user_history.get(user_id, []))
         
         if skipped_users > 0:
-            print(f"[VBPRRetriever] Warning: Skipped {skipped_users} users with user_id > {self.num_user}")
+            print(f"[VBPRRetriever] Warning: Skipped {skipped_users} users with user_id > {self.num_user} or < 1")
         
         if not user_ids_list:
             print(f"[VBPRRetriever] Warning: No valid users in split (total: {len(split)}, skipped: {skipped_users})")
@@ -346,11 +347,12 @@ class VBPRRetriever(BaseRetriever):
                 top_items_batch = (top_items_batch.cpu().numpy() + 1)  # Convert back to 1-indexed
                 
                 # Compute recall for each user in batch
+                # ✅ FIX: Use standard recall formula (hits / len(gt_items)) instead of min(k, len(gt_items))
                 for j, (top_items, gt_items) in enumerate(zip(top_items_batch, batch_gt_items)):
                     top_items_list = top_items.tolist()
                     hits = len(set(top_items_list) & set(gt_items))
                     if len(gt_items) > 0:
-                        recalls.append(hits / min(k, len(gt_items)))
+                        recalls.append(hits / len(gt_items))  # Standard recall formula
         
         return float(np.mean(recalls)) if recalls else 0.0
 

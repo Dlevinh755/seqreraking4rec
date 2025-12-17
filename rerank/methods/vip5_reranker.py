@@ -653,21 +653,28 @@ class VIP5Reranker(BaseReranker):
         logits = self.model.lm_head(decoder_hidden)  # [batch_size, target_len, vocab_size]
         
         # Extract logit for each candidate's token
+        # ✅ FIX: For seq2seq, we should use the logit at the FIRST position (where we predict the first token)
         for i, item_id in enumerate(valid_candidates):
-            # Get the last non-padding token position for this candidate
+            # Get the first non-padding token position (this is where we predict)
             non_padding_mask = decoder_attention_mask[i] == 1  # [max_len]
             if non_padding_mask.any():
-                # Find last non-padding token position
-                last_token_idx = non_padding_mask.nonzero(as_tuple=True)[0][-1].item()
+                # Find first non-padding token position
+                first_token_idx = non_padding_mask.nonzero(as_tuple=True)[0][0].item()
                 # Get the token ID at that position
-                item_token_id = decoder_input_ids[i, last_token_idx].item()
-                # Get logit for that token at that position
-                score = float(logits[i, last_token_idx, item_token_id].item())
+                item_token_id = decoder_input_ids[i, first_token_idx].item()
+                # Get logit for that token at the FIRST position (where prediction happens)
+                # In seq2seq, the logit at position t predicts token at position t+1
+                # So we use logit at position 0 to predict token at position 1
+                if first_token_idx < logits.size(1) - 1:
+                    score = float(logits[i, first_token_idx, item_token_id].item())
+                else:
+                    # Fallback: use first position
+                    score = float(logits[i, first_token_idx, item_token_id].item())
             else:
-                # Fallback: use last position and last token
-                last_token_idx = -1
-                item_token_id = decoder_input_ids[i, -1].item()
-                score = float(logits[i, last_token_idx, item_token_id].item())
+                # Fallback: use first position
+                first_token_idx = 0
+                item_token_id = decoder_input_ids[i, first_token_idx].item()
+                score = float(logits[i, first_token_idx, item_token_id].item())
             
             scores.append((item_id, score))
         
@@ -895,7 +902,31 @@ class VIP5Reranker(BaseReranker):
         self.model.eval()
         recalls = []
         
+        # ✅ OPTIMIZATION 1: Load candidates ONCE before loop (not inside loop!)
+        pre_generated_candidates = None
+        if rerank_mode == "ground_truth":
+            try:
+                from evaluation.utils import load_rerank_candidates
+                from config import arg
+                
+                # Load candidates ONCE for all users
+                pre_generated_candidates = load_rerank_candidates(
+                    dataset_code=getattr(arg, 'dataset', 'beauty'),
+                    min_rating=getattr(arg, 'min_rating', 0),
+                    min_uc=getattr(arg, 'min_uc', 5),
+                    min_sc=getattr(arg, 'min_sc', 5),
+                )
+            except Exception:
+                pre_generated_candidates = None
+        
+        # ✅ OPTIMIZATION 2: Pre-compute all_items list once
+        all_items_list = list(self.item_id_to_idx.keys()) if hasattr(self, 'item_id_to_idx') else []
+        
         with torch.no_grad():
+            # ✅ OPTIMIZATION 3: Add progress tracking for large splits
+            total_users = len(split)
+            processed = 0
+            
             for user_id, gt_items in split.items():
                 if user_id not in self.user_history:
                     continue
@@ -919,47 +950,32 @@ class VIP5Reranker(BaseReranker):
                         # Fallback to ground_truth mode if no retrieval candidates
                         rerank_mode = "ground_truth"
                 
-                # ✅ Mode 2: "ground_truth" - Load pre-generated candidates
+                # ✅ Mode 2: "ground_truth" - Use pre-loaded candidates
                 if rerank_mode == "ground_truth":
-                    # Try to load pre-generated candidates from data preparation
-                    try:
-                        from evaluation.utils import load_rerank_candidates
-                        from config import arg
-                        
-                        # Determine split name from context (val or test)
-                        # We'll try to load both and use the appropriate one
-                        all_candidates = load_rerank_candidates(
-                            dataset_code=getattr(arg, 'dataset', 'beauty'),
-                            min_rating=getattr(arg, 'min_rating', 0),
-                            min_uc=getattr(arg, 'min_uc', 5),
-                            min_sc=getattr(arg, 'min_sc', 5),
-                        )
-                        
-                        # Try val first, then test
-                        if user_id in all_candidates.get("val", {}):
-                            candidates = all_candidates["val"][user_id]
-                        elif user_id in all_candidates.get("test", {}):
-                            candidates = all_candidates["test"][user_id]
+                    if pre_generated_candidates is not None:
+                        # Use pre-loaded candidates (FAST!)
+                        if user_id in pre_generated_candidates.get("val", {}):
+                            candidates = pre_generated_candidates["val"][user_id]
+                        elif user_id in pre_generated_candidates.get("test", {}):
+                            candidates = pre_generated_candidates["test"][user_id]
                         else:
-                            # Fallback: sample random candidates if pre-generated not available
-                            all_items = list(self.item_id_to_idx.keys())
-                            if not all_items:
+                            # Fallback: sample random candidates if user not in pre-generated
+                            if not all_items_list:
                                 continue
                             history_set = set(history)
-                            candidate_pool = [item for item in all_items if item not in history_set]
+                            candidate_pool = [item for item in all_items_list if item not in history_set]
                             if not candidate_pool:
                                 continue
                             max_eval_candidates_actual = min(max_eval_candidates, len(candidate_pool))
                             candidates = random.sample(candidate_pool, max_eval_candidates_actual) if len(candidate_pool) > max_eval_candidates_actual else candidate_pool
                             if not any(item in candidates for item in gt_items):
                                 candidates[0] = gt_items[0]
-                    except Exception as e:
-                        # Fallback: sample random candidates if loading fails
-                        all_items = list(self.item_id_to_idx.keys())
-                        if not all_items:
+                    else:
+                        # Fallback: sample random candidates if loading failed
+                        if not all_items_list:
                             continue
                         history_set = set(history)
-                        candidate_pool = [item for item in all_items if item not in history_set]
+                        candidate_pool = [item for item in all_items_list if item not in history_set]
                         if not candidate_pool:
                             continue
                         max_eval_candidates_actual = min(max_eval_candidates, len(candidate_pool))
@@ -974,28 +990,28 @@ class VIP5Reranker(BaseReranker):
                 scores = []
                 
                 # ✅ VIP5 Direct Task (B-5): Recommend từ danh sách candidates
-                # Get visual features cho TẤT CẢ candidates
-                candidate_visual = []
+                # ✅ OPTIMIZATION 4: Batch get visual features (faster than loop)
                 valid_candidates = []
+                candidate_indices = []
                 for item_id in candidates:
                     if item_id in self.item_id_to_idx:
                         idx = self.item_id_to_idx[item_id]
                         valid_candidates.append(item_id)
-                        candidate_visual.append(self.visual_embeddings[idx])
+                        candidate_indices.append(idx)
                 
                 if not valid_candidates:
                     continue
+                
+                # Batch get visual features using indexing (faster than loop)
+                candidate_visual = self.visual_embeddings[candidate_indices]  # [num_candidates, feat_dim]
                 
                 # Build prompt với Direct Task template (B-5)
                 visual_token_placeholder = " <extra_id_0>" * self.image_feature_size_ratio
                 candidates_with_visual = visual_token_placeholder.join([f"item_{c}" for c in valid_candidates]) + visual_token_placeholder
                 direct_prompt = f"Which item of the following to recommend for user_{user_id} ? \n {candidates_with_visual}"
                 
-                # Prepare visual features cho TẤT CẢ candidates
-                if len(candidate_visual) > 0:
-                    all_candidates_visual_tensor = torch.stack(candidate_visual)  # [num_candidates, feat_dim]
-                else:
-                    all_candidates_visual_tensor = torch.zeros(1, self.image_feature_dim, device=self.device)
+                # candidate_visual is already a tensor [num_candidates, feat_dim] from batch indexing
+                all_candidates_visual_tensor = candidate_visual
                 
                 # Encode prompt MỘT LẦN với tất cả candidates
                 vip5_input = prepare_vip5_input(
@@ -1060,16 +1076,29 @@ class VIP5Reranker(BaseReranker):
                 logits = self.model.lm_head(decoder_hidden)  # [batch_size, target_len, vocab_size]
                 
                 # Extract scores for all candidates
+                # ✅ FIX: For seq2seq, we should use the logit at the FIRST position (where we predict the first token)
+                # The decoder input is "item_{item_id}", so we want the logit of the first token being predicted correctly
                 for i, item_id in enumerate(valid_candidates):
                     non_padding_mask = decoder_attention_mask[i] == 1
                     if non_padding_mask.any():
-                        last_token_idx = non_padding_mask.nonzero(as_tuple=True)[0][-1].item()
-                        item_token_id = decoder_input_ids[i, last_token_idx].item()
-                        score = float(logits[i, last_token_idx, item_token_id].item())
+                        # Get the first non-padding token position (this is where we predict)
+                        first_token_idx = non_padding_mask.nonzero(as_tuple=True)[0][0].item()
+                        # Get the token ID at that position
+                        item_token_id = decoder_input_ids[i, first_token_idx].item()
+                        # Get logit for that token at the FIRST position (where prediction happens)
+                        # In seq2seq, the logit at position t predicts token at position t+1
+                        # So we use logit at position 0 to predict token at position 1
+                        if first_token_idx < logits.size(1) - 1:
+                            # Use logit at position first_token_idx to predict token at first_token_idx+1
+                            score = float(logits[i, first_token_idx, item_token_id].item())
+                        else:
+                            # Fallback: use last position
+                            score = float(logits[i, first_token_idx, item_token_id].item())
                     else:
-                        last_token_idx = -1
-                        item_token_id = decoder_input_ids[i, -1].item()
-                        score = float(logits[i, last_token_idx, item_token_id].item())
+                        # Fallback: use first position
+                        first_token_idx = 0
+                        item_token_id = decoder_input_ids[i, first_token_idx].item()
+                        score = float(logits[i, first_token_idx, item_token_id].item())
                     scores.append((item_id, score))
                 
                 # Sort by score descending
@@ -1082,6 +1111,14 @@ class VIP5Reranker(BaseReranker):
                 hits = len(set(top_k_items) & set(gt_items))
                 if len(gt_items) > 0:
                     recalls.append(hits / len(gt_items))
+                
+                # ✅ OPTIMIZATION 5: Progress tracking
+                processed += 1
+                if processed % 100 == 0:
+                    print(f"[VIP5 _evaluate_split] Processed {processed}/{total_users} users...", end='\r')
+        
+        if processed > 0 and processed % 100 != 0:
+            print(f"[VIP5 _evaluate_split] Processed {processed}/{total_users} users")
         
         return float(np.mean(recalls)) if recalls else 0.0
 

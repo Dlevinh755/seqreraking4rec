@@ -87,12 +87,30 @@ def main():
     reranker_kwargs = {"top_k": args.rerank_top_k}
     
     # Add method-specific kwargs
-    if args.rerank_method == "qwen":
-        max_candidates = getattr(arg, 'qwen_max_candidates', None)
-        if max_candidates is not None:
-            reranker_kwargs["max_candidates"] = max_candidates
-    elif args.rerank_method == "qwen3vl":
-        reranker_kwargs["mode"] = args.qwen3vl_mode
+    if args.rerank_method in ["qwen", "qwen3vl"]:
+        # Unified reranker: use qwen_mode and qwen_model
+        qwen_mode = getattr(arg, 'qwen_mode', None)
+        qwen_model = getattr(arg, 'qwen_model', None)
+        
+        # Backward compatibility: if qwen3vl_mode is set, use it
+        if args.rerank_method == "qwen3vl" and qwen_mode is None:
+            qwen3vl_mode_legacy = getattr(arg, 'qwen3vl_mode', 'caption')
+            # Map legacy modes to new modes
+            mode_mapping = {
+                'caption': 'caption',
+                'semantic_summary': 'semantic_summary',
+                'semantic_summary_small': 'semantic_summary'  # Map to semantic_summary
+            }
+            qwen_mode = mode_mapping.get(qwen3vl_mode_legacy, 'caption')
+            # For semantic_summary_small, use qwen3-0.6b model
+            if qwen3vl_mode_legacy == 'semantic_summary_small' and qwen_model is None:
+                qwen_model = 'qwen3-0.6b'
+        
+        if qwen_mode:
+            reranker_kwargs["mode"] = qwen_mode
+        if qwen_model:
+            reranker_kwargs["model"] = qwen_model
+        
         max_candidates = getattr(arg, 'qwen_max_candidates', None)
         if max_candidates is not None:
             reranker_kwargs["max_candidates"] = max_candidates
@@ -141,24 +159,18 @@ def main():
             training_kwargs["item_id2text"] = item_id2text
             training_kwargs["user_history"] = user_history_text
         
-        # Add item_meta for Qwen3-VL
-        if args.rerank_method == "qwen3vl":
-            training_kwargs["item_meta"] = item_meta
-            # ✅ For raw_image mode, pass item_ids (not image paths) so we can load full metadata
-            if args.qwen3vl_mode == "raw_image":
-                # Build user history with item_ids for raw_image mode
-                # This allows loading both text and image from item_meta
-                user_history_item_ids = {}
-                for user_id, items in train.items():
-                    # Only include items that have metadata
-                    user_history_item_ids[user_id] = [
-                        item_id for item_id in items
-                        if item_id in item_meta
-                    ]
-                training_kwargs["user_history"] = user_history_item_ids
+        # Add item_meta for multimodal modes (caption, semantic_summary)
+        if args.rerank_method in ["qwen", "qwen3vl"]:
+            # Get mode from kwargs or config
+            qwen_mode = reranker_kwargs.get("mode", "text_only")
+            if qwen_mode in ["caption", "semantic_summary"]:
+                training_kwargs["item_meta"] = item_meta
     
-    # Prepare training data for Qwen LLM reranker (after item_id2text is loaded)
-    if args.rerank_method == "qwen":
+    # Prepare training data for Qwen reranker (text_only mode)
+    if args.rerank_method in ["qwen", "qwen3vl"]:
+        # Check if mode is text_only
+        qwen_mode = reranker_kwargs.get("mode", "text_only")
+        if qwen_mode == "text_only":
         if not item_id2text:
             print("Warning: item_id2text not available. Qwen reranker will be loaded without training.")
             print("  Note: Qwen reranker requires item text for training. Ensure dataset has text data.")
@@ -258,7 +270,7 @@ def main():
     
     # Evaluate
     print(f"\n[4/4] Evaluating reranker...")
-    ks = [5, 10, 20]
+    ks = [1, 5, 10, 20]
     
     def recommend_fn(user_id, ground_truth=None):
         """Recommendation function for evaluation."""
@@ -328,16 +340,16 @@ def main():
     print(f"Rerank Method: {args.rerank_method}")
     print("-" * 80)
     print(f"Val Metrics:")
-    print(f"  {'Metric':<12} {'@5':>10} {'@10':>10} {'@20':>10}")
+    print(f"  {'Metric':<12} {'@1':>10} {'@5':>10} {'@10':>10} {'@20':>10}")
     for metric_name in ["recall", "ndcg", "hit"]:
         values = [val_metrics.get(f"{metric_name}@{k}", 0.0) for k in ks]
-        print(f"  {metric_name.capitalize():<12} {values[0]:>10.4f} {values[1]:>10.4f} {values[2]:>10.4f}")
+        print(f"  {metric_name.capitalize():<12} {values[0]:>10.4f} {values[1]:>10.4f} {values[2]:>10.4f} {values[3]:>10.4f}")
     
     print(f"\nTest Metrics:")
-    print(f"  {'Metric':<12} {'@5':>10} {'@10':>10} {'@20':>10}")
+    print(f"  {'Metric':<12} {'@1':>10} {'@5':>10} {'@10':>10} {'@20':>10}")
     for metric_name in ["recall", "ndcg", "hit"]:
         values = [test_metrics.get(f"{metric_name}@{k}", 0.0) for k in ks]
-        print(f"  {metric_name.capitalize():<12} {values[0]:>10.4f} {values[1]:>10.4f} {values[2]:>10.4f}")
+        print(f"  {metric_name.capitalize():<12} {values[0]:>10.4f} {values[1]:>10.4f} {values[2]:>10.4f} {values[3]:>10.4f}")
     print("=" * 80)
 
 
