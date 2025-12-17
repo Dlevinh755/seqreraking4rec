@@ -350,13 +350,13 @@ class LLMModel:
                 add_generation_prompt=False
             )
             
-            # Tokenize prompt with same settings
+            # Tokenize prompt with same settings (including padding to match input_ids)
             prompt_tokenized = self.tokenizer(
                 prompt_text,
                 add_special_tokens=True,
                 truncation=True,
                 max_length=2048,
-                padding=False,  # Don't pad when calculating length
+                padding="max_length",  # ✅ Pad to match input_ids format
             )
             
             prompt_input_ids = prompt_tokenized["input_ids"]
@@ -369,15 +369,30 @@ class LLMModel:
                 prompt_input_ids = [int(x) for x in list(prompt_input_ids)]
             
             # Find matching position in input_ids
-            prompt_len = min(len(prompt_input_ids), len(input_ids))
+            # Since both are padded to max_length, find where they start to differ
+            prompt_len = len(input_ids)  # Default: mask all (conservative)
             
-            # Verify match at the beginning
-            if prompt_len > 0:
-                matches = sum(1 for i in range(min(prompt_len, len(input_ids))) 
-                            if i < len(prompt_input_ids) and prompt_input_ids[i] == input_ids[i])
-                if matches < prompt_len * 0.7:  # Less than 70% match
-                    # Fallback: use conservative estimate
-                    prompt_len = max(0, len(input_ids) - 20)
+            # Find the first position where tokens differ (accounting for padding)
+            pad_token_id = self.tokenizer.pad_token_id if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None else 0
+            
+            for i in range(min(len(prompt_input_ids), len(input_ids))):
+                # If we hit padding in prompt, that's where it ends
+                if prompt_input_ids[i] == pad_token_id:
+                    prompt_len = i
+                    break
+                
+                # Skip padding tokens in input_ids when comparing
+                if input_ids[i] == pad_token_id:
+                    continue
+                
+                # If tokens differ, this is where assistant response starts
+                if prompt_input_ids[i] != input_ids[i]:
+                    prompt_len = i
+                    break
+            
+            # If no difference found, use conservative estimate
+            if prompt_len >= len(input_ids):
+                prompt_len = max(0, len(input_ids) - 20)
         else:
             prompt_len = max(0, len(input_ids) - 10)
         
