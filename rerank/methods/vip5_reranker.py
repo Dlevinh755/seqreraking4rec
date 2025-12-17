@@ -292,6 +292,7 @@ class VIP5Reranker(BaseReranker):
                         adapter_config.d_model = config.d_model  # For adapter
                         adapter_config.use_single_adapter = False
                         adapter_config.reduction_factor = 16  # Default reduction factor
+                        adapter_config.track_z = False  # Don't track intermediate activations by default
                     except ImportError:
                         print("Warning: AdapterConfig not available. Adapters may not work correctly.")
                         adapter_config = None

@@ -53,6 +53,15 @@ class AdapterConfig(object):
 
     # whether using single adapter for all tasks
     use_single_adapter = False
+    
+    # Track intermediate activations (z) for debugging/analysis
+    track_z = False
+    
+    # Tasks list (required for AdapterController)
+    tasks = None
+    
+    # d_model for adapter (required)
+    d_model = None
 
 
 class MetaAdapterConfig(AdapterConfig):
