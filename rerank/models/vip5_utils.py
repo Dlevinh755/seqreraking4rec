@@ -69,14 +69,22 @@ def prepare_vip5_input(
     num_items = visual_features.size(0) if visual_features is not None else 0
     
     if num_visual_tokens > 0 and num_items > 0:
+        # ✅ Get device from visual_features to ensure all tensors are on the same device
+        device = visual_features.device
+        
         # Reshape visual features to match visual tokens
         # Each item gets image_feature_size_ratio visual tokens
         expected_visual_tokens = num_items * image_feature_size_ratio
         if num_visual_tokens != expected_visual_tokens:
             # Pad or truncate
             if num_visual_tokens < expected_visual_tokens:
-                # Pad with zeros
-                padding = torch.zeros(expected_visual_tokens - num_visual_tokens, visual_features.size(1))
+                # Pad with zeros (on same device as visual_features)
+                padding = torch.zeros(
+                    expected_visual_tokens - num_visual_tokens, 
+                    visual_features.size(1),
+                    device=device,
+                    dtype=visual_features.dtype
+                )
                 vis_feats = torch.cat([visual_features.repeat_interleave(image_feature_size_ratio, dim=0), padding])
             else:
                 # Truncate
@@ -87,8 +95,16 @@ def prepare_vip5_input(
         # Reshape to [1, V_W_L, feat_dim] for VIP5
         vis_feats = vis_feats.unsqueeze(0)  # [1, num_visual_tokens, feat_dim]
     else:
-        # No visual features
-        vis_feats = torch.zeros(1, num_visual_tokens, visual_features.size(1) if visual_features is not None else 512)
+        # No visual features - determine device and dtype from visual_features if available
+        if visual_features is not None:
+            device = visual_features.device
+            dtype = visual_features.dtype
+            feat_dim = visual_features.size(1)
+        else:
+            device = torch.device('cpu')
+            dtype = torch.float32
+            feat_dim = 512
+        vis_feats = torch.zeros(1, num_visual_tokens, feat_dim, device=device, dtype=dtype)
     
     # Attention mask
     attention_mask = (input_ids != tokenizer.pad_token_id).long()

@@ -27,7 +27,7 @@ except ImportError:
     print("Warning: transformers library not available. BLIP/BLIP2 caption generation will be disabled.")
 
 
-BATCH_SIZE = 8  # Batch size for caption generation
+BATCH_SIZE = 16  # Batch size for caption generation
 
 
 def _load_blip2_model(device: torch.device):
