@@ -337,32 +337,51 @@ class LLMModel:
         # ✅ Ensure labels is a copy of input_ids as a flat list
         labels = input_ids.copy()
         
-        # Calculate prompt length by tokenizing prompt separately
-        # Prompt = all messages except the last (assistant response)
-        prompt_messages = messages[:-1]
-        prompt_text = self.tokenizer.apply_chat_template(
-            prompt_messages,
-            tokenize=False,
-            add_generation_prompt=False
-        )
-        
-        # Tokenize prompt to get its length
-        prompt_tokenized = self.tokenizer(
-            prompt_text,
-            add_special_tokens=False,
-            truncation=False,
-        )
-        
-        # ✅ Ensure prompt_input_ids is a flat list
-        prompt_input_ids = prompt_tokenized["input_ids"]
-        if isinstance(prompt_input_ids, list) and len(prompt_input_ids) > 0 and isinstance(prompt_input_ids[0], list):
-            # Flatten nested list
-            prompt_input_ids = [item for sublist in prompt_input_ids for item in sublist]
-        elif not isinstance(prompt_input_ids, list):
-            # Convert to list if it's a tensor or other type
-            prompt_input_ids = list(prompt_input_ids)
-        
-        prompt_len = len(prompt_input_ids)
+        # ✅ Simple and reliable approach: Find assistant response by decoding and searching
+        # This works better with chat templates that add special tokens
+        assistant_message = messages[-1] if messages else None
+        if assistant_message and assistant_message.get("role") == "assistant":
+            assistant_content = str(assistant_message.get("content", ""))
+            
+            # Decode the full text to find where assistant response starts
+            try:
+                decoded_text = self.tokenizer.decode(input_ids, skip_special_tokens=False)
+                
+                # Find the position of assistant content in decoded text
+                # Look for common patterns like "assistant" or the actual content
+                assistant_pos = -1
+                
+                # Try to find assistant role marker or content
+                if "assistant" in decoded_text.lower():
+                    # Find position after "assistant" marker
+                    assistant_marker = "assistant"
+                    pos = decoded_text.lower().rfind(assistant_marker)
+                    if pos >= 0:
+                        # Tokenize from that position to get token index
+                        text_before_assistant = decoded_text[:pos + len(assistant_marker)]
+                        tokens_before = self.tokenizer.encode(text_before_assistant, add_special_tokens=False)
+                        assistant_pos = len(tokens_before)
+                
+                # If not found, try to find the actual assistant content
+                if assistant_pos < 0 and assistant_content:
+                    pos = decoded_text.find(assistant_content)
+                    if pos >= 0:
+                        text_before_content = decoded_text[:pos]
+                        tokens_before = self.tokenizer.encode(text_before_content, add_special_tokens=False)
+                        assistant_pos = len(tokens_before)
+                
+                # Use found position or fallback
+                if assistant_pos > 0 and assistant_pos < len(input_ids):
+                    prompt_len = assistant_pos
+                else:
+                    # Fallback: mask all except last 10% of tokens (assume response is at the end)
+                    prompt_len = int(len(input_ids) * 0.9)
+            except Exception:
+                # If decoding fails, use conservative estimate
+                prompt_len = max(0, len(input_ids) - 10)
+        else:
+            # No assistant message, mask all except last few tokens
+            prompt_len = max(0, len(input_ids) - 5)
         
         # ✅ Ensure labels is a flat list before masking
         if not isinstance(labels, list):
