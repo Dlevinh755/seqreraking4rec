@@ -561,10 +561,39 @@ class VIP5Reranker(BaseReranker):
             
             # Get encoder hidden states [1, seq_len, d_model]
             encoder_hidden = encoder_outputs.last_hidden_state
+            encoder_attention_mask = attention_mask
             
-            # Use mean pooling of encoder output as score
-            # In full implementation, could use decoder to generate and score
-            score = float(encoder_hidden.mean(dim=1).squeeze(0).norm().item())
+            # ✅ FIX: Use decoder to predict probability of item_id (not just encoder norm)
+            # VIP5 is a seq2seq model, should use decoder to predict item_id
+            # Decoder input: "item_{item_id}" (same format as training target)
+            target_text = f"item_{item_id}"
+            decoder_input_ids = self.tokenizer.encode(target_text, return_tensors="pt", add_special_tokens=False).to(self.device)
+            
+            # Decode with VIP5 decoder
+            decoder_outputs = self.model.decoder(
+                input_ids=decoder_input_ids,
+                encoder_hidden_states=encoder_hidden,
+                encoder_attention_mask=encoder_attention_mask,
+                return_dict=True,
+                task="sequential",
+            )
+            
+            # Get decoder output [1, target_len, d_model]
+            decoder_hidden = decoder_outputs.last_hidden_state
+            
+            # Apply lm_head to get logits [1, target_len, vocab_size]
+            if self.model.config.tie_word_embeddings:
+                decoder_hidden = decoder_hidden * (self.model.model_dim ** -0.5)
+            logits = self.model.lm_head(decoder_hidden)  # [1, target_len, vocab_size]
+            
+            # Get logits for the last token (final prediction)
+            last_token_logits = logits[0, -1, :]  # [vocab_size]
+            
+            # Extract logit for item_id token
+            item_token_id = decoder_input_ids[0, -1].item()  # Last token is item_id token
+            
+            # Score = logit of item_id token (higher = more likely)
+            score = float(last_token_logits[item_token_id].item())
             
             scores.append((item_id, score))
         
@@ -809,13 +838,11 @@ class VIP5Reranker(BaseReranker):
                     if item_id not in self.item_id_to_idx:
                         continue
                     
-                    # Build prompt for this specific candidate
-                    candidate_prompt = build_rerank_prompt(
-                        user_id,
-                        history,
-                        [item_id],  # Single candidate
-                        template="Given the following purchase history of user_{} : \n {} \n predict next possible item to be purchased by the user ?"
-                    )
+                    # ✅ FIX: Build prompt with ONLY history (not including candidate)
+                    # Model should predict item_id from history, not from history + candidate
+                    # This matches training format where target is predicted from history only
+                    history_str = ", ".join([f"item_{h}" for h in history])
+                    candidate_prompt = f"Given the following purchase history of user_{user_id} : \n {history_str} \n predict next possible item to be purchased by the user ?"
                     
                     # Get visual feature for this candidate
                     idx = self.item_id_to_idx[item_id]
@@ -850,9 +877,40 @@ class VIP5Reranker(BaseReranker):
                     
                     # Get encoder hidden states [1, seq_len, d_model]
                     encoder_hidden = encoder_outputs.last_hidden_state
+                    encoder_attention_mask = attention_mask
                     
-                    # Use mean pooling of encoder output as score
-                    score = float(encoder_hidden.mean(dim=1).squeeze(0).norm().item())
+                    # ✅ FIX: Use decoder to predict probability of item_id (not just encoder norm)
+                    # VIP5 is a seq2seq model, should use decoder to predict item_id
+                    # Decoder input: "item_{item_id}" (same format as training target)
+                    target_text = f"item_{item_id}"
+                    decoder_input_ids = self.tokenizer.encode(target_text, return_tensors="pt", add_special_tokens=False).to(self.device)
+                    
+                    # Decode with VIP5 decoder
+                    decoder_outputs = self.model.decoder(
+                        input_ids=decoder_input_ids,
+                        encoder_hidden_states=encoder_hidden,
+                        encoder_attention_mask=encoder_attention_mask,
+                        return_dict=True,
+                        task="sequential",
+                    )
+                    
+                    # Get decoder output [1, target_len, d_model]
+                    decoder_hidden = decoder_outputs.last_hidden_state
+                    
+                    # Apply lm_head to get logits [1, target_len, vocab_size]
+                    if self.model.config.tie_word_embeddings:
+                        decoder_hidden = decoder_hidden * (self.model.model_dim ** -0.5)
+                    logits = self.model.lm_head(decoder_hidden)  # [1, target_len, vocab_size]
+                    
+                    # Get logits for the last token (final prediction)
+                    last_token_logits = logits[0, -1, :]  # [vocab_size]
+                    
+                    # Extract logit for item_id token
+                    # Find token_id for "item_{item_id}" in vocabulary
+                    item_token_id = decoder_input_ids[0, -1].item()  # Last token is item_id token
+                    
+                    # Score = logit of item_id token (higher = more likely)
+                    score = float(last_token_logits[item_token_id].item())
                     
                     scores.append((item_id, score))
                 
@@ -862,10 +920,10 @@ class VIP5Reranker(BaseReranker):
                 # Get top-K item IDs
                 top_k_items = [item_id for item_id, _ in scores[:k]]
                 
-                # Compute recall
+                # Compute recall (công thức chuẩn: hits / len(gt_items))
                 hits = len(set(top_k_items) & set(gt_items))
                 if len(gt_items) > 0:
-                    recalls.append(hits / min(k, len(gt_items)))
+                    recalls.append(hits / len(gt_items))
         
         return float(np.mean(recalls)) if recalls else 0.0
 

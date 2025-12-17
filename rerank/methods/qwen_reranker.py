@@ -38,14 +38,14 @@ class QwenReranker(BaseReranker):
         self,
         top_k: int = 50,
         model_name: Optional[str] = None,
-        max_history: int = 10,
+        max_history: int = 5,
         max_candidates: Optional[int] = None,
     ) -> None:
         """
         Args:
             top_k: Số lượng items trả về sau rerank
             model_name: Tên model (default: "Qwen/Qwen3-0.6B")
-            max_history: Số lượng items trong history để dùng cho prompt
+            max_history: Số lượng items trong history để dùng cho prompt (default: 5, chỉ giữ 5 items cuối cùng)
             max_candidates: Maximum number of candidates to process (None = no limit, uses all from retrieval)
             
         Note:
@@ -139,9 +139,9 @@ class QwenReranker(BaseReranker):
         if self.max_candidates is not None and original_count > self.max_candidates:
             candidates = candidates[:self.max_candidates]
         
-        # Lấy user history
+        # Lấy user history - chỉ giữ lại max_history (5) items cuối cùng nếu quá dài
         history = self.user_history.get(user_id, [])
-        history = history[-self.max_history:]  # Chỉ lấy max_history items gần nhất
+        history = history[-self.max_history:]  # Chỉ lấy max_history items cuối cùng (default: 5)
         
         # Build prompt (sử dụng số thay vì chữ cái)
         prompt = build_prompt_from_candidates(

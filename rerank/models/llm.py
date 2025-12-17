@@ -296,30 +296,50 @@ class LLMModel:
             **{f"NDCG@{k}": sum(v)/len(v) for k, v in ndcgs.items()}
         }
     def tokenize_response_only(self, example):
+        """Tokenize training example for Unsloth.
+        
+        Uses apply_chat_template to properly format messages and create labels.
+        """
         messages = example["messages"]
-
-        prompt = ""
-        for m in messages[:-1]:
-            prompt += f"{m['role'].upper()}: {m['content']}\n"
-
-        response = messages[-1]["content"]
-
-        full_text = prompt + response
-
-        # ✅ Add padding=True to ensure consistent length for batching
+        
+        # ✅ Use apply_chat_template for proper formatting (Unsloth-compatible)
+        # This ensures proper tokenization and label creation
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False
+        )
+        
+        # Tokenize the full text
         tokenized = self.tokenizer(
-            full_text,
+            text,
             truncation=True,
             max_length=2048,
-            padding="max_length",  # ✅ Pad to max_length for consistent batching
+            padding="max_length",
+            return_tensors=None,  # Return lists, not tensors (for Dataset.map)
         )
-
-        # ✅ Convert labels to list (not nested) and ensure proper format
-        labels = tokenized["input_ids"].copy()
         
-        # Calculate prompt length (without special tokens for accurate masking)
+        # Create labels: copy input_ids and mask prompt tokens
+        # ✅ Ensure input_ids is a flat list (not nested)
+        input_ids = tokenized["input_ids"]
+        if isinstance(input_ids, list) and len(input_ids) > 0 and isinstance(input_ids[0], list):
+            # Flatten nested list
+            input_ids = [item for sublist in input_ids for item in sublist]
+        
+        labels = input_ids.copy() if isinstance(input_ids, list) else list(input_ids)
+        
+        # Calculate prompt length by tokenizing prompt separately
+        # Prompt = all messages except the last (assistant response)
+        prompt_messages = messages[:-1]
+        prompt_text = self.tokenizer.apply_chat_template(
+            prompt_messages,
+            tokenize=False,
+            add_generation_prompt=False
+        )
+        
+        # Tokenize prompt to get its length
         prompt_tokenized = self.tokenizer(
-            prompt,
+            prompt_text,
             add_special_tokens=False,
             truncation=False,
         )
@@ -329,8 +349,13 @@ class LLMModel:
         # Only mask if prompt_len is within the sequence length
         if prompt_len < len(labels):
             labels[:prompt_len] = [-100] * prompt_len
+        else:
+            # If prompt is longer than sequence, mask all except last few tokens
+            # This shouldn't happen with proper truncation, but handle it anyway
+            labels[:-1] = [-100] * (len(labels) - 1)
         
-        # ✅ Ensure labels is a flat list (not nested)
+        # ✅ Ensure labels is a flat list of ints (not nested, not tensors)
+        labels = [int(x) for x in labels]
         tokenized["labels"] = labels
 
         return tokenized

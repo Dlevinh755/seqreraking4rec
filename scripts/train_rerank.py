@@ -14,7 +14,7 @@ from rerank.models.llm import LLMModel
 LETTERS = list(string.ascii_uppercase[:20])  # A-T
 
 
-def build_training_samples(user2items, all_items, max_history=10):
+def build_training_samples(user2items, all_items, max_history=5):
     """Build training samples for LLM reranking."""
     samples = []
 

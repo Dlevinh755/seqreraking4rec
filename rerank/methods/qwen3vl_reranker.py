@@ -51,7 +51,7 @@ class Qwen3VLReranker(BaseReranker):
         top_k: int = 50,
         mode: str = "raw_image",
         model_name: Optional[str] = None,
-        max_history: int = 10,
+        max_history: int = 5,
         max_candidates: Optional[int] = None,
         batch_size: int = 32,
         num_epochs: int = 10,
@@ -63,7 +63,7 @@ class Qwen3VLReranker(BaseReranker):
             top_k: Số lượng items trả về sau rerank
             mode: Prompt mode - "raw_image", "caption", "semantic_summary", "semantic_summary_small"
             model_name: Model name (auto-selected based on mode if None)
-            max_history: Số lượng items trong history để dùng cho prompt
+            max_history: Số lượng items trong history để dùng cho prompt (default: 5, chỉ giữ 5 items cuối cùng)
             max_candidates: Maximum number of candidates to process (None = no limit)
             batch_size: Batch size cho training (default: 32)
             num_epochs: Số epochs (default: 10)
@@ -189,7 +189,8 @@ class Qwen3VLReranker(BaseReranker):
                 history = self.user_history.get(user_id, [])  # List[str] - texts/image_paths
         else:
             history = user_history
-        history = history[-self.max_history:]  # Chỉ lấy max_history items gần nhất
+        # Chỉ giữ lại max_history (5) items cuối cùng nếu history quá dài
+        history = history[-self.max_history:]  # Chỉ lấy max_history items cuối cùng (default: 5)
         
         # ✅ For raw_image mode, ensure history is List[int] (item_ids) so we can load full metadata
         if self.mode == "raw_image" and history and isinstance(history[0], str):
@@ -959,6 +960,7 @@ class Qwen3VLReranker(BaseReranker):
         candidates = sample["candidates"]
         
         # Build history text (text-only, consistent with inference)
+        # Chỉ giữ lại max_history (5) items cuối cùng
         history_texts = []
         for item_id in history[-self.max_history:]:
             meta = self.item_meta.get(item_id, {})
@@ -1050,6 +1052,7 @@ Candidate items:"""}
         candidates = sample["candidates"]
         
         # Get history texts based on mode
+        # Chỉ giữ lại max_history (5) items cuối cùng
         history_texts = []
         for item_id in history[-self.max_history:]:
             meta = self.item_meta.get(item_id, {})
@@ -1193,10 +1196,10 @@ Answer with only one number (1-{num_candidates}).
             # Get top-K item IDs
             top_k_items = [item_id for item_id, _ in reranked[:k]]
             
-            # Compute recall
+            # Compute recall (công thức chuẩn: hits / len(gt_items))
             hits = len(set(top_k_items) & set(gt_items))
             if len(gt_items) > 0:
-                recalls.append(hits / min(k, len(gt_items)))
+                recalls.append(hits / len(gt_items))
         
         return float(np.mean(recalls)) if recalls else 0.0
 
