@@ -311,12 +311,12 @@ class LLMModel:
         )
         
         # Tokenize the full text
-        # ✅ Don't pad here - let Trainer handle padding dynamically
+        # ✅ Pad to max_length to ensure all sequences have same length
         tokenized = self.tokenizer(
             text,
             truncation=True,
             max_length=2048,
-            padding=False,  # Let Trainer handle padding
+            padding="max_length",  # Pad to max_length for consistent batch shapes
             return_tensors=None,  # Return lists, not tensors (for Dataset.map)
         )
         
