@@ -9,6 +9,7 @@ import string
 import pandas as pd
 import ast
 import numpy as np
+import os
 
 # Legacy: Keep for backward compatibility, but now we use numbers
 # Use both uppercase and lowercase for up to 52 candidates (A-Z, a-z)
@@ -131,7 +132,7 @@ class LLMModel:
                 max_seq_length = getattr(arg, 'qwen_max_seq_length', 2048)
             except ImportError:
                 max_seq_length = 2048  # Default fallback
-        
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
         print(f"Loading LLM model with 4-bit quantization: {self.model_name}")
         print(f"  Max sequence length: {max_seq_length}")
         self.model, self.tokenizer = FastLanguageModel.from_pretrained(
@@ -139,6 +140,7 @@ class LLMModel:
             max_seq_length = max_seq_length,
             dtype = torch.float16,
             load_in_4bit = True,  # 4-bit quantization enabled by default for all Unsloth models
+            device_map={'': local_rank},
         )
 
         self.model = FastLanguageModel.get_peft_model(
