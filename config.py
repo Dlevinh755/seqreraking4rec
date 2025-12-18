@@ -109,13 +109,11 @@ parser.add_argument('--rerank_lr', type=float, default=1e-4,
 parser.add_argument('--rerank_patience', type=int, default=2,
 					help='Early stopping patience (epochs without val improvement) for rerank models.')
 parser.add_argument('--rerank_eval_candidates', type=int, default=20,
-					help='Number of candidates to sample for reranker evaluation (default: 20). Used by all rerankers during validation.')
+					help='Number of candidates for reranker evaluation and data preparation (default: 20). Used for both validation and pre-generating candidates in data_prepare.py.')
 parser.add_argument('--qwen_max_candidates', type=int, default=20,
-					help='Maximum number of candidates for Qwen reranker. If None, uses retrieval_top_k from pipeline config.')
-parser.add_argument('--vip5_max_candidates', type=int, default=100,
+					help='Maximum number of candidates for Qwen reranker during inference (default: 20). If None, uses retrieval_top_k from pipeline config.')
+parser.add_argument('--vip5_max_candidates', type=int, default=20,
 					help='Maximum number of candidates for VIP5 Direct Task training (default: 100). Number of negatives + 1 positive = total candidates.')
-parser.add_argument('--rerank_eval_candidates_prepare', type=int, default=20,
-					help='Number of candidates to prepare for val/test during data preparation (default: 20). These candidates will be reused by all rerankers during evaluation.')
 parser.add_argument('--retrieval_eval_mode', type=str, default='full_ranking',
 					choices=['full_ranking', 'candidate_list'],
 					help='Evaluation mode for retrieval models: full_ranking (evaluate on all items) or candidate_list (evaluate only on pre-generated candidates, default: full_ranking).')
@@ -125,10 +123,10 @@ parser.add_argument('--qwen_mode', type=str, default='text_only',
 parser.add_argument('--qwen_model', type=str, default='qwen3-0.6b',
 					choices=['qwen3-0.6b', 'qwen3-2bvl', 'qwen3-1.6b'],
 					help='Model for Qwen reranker: qwen3-0.6b (text), qwen3-2bvl (VL), qwen3-1.6b (text)')
-# Legacy: Keep qwen3vl_mode for backward compatibility
-parser.add_argument('--qwen3vl_mode', type=str, default='caption',
+# Legacy: Keep qwen3vl_mode for backward compatibility (will be removed in future)
+parser.add_argument('--qwen3vl_mode', type=str, default=None,
 					choices=['caption', 'semantic_summary', 'semantic_summary_small'],
-					help='[DEPRECATED] Use --qwen_mode instead. Prompt mode for Qwen3-VL reranker: caption, semantic_summary, semantic_summary_small')
+					help='[DEPRECATED] Use --qwen_mode instead. This argument is kept for backward compatibility only.')
 
 parser.add_argument('--max_text_length', type=int, default=256,
 					help='Maximum text length in characters for item metadata (default: 512, range: 256-512). Text will be truncated from the end if longer.')

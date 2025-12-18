@@ -136,7 +136,7 @@ class LLMModel:
                 print("LLM model compiled successfully!")
             except Exception as e:
                 print(f"Warning: torch.compile() failed: {e}. Continuing without compilation.")
-    def train(self):
+    def train(self, batch_size=None):
 
         from datasets import Dataset
         from trl import SFTTrainer, SFTConfig
@@ -184,18 +184,23 @@ class LLMModel:
             batched=True,  # Process in batches for efficiency (like notebook)
         )
 
-        # Get num_epochs from config if available
+        # Get num_epochs and batch_size from config if available
         try:
             from config import arg
             num_epochs = getattr(arg, 'rerank_epochs', 2)
+            # Use batch_size parameter if provided, otherwise get from config
+            if batch_size is None:
+                batch_size = getattr(arg, 'rerank_batch_size', 16)
         except ImportError:
             num_epochs = 1
+            if batch_size is None:
+                batch_size = 16  # Default fallback
         
         # ✅ Use SFTConfig and SFTTrainer (like notebook Cell 8)
         training_args = SFTConfig(
             dataset_text_field="text",  # Field name in dataset
             output_dir="./qwen_rerank",
-            per_device_train_batch_size=8,
+            per_device_train_batch_size=batch_size,
             gradient_accumulation_steps=4,
             learning_rate=2e-5,
             num_train_epochs=num_epochs,

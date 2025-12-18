@@ -153,7 +153,17 @@ class QwenReranker(BaseReranker):
         self.model_name = model.lower()
         self.max_history = max_history
         self.max_candidates = max_candidates
-        self.batch_size = batch_size
+        
+        # Get batch_size from config if not provided
+        if batch_size is None:
+            try:
+                from config import arg
+                self.batch_size = getattr(arg, 'rerank_batch_size', 16)
+            except ImportError:
+                self.batch_size = 16  # Default fallback
+        else:
+            self.batch_size = batch_size
+        
         self.num_epochs = num_epochs
         self.lr = lr
         self.patience = patience
@@ -175,10 +185,9 @@ class QwenReranker(BaseReranker):
             raise ValueError(
                 "text_only mode requires text model (qwen3-0.6b or qwen3-1.6b), not qwen3-2bvl"
             )
-        if self.mode in ["caption", "semantic_summary"] and self.model_name not in ["qwen3-2bvl", "qwen3-1.6b"]:
-            raise ValueError(
-                f"{self.mode} mode requires VL model (qwen3-2bvl) or compatible model (qwen3-1.6b)"
-            )
+        # Note: caption and semantic_summary modes can use text-only models (qwen3-0.6b, qwen3-1.6b)
+        # because captions and semantic summaries are pre-generated, no need for VL model
+        # Only qwen3-2bvl is not allowed for text_only mode (already checked above)
         
         # Model instances
         self.llm_model: Optional[LLMModel] = None
@@ -192,6 +201,12 @@ class QwenReranker(BaseReranker):
         
         # Debug flag: print sample test prompt only once
         self._debug_test_prompt_printed = False
+        
+        # Track eval prompts for token analysis (collect all prompts)
+        self._eval_prompts = []
+        self._eval_prompts_analyzed = False  # Track if we've done initial analysis
+        self._eval_prompts_count_at_analysis = 0  # Track count when we did initial analysis
+        self._eval_prompts_prebuilt = False  # Track if prompts have been pre-built
     
     def fit(
         self,
@@ -236,11 +251,89 @@ class QwenReranker(BaseReranker):
         from config import arg
         use_torch_compile = getattr(arg, 'use_torch_compile', False)
         
-        # Load model based on mode
-        if self.mode == "text_only":
-            # Use LLMModel for text-only mode
+        # Load model based on mode and model type
+        # For caption/semantic_summary with text-only models (qwen3-0.6b, qwen3-1.6b):
+        #   Use LLMModel because captions/semantic_summaries are pre-generated (no need for VL model)
+        # For caption/semantic_summary with VL model (qwen3-2bvl):
+        #   Use Qwen3VLModel
+        use_text_model = self.mode == "text_only" or (self.mode in ["caption", "semantic_summary"] and self.model_name in ["qwen3-0.6b", "qwen3-1.6b"])
+        
+        if use_text_model:
+            # Use LLMModel for text-only mode or caption/semantic_summary with text models
             model_path = MODEL_MAPPING[self.model_name]
             train_data_for_llm = kwargs.get("train_data_for_llm")
+            
+            # For caption/semantic_summary modes, prepare training data from item_meta
+            if self.mode in ["caption", "semantic_summary"] and train_data_for_llm is None:
+                train_samples = self._prepare_training_samples(train_data)
+                if len(train_samples) > 0:
+                    # Convert to LLM training format
+                    from rerank.models.llm import build_prompt_from_candidates
+                    train_data_for_llm = []
+                    for sample in train_samples:
+                        history = sample["history"]
+                        candidates = sample["candidates"]
+                        target_idx = sample["target_idx"]
+                        
+                        # Build prompt using item_meta (with caption/semantic_summary)
+                        history_texts = []
+                        for item_id in history[-self.max_history:]:
+                            meta = self.item_meta.get(item_id, {})
+                            text = meta.get("text", f"item_{item_id}")
+                            if self.mode == "caption":
+                                caption = meta.get("caption", "")
+                                if caption:
+                                    history_texts.append(f"{text} (Image: {caption})")
+                                else:
+                                    history_texts.append(text)
+                            elif self.mode == "semantic_summary":
+                                semantic_summary = meta.get("semantic_summary", "")
+                                if semantic_summary:
+                                    history_texts.append(f"{text} (Semantic: {semantic_summary})")
+                                else:
+                                    history_texts.append(text)
+                        
+                        candidate_texts = []
+                        for item_id in candidates:
+                            meta = self.item_meta.get(item_id, {})
+                            text = meta.get("text", f"item_{item_id}")
+                            if self.mode == "caption":
+                                caption = meta.get("caption", "")
+                                if caption:
+                                    candidate_texts.append(f"{text} (Image: {caption})")
+                                else:
+                                    candidate_texts.append(text)
+                            elif self.mode == "semantic_summary":
+                                semantic_summary = meta.get("semantic_summary", "")
+                                if semantic_summary:
+                                    candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+                                else:
+                                    candidate_texts.append(text)
+                        
+                        history_str = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
+                        cand_str = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
+                        num_candidates = len(candidates)
+                        
+                        prompt = f"""You are a recommendation ranking assistant.
+
+Choose exactly ONE item the user is most likely to interact with next.
+
+User history:
+{history_str}
+
+Candidate items:
+{cand_str}
+
+Answer with only one number (1-{num_candidates}).
+""".strip()
+                        
+                        target = str(target_idx + 1)  # 1-indexed
+                        train_data_for_llm.append({
+                            "messages": [
+                                {"role": "user", "content": prompt},
+                                {"role": "assistant", "content": target}
+                            ]
+                        })
             
             if train_data_for_llm is not None:
                 self.llm_model = LLMModel(
@@ -248,7 +341,7 @@ class QwenReranker(BaseReranker):
                     model_name=model_path
                 )
                 self.llm_model.load_model(use_torch_compile=False)
-                self.llm_model.train()
+                self.llm_model.train(batch_size=self.batch_size)
             else:
                 self.llm_model = LLMModel(
                     train_data=None,
@@ -256,19 +349,11 @@ class QwenReranker(BaseReranker):
                 )
                 self.llm_model.load_model(use_torch_compile=use_torch_compile)
         else:
-            # Use Qwen3VLModel for multimodal modes
-            # Map mode to Qwen3VLModel mode
-            # For semantic_summary with text models (qwen3-0.6b, qwen3-1.6b), use semantic_summary_small
-            # For semantic_summary with VL model (qwen3-2bvl), use semantic_summary
-            if self.mode == "semantic_summary" and self.model_name in ["qwen3-0.6b", "qwen3-1.6b"]:
-                qwen3vl_mode = "semantic_summary_small"
-            else:
-                qwen3vl_mode = self.mode
-            
+            # Use Qwen3VLModel for caption/semantic_summary with VL model (qwen3-2bvl)
             model_path = MODEL_MAPPING[self.model_name]
             
             self.qwen3vl_model = Qwen3VLModel(
-                mode=qwen3vl_mode,
+                mode=self.mode,
                 model_name=model_path
             )
             
@@ -319,20 +404,96 @@ class QwenReranker(BaseReranker):
             history = user_history
         history = history[-self.max_history:]  # Truncate to max_history
         
-        # Predict probabilities based on mode
+        # Predict probabilities based on mode and model type
+        # For caption/semantic_summary with text-only models (qwen3-0.6b, qwen3-1.6b):
+        #   Use LLMModel because captions/semantic_summaries are pre-generated (no need for VL model)
+        # For caption/semantic_summary with VL model (qwen3-2bvl):
+        #   Use Qwen3VLModel
         num_candidates = len(candidates)
-        if self.mode == "text_only":
-            # Use LLMModel for text-only mode
+        use_text_model = self.mode == "text_only" or (self.mode in ["caption", "semantic_summary"] and self.model_name in ["qwen3-0.6b", "qwen3-1.6b"])
+        
+        if use_text_model:
+            # Use LLMModel for text-only mode or caption/semantic_summary with text models
             if self.llm_model is None:
                 raise RuntimeError("LLM model chưa được load. Gọi fit() trước!")
             
-            # Build prompt using helper function
-            prompt = build_prompt_from_candidates(
-                history,
-                candidates,
-                self.item_id2text,
-                max_candidates=self.max_candidates
-            )
+            # Build prompt based on mode
+            if self.mode == "text_only":
+                # Use helper function for text_only mode
+                prompt = build_prompt_from_candidates(
+                    history,
+                    candidates,
+                    self.item_id2text,
+                    max_candidates=self.max_candidates
+                )
+            else:
+                # Build prompt with caption/semantic_summary for caption/semantic_summary modes
+                history_texts = []
+                for item_id in history[-self.max_history:]:
+                    meta = self.item_meta.get(item_id, {})
+                    text = meta.get("text", f"item_{item_id}")
+                    if self.mode == "caption":
+                        caption = meta.get("caption", "")
+                        if caption:
+                            history_texts.append(f"{text} (Image: {caption})")
+                        else:
+                            history_texts.append(text)
+                    elif self.mode == "semantic_summary":
+                        semantic_summary = meta.get("semantic_summary", "")
+                        if semantic_summary:
+                            history_texts.append(f"{text} (Semantic: {semantic_summary})")
+                        else:
+                            history_texts.append(text)
+                
+                candidate_texts = []
+                for item_id in candidates:
+                    meta = self.item_meta.get(item_id, {})
+                    text = meta.get("text", f"item_{item_id}")
+                    if self.mode == "caption":
+                        caption = meta.get("caption", "")
+                        if caption:
+                            candidate_texts.append(f"{text} (Image: {caption})")
+                        else:
+                            candidate_texts.append(text)
+                    elif self.mode == "semantic_summary":
+                        semantic_summary = meta.get("semantic_summary", "")
+                        if semantic_summary:
+                            candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+                        else:
+                            candidate_texts.append(text)
+                
+                history_str = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
+                cand_str = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
+                num_candidates = len(candidates)
+                
+                prompt = f"""You are a recommendation ranking assistant.
+
+Choose exactly ONE item the user is most likely to interact with next.
+
+User history:
+{history_str}
+
+Candidate items:
+{cand_str}
+
+Answer with only one number (1-{num_candidates}).
+""".strip()
+            
+            # ✅ Collect eval prompts for token analysis (only if not pre-built)
+            if not self._eval_prompts_prebuilt:
+                self._eval_prompts.append(prompt)
+                
+                # Analyze after first prompt is printed and we have at least 10 prompts (early analysis)
+                if not self._eval_prompts_analyzed and self._debug_test_prompt_printed and len(self._eval_prompts) >= 10:
+                    print("\n[QwenReranker] Early eval prompt token analysis (first 10 prompts):")
+                    self._analyze_eval_prompt_tokens()
+                    self._eval_prompts_analyzed = True
+                    self._eval_prompts_count_at_analysis = len(self._eval_prompts)
+                # Final analysis if we've collected significantly more prompts (e.g., 10x more)
+                elif self._eval_prompts_analyzed and len(self._eval_prompts) >= self._eval_prompts_count_at_analysis * 10:
+                    print(f"\n[QwenReranker] Final eval prompt token analysis (all {len(self._eval_prompts)} prompts):")
+                    self._analyze_eval_prompt_tokens()
+                    self._eval_prompts_count_at_analysis = len(self._eval_prompts)  # Update to avoid repeated prints
             
             # ✅ Print sample test prompt for debugging (only once)
             if not self._debug_test_prompt_printed:
@@ -354,9 +515,26 @@ class QwenReranker(BaseReranker):
             
             probs = self.llm_model.predict_probs(prompt, num_candidates=num_candidates)
         else:
-            # Use Qwen3VLModel for multimodal modes
+            # Use Qwen3VLModel for caption/semantic_summary with VL model (qwen3-2bvl)
             if self.qwen3vl_model is None:
                 raise RuntimeError("Qwen3-VL model chưa được load. Gọi fit() trước!")
+            
+            # ✅ Collect eval prompts for token analysis (only if not pre-built)
+            if not self._eval_prompts_prebuilt:
+                sample_prompt = self._build_test_prompt_sample(user_id, history, candidates)
+                self._eval_prompts.append(sample_prompt)
+                
+                # Analyze after first prompt is printed and we have at least 10 prompts (early analysis)
+                if not self._eval_prompts_analyzed and self._debug_test_prompt_printed and len(self._eval_prompts) >= 10:
+                    print("\n[QwenReranker] Early eval prompt token analysis (first 10 prompts):")
+                    self._analyze_eval_prompt_tokens()
+                    self._eval_prompts_analyzed = True
+                    self._eval_prompts_count_at_analysis = len(self._eval_prompts)
+                # Final analysis if we've collected significantly more prompts (e.g., 10x more)
+                elif self._eval_prompts_analyzed and len(self._eval_prompts) >= self._eval_prompts_count_at_analysis * 10:
+                    print(f"\n[QwenReranker] Final eval prompt token analysis (all {len(self._eval_prompts)} prompts):")
+                    self._analyze_eval_prompt_tokens()
+                    self._eval_prompts_count_at_analysis = len(self._eval_prompts)  # Update to avoid repeated prints
             
             # ✅ Print sample test prompt for debugging (only once)
             if not self._debug_test_prompt_printed:
@@ -825,7 +1003,7 @@ class QwenReranker(BaseReranker):
                     history_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     history_texts.append(text)
-            else:
+            else:  # text_only mode
                 text = meta.get("text", f"item_{item_id}")
                 # Avoid double truncation: text was already truncated to max_text_length during data preparation
                 # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
@@ -862,7 +1040,7 @@ class QwenReranker(BaseReranker):
                     candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     candidate_texts.append(text)
-            else:
+            else:  # text_only mode
                 text = meta.get("text", f"item_{item_id}")
                 # Avoid double truncation: text was already truncated to max_text_length during data preparation
                 # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
@@ -926,7 +1104,7 @@ Answer with only one number (1-{num_candidates}).
                     history_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     history_texts.append(text)
-            else:
+            else:  # text_only mode
                 text = meta.get("text", f"item_{item_id}")
                 # Avoid double truncation: text was already truncated to max_text_length during data preparation
                 # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
@@ -963,7 +1141,7 @@ Answer with only one number (1-{num_candidates}).
                     candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     candidate_texts.append(text)
-            else:
+            else:  # text_only mode
                 text = meta.get("text", f"item_{item_id}")
                 # Avoid double truncation: text was already truncated to max_text_length during data preparation
                 # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
@@ -1072,4 +1250,165 @@ Answer with only one number (1-{num_candidates}).
                 recalls.append(hits / len(gt_items))
         
         return float(np.mean(recalls)) if recalls else 0.0
+    
+    def prepare_eval_prompts(
+        self,
+        users: List[int],
+        candidates_by_user: Dict[int, List[int]],
+        user_histories: Optional[Dict[int, List[int]]] = None
+    ) -> None:
+        """Build all eval prompts before reranking for token analysis.
+        
+        This method builds all prompts upfront, collects them, and analyzes token counts
+        before any reranking happens. This is more efficient than collecting prompts
+        one-by-one during reranking.
+        
+        Args:
+            users: List of user IDs to build prompts for
+            candidates_by_user: Dict mapping user_id to list of candidate item IDs
+            user_histories: Optional dict mapping user_id to history. If None, uses self.user_history
+        """
+        if self._eval_prompts_prebuilt:
+            return  # Already built
+        
+        print(f"\n[QwenReranker] Building all eval prompts ({len(users)} users)...")
+        
+        if user_histories is None:
+            user_histories = self.user_history
+        
+        use_text_model = self.mode == "text_only" or (self.mode in ["caption", "semantic_summary"] and self.model_name in ["qwen3-0.6b", "qwen3-1.6b"])
+        
+        for user_id in users:
+            candidates = candidates_by_user.get(user_id, [])
+            if not candidates:
+                continue
+            
+            # Apply max_candidates limit if set
+            if self.max_candidates is not None and len(candidates) > self.max_candidates:
+                candidates = candidates[:self.max_candidates]
+            
+            # Get user history
+            history = user_histories.get(user_id, [])
+            history = history[-self.max_history:]  # Truncate to max_history
+            
+            # Build prompt based on mode
+            if use_text_model:
+                if self.mode == "text_only":
+                    prompt = build_prompt_from_candidates(
+                        history,
+                        candidates,
+                        self.item_id2text,
+                        max_candidates=self.max_candidates
+                    )
+                else:
+                    # Build prompt with caption/semantic_summary
+                    history_texts = []
+                    for item_id in history:
+                        meta = self.item_meta.get(item_id, {})
+                        text = meta.get("text", f"item_{item_id}")
+                        if self.mode == "caption":
+                            caption = meta.get("caption", "")
+                            if caption:
+                                history_texts.append(f"{text} (Image: {caption})")
+                            else:
+                                history_texts.append(text)
+                        elif self.mode == "semantic_summary":
+                            semantic_summary = meta.get("semantic_summary", "")
+                            if semantic_summary:
+                                history_texts.append(f"{text} (Semantic: {semantic_summary})")
+                            else:
+                                history_texts.append(text)
+                    
+                    candidate_texts = []
+                    for item_id in candidates:
+                        meta = self.item_meta.get(item_id, {})
+                        text = meta.get("text", f"item_{item_id}")
+                        if self.mode == "caption":
+                            caption = meta.get("caption", "")
+                            if caption:
+                                candidate_texts.append(f"{text} (Image: {caption})")
+                            else:
+                                candidate_texts.append(text)
+                        elif self.mode == "semantic_summary":
+                            semantic_summary = meta.get("semantic_summary", "")
+                            if semantic_summary:
+                                candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+                            else:
+                                candidate_texts.append(text)
+                    
+                    history_str = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
+                    cand_str = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
+                    num_candidates = len(candidates)
+                    
+                    prompt = f"""You are a recommendation ranking assistant.
+
+Choose exactly ONE item the user is most likely to interact with next.
+
+User history:
+{history_str}
+
+Candidate items:
+{cand_str}
+
+Answer with only one number (1-{num_candidates}).
+""".strip()
+            else:
+                # For VL model, build sample prompt
+                prompt = self._build_test_prompt_sample(user_id, history, candidates)
+            
+            self._eval_prompts.append(prompt)
+        
+        self._eval_prompts_prebuilt = True
+        print(f"  Built {len(self._eval_prompts)} prompts")
+        
+        # Analyze all prompts
+        if len(self._eval_prompts) > 0:
+            print("\n[QwenReranker] Analyzing all eval prompt token counts...")
+            self._analyze_eval_prompt_tokens()
+            self._eval_prompts_analyzed = True
+    
+    def _analyze_eval_prompt_tokens(self) -> None:
+        """Analyze token counts for eval/test prompts."""
+        if not self._eval_prompts:
+            return
+        
+        # Determine which tokenizer to use
+        tokenizer = None
+        if self.llm_model and hasattr(self.llm_model, 'tokenizer'):
+            tokenizer = self.llm_model.tokenizer
+        elif self.qwen3vl_model and hasattr(self.qwen3vl_model, 'processor') and hasattr(self.qwen3vl_model.processor, 'tokenizer'):
+            tokenizer = self.qwen3vl_model.processor.tokenizer
+        
+        if tokenizer is None:
+            return
+        
+        # Count tokens for eval prompts
+        stats = _count_prompt_tokens(
+            self._eval_prompts,
+            tokenizer,
+            include_target=False,
+            targets=None
+        )
+        print(f"  Total samples analyzed: {stats['count']}")
+        print(f"  Token statistics (prompt only):")
+        print(f"    Min: {stats['min']} tokens")
+        print(f"    Max: {stats['max']} tokens")
+        print(f"    Mean: {stats['mean']:.1f} tokens")
+        print(f"    Median: {stats['median']:.1f} tokens")
+        print(f"    Percentiles:")
+        print(f"      P50: {stats['p50']:.1f} tokens")
+        print(f"      P75: {stats['p75']:.1f} tokens")
+        print(f"      P90: {stats['p90']:.1f} tokens")
+        print(f"      P95: {stats['p95']:.1f} tokens")
+        print(f"      P99: {stats['p99']:.1f} tokens")
+        print(f"    Total tokens: {stats['total']:,}")
+        
+        # Check if any prompts exceed max_length
+        max_length = 2048  # Standard max length for Qwen models
+        num_exceeding = sum(1 for count in stats.get('token_counts', []) if count > max_length)
+        if num_exceeding > 0:
+            print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} eval prompts exceed max_length={max_length} and will be truncated!")
+        else:
+            print(f"  ✅ All eval prompts fit within max_length={max_length}")
+        print()
 

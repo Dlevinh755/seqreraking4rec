@@ -114,7 +114,8 @@ def main(args):
         print(f"  Train users: {len(train_dict)}, Val users: {len(val_dict)}, Test users: {len(test_dict)}")
     
     # ✅ Generate candidate lists for val and test (for rerank evaluation)
-    num_candidates = getattr(args, 'rerank_eval_candidates_prepare', 20)
+    # Use rerank_eval_candidates (unified argument for both evaluation and data preparation)
+    num_candidates = getattr(args, 'rerank_eval_candidates', 20)
     print(f"\n[data_prepare] Generating candidate lists for val/test (num_candidates={num_candidates})...")
     
     # Get all items from dataset
