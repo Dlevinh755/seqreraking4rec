@@ -239,7 +239,6 @@ class LLMModel:
             optim="adamw_8bit",
             ddp_find_unused_parameters = False,
             dataloader_pin_memory = False,
-            remove_unused_columns = False,
             load_best_model_at_end=False, 
             lr_scheduler_type = "cosine",
             warmup_steps = 20,
