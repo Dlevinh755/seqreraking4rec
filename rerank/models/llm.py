@@ -273,7 +273,19 @@ class LLMModel:
         Returns:
             numpy array of probabilities [num_candidates]
         """
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+        # Get max_length from config
+        try:
+            from config import arg
+            max_length = getattr(arg, 'qwen_max_seq_length', 2048)
+        except ImportError:
+            max_length = 2048  # Default fallback
+        
+        inputs = self.tokenizer(
+            prompt, 
+            return_tensors="pt",
+            truncation=True,  # ✅ Truncate if too long
+            max_length=max_length,  # ✅ Use from config
+        ).to(self.model.device)
 
         with torch.no_grad():
             outputs = self.model(**inputs)

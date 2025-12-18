@@ -72,7 +72,7 @@ class VIP5Reranker(BaseReranker):
         tokenizer_path: Optional[str] = None,
         image_feature_type: str = "vitb32",
         image_feature_size_ratio: int = 2,
-        max_text_length: int = 128,
+        max_text_length: Optional[int] = None,
         batch_size: int = 32,
         num_epochs: int = 10,
         lr: float = 1e-4,
@@ -87,7 +87,7 @@ class VIP5Reranker(BaseReranker):
             tokenizer_path: Path to tokenizer (optional, uses backbone if None)
             image_feature_type: CLIP feature type (vitb32, vitb16, vitl14, rn50, rn101)
             image_feature_size_ratio: Number of visual tokens per item (default: 2)
-            max_text_length: Maximum text sequence length
+            max_text_length: Maximum text sequence length (optional, lấy từ config nếu None)
             batch_size: Batch size cho training (default: 32)
             num_epochs: Số epochs (default: 10)
             lr: Learning rate (default: 1e-4)
@@ -100,6 +100,15 @@ class VIP5Reranker(BaseReranker):
         self.tokenizer_path = tokenizer_path
         self.image_feature_type = image_feature_type
         self.image_feature_size_ratio = image_feature_size_ratio
+        
+        # Get max_text_length from config if not provided
+        if max_text_length is None:
+            try:
+                from config import arg
+                max_text_length = getattr(arg, 'vip5_max_text_length', 128)
+            except ImportError:
+                max_text_length = 128  # Default fallback
+        
         self.max_text_length = max_text_length
         self.batch_size = batch_size
         self.num_epochs = num_epochs
@@ -522,16 +531,19 @@ class VIP5Reranker(BaseReranker):
         candidates: List[int],
         **kwargs: Any
     ) -> List[Tuple[int, float]]:
-        """Rerank candidates cho một user sử dụng VIP5.
+        """Rerank candidates cho một user sử dụng VIP5 với beam search generation (theo cách gốc).
         
         Args:
             user_id: ID của user
             candidates: List các item IDs cần rerank
             **kwargs: Additional arguments:
                 - user_history: List[int] - user's interaction history (optional)
+                - num_beams: int - beam size for generation (default: min(len(candidates), 20))
+                - num_return_sequences: int - number of sequences to return (default: min(len(candidates), top_k))
         
         Returns:
             List[Tuple[int, float]]: [(item_id, score)] đã sort giảm dần
+            Score = negative rank (rank 1 -> -1, rank 2 -> -2, ...)
         """
         self._validate_fitted()
         
@@ -540,9 +552,6 @@ class VIP5Reranker(BaseReranker):
         
         if not candidates:
             return []
-        
-        # Get user history
-        user_history = kwargs.get("user_history", [])
         
         # Get visual features for candidates
         candidate_visual = []
@@ -557,30 +566,26 @@ class VIP5Reranker(BaseReranker):
         if not valid_candidates:
             return []
         
-        scores = []
-        
         # ✅ VIP5 Direct Task (B-5): Recommend từ danh sách candidates
         # Theo code gốc VIP5 (data.py line 452-471), với direct task:
         # - Template: "Which item of the following to recommend for {} ? \n {}"
         # - Prompt chứa TẤT CẢ candidates: "item_1 <extra_id_0> <extra_id_0>, item_2 <extra_id_0> <extra_id_0>, ..."
-        # - Visual features cho TẤT CẢ candidates (không chỉ history)
-        # - Model chọn item từ candidates list
+        # - Visual features cho TẤT CẢ candidates
+        # - Model generate top-K items sử dụng beam search
         # Reference: https://github.com/jeykigung/VIP5/blob/main/src/data.py#L452-L471
         
         # Build prompt với Direct Task template (B-5)
-        # Template: "Which item of the following to recommend for user_{} ? \n {}"
         visual_token_placeholder = " <extra_id_0>" * self.image_feature_size_ratio
         candidates_with_visual = visual_token_placeholder.join([f"item_{c}" for c in valid_candidates]) + visual_token_placeholder
         direct_prompt = f"Which item of the following to recommend for user_{user_id} ? \n {candidates_with_visual}"
         
-        # Prepare visual features cho TẤT CẢ candidates (theo Direct Task format)
+        # Prepare visual features cho TẤT CẢ candidates
         if len(candidate_visual) > 0:
             all_candidates_visual_tensor = torch.stack(candidate_visual)  # [num_candidates, feat_dim]
         else:
-            # No candidates, use zeros
             all_candidates_visual_tensor = torch.zeros(1, self.image_feature_dim, device=self.device)
         
-        # ✅ OPTIMIZE: Encode prompt MỘT LẦN với tất cả candidates
+        # Prepare VIP5 input
         vip5_input = prepare_vip5_input(
             direct_prompt,
             all_candidates_visual_tensor,
@@ -594,91 +599,77 @@ class VIP5Reranker(BaseReranker):
         whole_word_ids = vip5_input["whole_word_ids"].to(self.device)
         category_ids = vip5_input["category_ids"].to(self.device)
         vis_feats = vip5_input["vis_feats"].to(self.device)
-        attention_mask = vip5_input["attention_mask"].to(self.device)
         
-        # Encode with VIP5 encoder (ONE TIME for all candidates)
+        # ✅ Generate với beam search (theo cách VIP5 gốc)
+        # Get beam search parameters from kwargs or use defaults
+        num_beams = kwargs.get("num_beams", min(len(valid_candidates), 20))
+        num_return_sequences = kwargs.get("num_return_sequences", min(len(valid_candidates), self.top_k))
+        
         self.model.eval()
         with torch.no_grad():
-            encoder_outputs = self.model.encoder(
-                input_ids=input_ids,
-                whole_word_ids=whole_word_ids,
-                category_ids=category_ids,
-                vis_feats=vis_feats,
-                attention_mask=attention_mask,
-                return_dict=True,
-                task="direct",  # ✅ Use Direct Task
-            )
-        
-        # Get encoder hidden states [1, seq_len, d_model]
-        encoder_hidden = encoder_outputs.last_hidden_state  # [1, seq_len, d_model]
-        encoder_attention_mask = attention_mask  # [1, seq_len]
-        
-        # ✅ OPTIMIZE: Batch decode tất cả candidates cùng lúc
-        # Prepare decoder inputs for all candidates (target = "item_{item_id}")
-        decoder_input_texts = [f"item_{item_id}" for item_id in valid_candidates]
-        
-        # Tokenize all decoder inputs with padding
-        decoder_inputs_tokenized = self.tokenizer(
-            decoder_input_texts,
-            padding="max_length",
-            truncation=True,
-            max_length=64,  # gen_max_length from VIP5
-            return_tensors="pt",
-            add_special_tokens=False
-        )
-        decoder_input_ids = decoder_inputs_tokenized["input_ids"].to(self.device)  # [batch_size, max_len]
-        decoder_attention_mask = decoder_inputs_tokenized["attention_mask"].to(self.device)  # [batch_size, max_len]
-        
-        # Expand encoder_hidden và encoder_attention_mask để match batch_size
-        batch_size = len(valid_candidates)
-        encoder_hidden_batch = encoder_hidden.expand(batch_size, -1, -1)  # [batch_size, seq_len, d_model]
-        encoder_attention_mask_batch = encoder_attention_mask.expand(batch_size, -1)  # [batch_size, seq_len]
-        
-        # Batch decode tất cả candidates cùng lúc
-        decoder_outputs = self.model.decoder(
-            input_ids=decoder_input_ids,
-            attention_mask=decoder_attention_mask,
-            encoder_hidden_states=encoder_hidden_batch,
-            encoder_attention_mask=encoder_attention_mask_batch,
-            return_dict=True,
-            task="direct",  # ✅ Use Direct Task
-        )
-        
-        # Get decoder output [batch_size, target_len, d_model]
-        decoder_hidden = decoder_outputs.last_hidden_state
-        
-        # Apply lm_head to get logits [batch_size, target_len, vocab_size]
-        if self.model.config.tie_word_embeddings:
-            decoder_hidden = decoder_hidden * (self.model.model_dim ** -0.5)
-        logits = self.model.lm_head(decoder_hidden)  # [batch_size, target_len, vocab_size]
-        
-        # Extract logit for each candidate's token
-        # ✅ FIX: For seq2seq, we should use the logit at the FIRST position (where we predict the first token)
-        for i, item_id in enumerate(valid_candidates):
-            # Get the first non-padding token position (this is where we predict)
-            non_padding_mask = decoder_attention_mask[i] == 1  # [max_len]
-            if non_padding_mask.any():
-                # Find first non-padding token position
-                first_token_idx = non_padding_mask.nonzero(as_tuple=True)[0][0].item()
-                # Get the token ID at that position
-                item_token_id = decoder_input_ids[i, first_token_idx].item()
-                # Get logit for that token at the FIRST position (where prediction happens)
-                # In seq2seq, the logit at position t predicts token at position t+1
-                # So we use logit at position 0 to predict token at position 1
-                if first_token_idx < logits.size(1) - 1:
-                    score = float(logits[i, first_token_idx, item_token_id].item())
-                else:
-                    # Fallback: use first position
-                    score = float(logits[i, first_token_idx, item_token_id].item())
-            else:
-                # Fallback: use first position
-                first_token_idx = 0
-                item_token_id = decoder_input_ids[i, first_token_idx].item()
-                score = float(logits[i, first_token_idx, item_token_id].item())
+            # Generate top-K items sử dụng beam search
+            # Note: VIP5.generate() cần hỗ trợ whole_word_ids, category_ids, vis_feats, task
+            # Nếu không hỗ trợ, sẽ cần override generate() method hoặc dùng cách khác
+            try:
+                beam_outputs = self.model.generate(
+                    input_ids=input_ids,
+                    whole_word_ids=whole_word_ids,
+                    category_ids=category_ids,
+                    vis_feats=vis_feats,
+                    task="direct",
+                    max_length=64,  # gen_max_length from VIP5
+                    num_beams=num_beams,
+                    num_return_sequences=num_return_sequences,
+                    no_repeat_ngram_size=0,
+                    early_stopping=True,
+                )
+            except TypeError:
+                # Fallback: Nếu generate() không hỗ trợ custom parameters, dùng encoder_outputs
+                # Encode trước, sau đó generate với encoder_outputs
+                encoder_outputs = self.model.encoder(
+                    input_ids=input_ids,
+                    whole_word_ids=whole_word_ids,
+                    category_ids=category_ids,
+                    vis_feats=vis_feats,
+                    attention_mask=vip5_input["attention_mask"].to(self.device),
+                    return_dict=True,
+                    task="direct",
+                )
+                # Generate với encoder_outputs
+                beam_outputs = self.model.generate(
+                    encoder_outputs=encoder_outputs,
+                    task="direct",
+                    max_length=64,
+                    num_beams=num_beams,
+                    num_return_sequences=num_return_sequences,
+                    no_repeat_ngram_size=0,
+                    early_stopping=True,
+                )
             
-            scores.append((item_id, score))
+            # Decode generated sequences
+            generated_sents = self.tokenizer.batch_decode(beam_outputs, skip_special_tokens=True)
         
-        # Sort by score descending
+        # ✅ Score = negative rank (theo cách VIP5 gốc)
+        # Item rank 1 -> score -1, rank 2 -> score -2, ...
+        scores_dict = {}
+        for rank, generated_text in enumerate(generated_sents):
+            try:
+                # Extract item_id from generated text (e.g., "item_123" -> 123)
+                item_id = int(generated_text.replace("item_", "").strip())
+                if item_id in valid_candidates:
+                    # Score = negative rank (rank 0 -> score -1, rank 1 -> score -2, ...)
+                    scores_dict[item_id] = -(rank + 1)
+            except (ValueError, AttributeError):
+                # Skip invalid generated text
+                continue
+        
+        # Fill missing candidates with worst scores
+        for item_id in valid_candidates:
+            if item_id not in scores_dict:
+                scores_dict[item_id] = -len(valid_candidates) - 1
+        
+        # Convert to list and sort by score descending (higher score = better rank)
+        scores = [(item_id, scores_dict[item_id]) for item_id in valid_candidates]
         scores.sort(key=lambda x: x[1], reverse=True)
         
         # Return top_k
@@ -1029,83 +1020,16 @@ class VIP5Reranker(BaseReranker):
                 vis_feats = vip5_input["vis_feats"].to(self.device)
                 attention_mask = vip5_input["attention_mask"].to(self.device)
                 
-                # Encode with VIP5 encoder (ONE TIME for all candidates)
-                encoder_outputs = self.model.encoder(
-                    input_ids=input_ids,
-                    whole_word_ids=whole_word_ids,
-                    category_ids=category_ids,
-                    vis_feats=vis_feats,
-                    attention_mask=attention_mask,
-                    return_dict=True,
-                    task="direct",  # ✅ Use Direct Task
+                # ✅ Use rerank() method với beam search generation (theo cách VIP5 gốc)
+                reranked = self.rerank(
+                    user_id=user_id,
+                    candidates=valid_candidates,
+                    num_beams=min(len(valid_candidates), 20),
+                    num_return_sequences=min(len(valid_candidates), k),
                 )
                 
-                # Get encoder hidden states [1, seq_len, d_model]
-                encoder_hidden = encoder_outputs.last_hidden_state
-                encoder_attention_mask = attention_mask
-                
-                # Batch decode tất cả candidates cùng lúc
-                decoder_input_texts = [f"item_{item_id}" for item_id in valid_candidates]
-                decoder_inputs_tokenized = self.tokenizer(
-                    decoder_input_texts,
-                    padding="max_length",
-                    truncation=True,
-                    max_length=64,
-                    return_tensors="pt",
-                    add_special_tokens=False
-                )
-                decoder_input_ids = decoder_inputs_tokenized["input_ids"].to(self.device)
-                decoder_attention_mask = decoder_inputs_tokenized["attention_mask"].to(self.device)
-                
-                batch_size = len(valid_candidates)
-                encoder_hidden_batch = encoder_hidden.expand(batch_size, -1, -1)
-                encoder_attention_mask_batch = encoder_attention_mask.expand(batch_size, -1)
-                
-                decoder_outputs = self.model.decoder(
-                    input_ids=decoder_input_ids,
-                    attention_mask=decoder_attention_mask,
-                    encoder_hidden_states=encoder_hidden_batch,
-                    encoder_attention_mask=encoder_attention_mask_batch,
-                    return_dict=True,
-                    task="direct",  # ✅ Use Direct Task
-                )
-                
-                decoder_hidden = decoder_outputs.last_hidden_state
-                if self.model.config.tie_word_embeddings:
-                    decoder_hidden = decoder_hidden * (self.model.model_dim ** -0.5)
-                logits = self.model.lm_head(decoder_hidden)  # [batch_size, target_len, vocab_size]
-                
-                # Extract scores for all candidates
-                # ✅ FIX: For seq2seq, we should use the logit at the FIRST position (where we predict the first token)
-                # The decoder input is "item_{item_id}", so we want the logit of the first token being predicted correctly
-                for i, item_id in enumerate(valid_candidates):
-                    non_padding_mask = decoder_attention_mask[i] == 1
-                    if non_padding_mask.any():
-                        # Get the first non-padding token position (this is where we predict)
-                        first_token_idx = non_padding_mask.nonzero(as_tuple=True)[0][0].item()
-                        # Get the token ID at that position
-                        item_token_id = decoder_input_ids[i, first_token_idx].item()
-                        # Get logit for that token at the FIRST position (where prediction happens)
-                        # In seq2seq, the logit at position t predicts token at position t+1
-                        # So we use logit at position 0 to predict token at position 1
-                        if first_token_idx < logits.size(1) - 1:
-                            # Use logit at position first_token_idx to predict token at first_token_idx+1
-                            score = float(logits[i, first_token_idx, item_token_id].item())
-                        else:
-                            # Fallback: use last position
-                            score = float(logits[i, first_token_idx, item_token_id].item())
-                    else:
-                        # Fallback: use first position
-                        first_token_idx = 0
-                        item_token_id = decoder_input_ids[i, first_token_idx].item()
-                        score = float(logits[i, first_token_idx, item_token_id].item())
-                    scores.append((item_id, score))
-                
-                # Sort by score descending
-                scores.sort(key=lambda x: x[1], reverse=True)
-                
-                # Get top-K item IDs
-                top_k_items = [item_id for item_id, _ in scores[:k]]
+                # Get top-K item IDs từ reranked results
+                top_k_items = [item_id for item_id, _ in reranked[:k]]
                 
                 # Compute recall (công thức chuẩn: hits / len(gt_items))
                 hits = len(set(top_k_items) & set(gt_items))

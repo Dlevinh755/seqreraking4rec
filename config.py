@@ -135,6 +135,8 @@ parser.add_argument('--qwen_max_seq_length', type=int, default=2048,
 					help='Maximum sequence length for Qwen LLM models (default: 2048). Increase for longer prompts (e.g., 4096 for multimodal with images).')
 parser.add_argument('--vip5_max_candidates', type=int, default=50,
 					help='Maximum number of candidates for VIP5 Direct Task training (default: 100). Number of negatives + 1 positive = total candidates.')
+parser.add_argument('--vip5_max_text_length', type=int, default=128,
+					help='Maximum text sequence length for VIP5 (default: 128, increase for longer prompts)')
 parser.add_argument('--retrieval_eval_mode', type=str, default='full_ranking',
 					choices=['full_ranking', 'candidate_list'],
 					help='Evaluation mode for retrieval models: full_ranking (evaluate on all items) or candidate_list (evaluate only on pre-generated candidates, default: full_ranking).')
