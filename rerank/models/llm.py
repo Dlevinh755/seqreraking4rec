@@ -229,14 +229,21 @@ class LLMModel:
             dataset_text_field="text",  # Field name in dataset
             output_dir="./qwen_rerank",
             per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=4,
+            gradient_accumulation_steps=2,
             learning_rate=learning_rate,  # ✅ Use from config (default: 1e-4)
             num_train_epochs=num_epochs,
-            logging_steps=50,
+            logging_steps=10,
             save_steps=500,
             report_to="none",
             fp16=True,
             optim="adamw_8bit",
+            ddp_find_unused_parameters = False,
+            dataloader_pin_memory = False,
+            remove_unused_columns = False,
+            load_best_model_at_end=False, 
+            lr_scheduler_type = "cosine",
+            warmup_steps = 20,
+            weight_decay = 0.1,
         )
         
         trainer = SFTTrainer(
