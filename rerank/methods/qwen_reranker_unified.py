@@ -13,9 +13,21 @@ from evaluation.metrics import recall_at_k
 
 
 def _truncate_item_text(text: str, max_chars: int = 200) -> str:
-    """Truncate item text metadata to prevent it from being too long."""
+    """Truncate item text metadata to prevent it from being too long.
+    
+    Note: Text may have already been truncated during data preparation (max_text_length).
+    This function only truncates if text is longer than max_chars.
+    
+    To avoid double truncation, use max_chars >= max_text_length from config.
+    """
+    if not text:
+        return text
+    # Text may have already been truncated during data preparation
+    # Only truncate if it's still longer than max_chars
+    # If text is already <= max_chars, return as-is (no double truncation)
     if len(text) <= max_chars:
         return text
+    # Only truncate if text is longer than max_chars
     return text[:max_chars - 3] + "..."
 
 
@@ -792,7 +804,11 @@ class QwenReranker(BaseReranker):
             if self.mode == "caption":
                 caption = meta.get("caption", "")
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 if caption:
                     history_texts.append(f"{text} (Image: {caption})")
                 else:
@@ -800,14 +816,22 @@ class QwenReranker(BaseReranker):
             elif self.mode == "semantic_summary":
                 semantic_summary = meta.get("semantic_summary", "")
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 if semantic_summary:
                     history_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     history_texts.append(text)
             else:
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 history_texts.append(text)
         
         # Get candidate texts
@@ -817,7 +841,11 @@ class QwenReranker(BaseReranker):
             if self.mode == "caption":
                 caption = meta.get("caption", "")
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 if caption:
                     candidate_texts.append(f"{text} (Image: {caption})")
                 else:
@@ -825,14 +853,22 @@ class QwenReranker(BaseReranker):
             elif self.mode == "semantic_summary":
                 semantic_summary = meta.get("semantic_summary", "")
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 if semantic_summary:
                     candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     candidate_texts.append(text)
             else:
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 candidate_texts.append(text)
         
         # Build prompt
@@ -869,7 +905,11 @@ Answer with only one number (1-{num_candidates}).
             if self.mode == "caption":
                 caption = meta.get("caption", "")
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 if caption:
                     history_texts.append(f"{text} (Image: {caption})")
                 else:
@@ -877,14 +917,22 @@ Answer with only one number (1-{num_candidates}).
             elif self.mode == "semantic_summary":
                 semantic_summary = meta.get("semantic_summary", "")
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 if semantic_summary:
                     history_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     history_texts.append(text)
             else:
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 history_texts.append(text)
         
         # Get candidate texts (limit to first 10 for display)
@@ -894,7 +942,11 @@ Answer with only one number (1-{num_candidates}).
             if self.mode == "caption":
                 caption = meta.get("caption", "")
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 if caption:
                     candidate_texts.append(f"{text} (Image: {caption})")
                 else:
@@ -902,14 +954,22 @@ Answer with only one number (1-{num_candidates}).
             elif self.mode == "semantic_summary":
                 semantic_summary = meta.get("semantic_summary", "")
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 if semantic_summary:
                     candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
                 else:
                     candidate_texts.append(text)
             else:
                 text = meta.get("text", f"item_{item_id}")
-                text = _truncate_item_text(text, max_chars=200)
+                # Avoid double truncation: text was already truncated to max_text_length during data preparation
+                # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
+                # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
+                truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
+                text = _truncate_item_text(text, max_chars=truncate_limit)
                 candidate_texts.append(text)
         
         # Build prompt
