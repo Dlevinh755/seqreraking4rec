@@ -97,7 +97,7 @@ python scripts/train_rerank_standalone.py \
 python scripts/train_rerank_standalone.py \
     --rerank_method qwen3vl \
     --mode ground_truth \
-    --qwen3vl_mode raw_image  # hoặc: caption, semantic_summary, semantic_summary_small
+    --qwen_mode raw_image  # hoặc: caption, semantic_summary, semantic_summary_small
 
 # VIP5 (multimodal T5)
 python scripts/train_rerank_standalone.py \
@@ -148,18 +148,18 @@ python scripts/train_pipeline.py \
 | Method | Description | Requirements | Command |
 |--------|-------------|-------------|---------|
 | `qwen` | Qwen LLM (text-only) | Text data | `--rerank_method qwen` |
-| `qwen3vl` | Qwen3-VL (multimodal, 4 modes) | Tùy mode | `--rerank_method qwen3vl --qwen3vl_mode <mode>` |
+| `qwen3vl` | Qwen3-VL (multimodal, unified) | Tùy mode | `--rerank_method qwen3vl --qwen_mode <mode>` |
 | `vip5` | VIP5 multimodal T5 | Images + CLIP | `--rerank_method vip5` |
 | `bert4rec` | BERT4Rec sequential | Sequential data | `--rerank_method bert4rec` |
 
-### Qwen3-VL Modes
+### Qwen/Qwen3-VL Modes
 
-| Mode | Description | Data Preparation |
-|------|-------------|------------------|
-| `raw_image` | Raw images trong prompt | `--use_image` |
-| `caption` | Image captions (BLIP2) | `--use_image --generate_caption` |
-| `semantic_summary` | Semantic summaries (Qwen3-VL) | `--use_image --generate_semantic_summary` |
-| `semantic_summary_small` | Semantic summaries (smaller model) | `--use_image --generate_semantic_summary` |
+| Mode | Description | Model | Data Preparation |
+|------|-------------|-------|------------------|
+| `text_only` | Chỉ dùng text/description | `qwen3-0.6b`, `qwen3-1.6b` | Text data |
+| `raw_image` | Raw images trong prompt | `qwen3-2bvl` | `--use_image` |
+| `caption` | Image captions (BLIP2) | `qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl` | `--use_image --generate_caption` |
+| `semantic_summary` | Semantic summaries (Qwen3-VL) | `qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl` | `--use_image --generate_semantic_summary` |
 
 ### Rerank Modes
 
@@ -181,11 +181,26 @@ Các hyperparameters có thể điều chỉnh trong `config.py` hoặc command-
 ### Rerank
 - `--rerank_epochs`: Số epochs (default: 10)
 - `--rerank_lr`: Learning rate (default: 1e-4)
-- `--rerank_batch_size`: Batch size (default: 32)
+- `--rerank_batch_size`: Batch size cho LLM training (default: 16)
 - `--rerank_patience`: Early stopping patience (default: 5)
+- `--rerank_eval_candidates`: Số candidates cho evaluation và data preparation (default: 50)
+  - Dùng cho ground_truth mode: tạo 1 GT + (N-1) negatives
+  - Dùng cho pre-generating candidates trong `data_prepare.py`
 
-### Qwen3-VL
-- `--qwen3vl_mode`: Prompt mode (`raw_image`, `caption`, `semantic_summary`, `semantic_summary_small`)
+### Qwen LLM Reranker
+- `--qwen_mode`: Prompt mode (`text_only`, `caption`, `semantic_summary`) - thay thế `--qwen3vl_mode`
+- `--qwen_model`: Model name (`qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl`)
+- `--qwen_max_candidates`: Số candidates tối đa trong prompt (default: 50)
+  - Nếu None, dùng tất cả candidates từ retrieval
+  - Nên set = `rerank_eval_candidates` để nhất quán
+- `--qwen_max_history`: Số items trong user history (default: 5)
+  - History sẽ bị truncate về N items cuối cùng nếu dài hơn
+- `--qwen_max_seq_length`: Max sequence length cho LLM (default: 2048)
+  - Tăng lên 4096 hoặc 8192 nếu có nhiều candidates (50+)
+  - Raw image mode tự động dùng 2x giá trị này (4096 nếu default)
+
+### Qwen3-VL (Legacy - dùng `--qwen_mode` thay thế)
+- `--qwen3vl_mode`: [DEPRECATED] Dùng `--qwen_mode` thay thế
 - `--semantic_summary_batch_size`: Batch size cho summary generation (default: 4)
 
 ### Performance
@@ -226,8 +241,9 @@ Hit        0.4500    0.6700    0.8900
 1. **Data Preparation Order**:
    - Chạy `data_prepare.py` với đúng flags trước khi train
    - MMGCN/VBPR/BM3 cần `--use_image` hoặc `--use_text`
-   - Qwen3-VL caption mode cần `--generate_caption`
-   - Qwen3-VL semantic_summary mode cần `--generate_semantic_summary`
+   - Qwen caption mode cần `--generate_caption`
+   - Qwen semantic_summary mode cần `--generate_semantic_summary`
+   - `--rerank_eval_candidates` xác định số candidates được pre-generate cho evaluation
 
 2. **Training Modes**:
    - **Standalone**: Train từng stage riêng (`train_retrieval.py`, `train_rerank_standalone.py`)
@@ -235,22 +251,50 @@ Hit        0.4500    0.6700    0.8900
 
 3. **Ground Truth Mode**:
    - Dùng để đánh giá rerank quality độc lập với retrieval
-   - Tạo candidates = [ground_truth] + 19 random negatives
+   - Tạo candidates = [ground_truth] + (N-1) random negatives (N = `rerank_eval_candidates`)
    - Không cần retrieval model
+   - Số candidates có thể điều chỉnh qua `--rerank_eval_candidates`
 
-4. **CLIP Embeddings**:
+4. **Qwen LLM Configuration**:
+   - `--qwen_max_candidates`: Giới hạn số candidates trong prompt (default: 50)
+     - Nếu set nhỏ hơn số candidates thực tế, sẽ truncate về N đầu tiên
+     - Nên set = `rerank_eval_candidates` để nhất quán
+   - `--qwen_max_history`: Số items trong history (default: 5)
+     - History dài hơn sẽ bị truncate về N items cuối cùng
+   - `--qwen_max_seq_length`: Max sequence length (default: 2048)
+     - Tăng lên 4096 hoặc 8192 nếu có nhiều candidates (50+)
+     - Raw image mode tự động dùng 2x giá trị này
+   - Tất cả configs tự động lấy từ `config.py` nếu không set khi khởi tạo
+
+5. **CLIP Embeddings**:
    - Tự động extract khi chạy `data_prepare.py` với `--use_image` hoặc `--use_text`
    - Cần cho MMGCN, VBPR, BM3, VIP5
 
-5. **Image Processing**:
+6. **Image Processing**:
    - Tự động resize về 224×224 (giữ aspect ratio)
    - Tiết kiệm memory và tăng tốc xử lý
+
+7. **LLM Tokenization**:
+   - Code tự động tìm number tokens với nhiều strategies (direct, space-prefixed, encoded)
+   - Probabilities được normalize để sum to 1
+   - Fallback về uniform distribution nếu không tìm thấy number tokens
 
 ## 🔧 Troubleshooting
 
 - **Qwen3-VL không load**: Cài transformers từ source: `pip install git+https://github.com/huggingface/transformers`
-- **Out of memory**: Giảm batch size trong `config.py` hoặc dùng `--use_quantization`
+- **Out of memory**: 
+  - Giảm batch size trong `config.py` (`--rerank_batch_size`)
+  - Giảm `--qwen_max_candidates` hoặc `--rerank_eval_candidates`
+  - Dùng `--use_quantization` (đã enable mặc định cho Unsloth models)
 - **CLIP embeddings không tìm thấy**: Chạy `data_prepare.py` với `--use_image` hoặc `--use_text`
+- **Prompts bị truncate**: Tăng `--qwen_max_seq_length` lên 4096 hoặc 8192
+- **Chỉ có 20 candidates trong prompt**: 
+  - Kiểm tra `--qwen_max_candidates` và `--rerank_eval_candidates` trong config
+  - Đảm bảo `qwen_max_candidates >= rerank_eval_candidates`
+- **LLM reranker thua random**: 
+  - Kiểm tra debug output về number tokens
+  - Đảm bảo model được train đủ epochs
+  - Kiểm tra training data format (target phải là số, không phải text)
 
 ## 📚 Cấu trúc Project
 
@@ -276,6 +320,26 @@ seqreraking4rec/
     ├── train_rerank_standalone.py # Train rerank only
     └── train_pipeline.py         # Train end-to-end
 ```
+
+## 🔄 Recent Updates
+
+### Version 2.0 (Latest)
+
+- ✅ **Unified Qwen Reranker**: Gộp `qwen_reranker.py` và `qwen3vl_reranker.py` thành `qwen_reranker_unified.py`
+- ✅ **Config-driven**: Tất cả LLM parameters có thể config từ `config.py`:
+  - `qwen_max_candidates`: Số candidates tối đa (default: 50)
+  - `qwen_max_history`: Số items trong history (default: 5)
+  - `qwen_max_seq_length`: Max sequence length (default: 2048)
+  - `rerank_eval_candidates`: Số candidates cho evaluation (default: 50)
+- ✅ **Improved Tokenization**: Multiple strategies để tìm number tokens (direct, space-prefixed, encoded)
+- ✅ **Probability Normalization**: Tự động normalize probabilities và fallback về uniform nếu cần
+- ✅ **Debug Output**: Warnings khi không tìm thấy đủ number tokens hoặc probabilities = 0
+- ✅ **Checkpoint Evaluation**: Notebook `eval_from_checkpoint.ipynb` để load và eval model từ checkpoint
+
+### Breaking Changes
+
+- `--qwen3vl_mode` → `--qwen_mode` (backward compatible, nhưng nên dùng mới)
+- Default `rerank_eval_candidates` và `qwen_max_candidates` thay đổi từ 20 → 50
 
 ## 📝 License
 

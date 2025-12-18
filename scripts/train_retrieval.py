@@ -903,12 +903,30 @@ def main() -> None:
     
     elif retrieval_method == "bert4rec":
         # BERT4Rec uses vocab_size (item_count + 1 for padding token)
-        # No special requirements (no CLIP embeddings needed)
+        # Add BERT4Rec-specific hyperparameters from config
+        retriever_kwargs.update({
+            "hidden_size": getattr(arg, 'bert4rec_hidden_size', 256),
+            "num_hidden_layers": getattr(arg, 'bert4rec_num_hidden_layers', 2),
+            "num_attention_heads": getattr(arg, 'bert4rec_num_attention_heads', 4),
+            "intermediate_size": getattr(arg, 'bert4rec_intermediate_size', 1024),
+            "max_seq_length": getattr(arg, 'bert4rec_max_seq_length', 200),
+            "attention_probs_dropout_prob": getattr(arg, 'bert4rec_attention_dropout', 0.2),
+            "hidden_dropout_prob": getattr(arg, 'bert4rec_hidden_dropout', 0.2),
+            "num_warmup_steps": getattr(arg, 'bert4rec_warmup_steps', 1000),
+        })
+        
         print(f"\nBERT4Rec Hyperparameters:")
-        print(f"  hidden_size: {retriever_kwargs.get('hidden_size', 64)}")
-        print(f"  num_hidden_layers: {retriever_kwargs.get('num_hidden_layers', 2)}")
-        print(f"  max_seq_length: {retriever_kwargs.get('max_seq_length', 200)}")
+        print(f"  hidden_size: {retriever_kwargs['hidden_size']}")
+        print(f"  num_hidden_layers: {retriever_kwargs['num_hidden_layers']}")
+        print(f"  num_attention_heads: {retriever_kwargs['num_attention_heads']}")
+        print(f"  intermediate_size: {retriever_kwargs['intermediate_size']}")
+        print(f"  max_seq_length: {retriever_kwargs['max_seq_length']}")
+        print(f"  attention_dropout: {retriever_kwargs['attention_probs_dropout_prob']}")
+        print(f"  hidden_dropout: {retriever_kwargs['hidden_dropout_prob']}")
+        print(f"  warmup_steps: {retriever_kwargs['num_warmup_steps']}")
         print(f"  lr: {retriever_kwargs['lr']}")
+        print(f"  batch_size: {retriever_kwargs['batch_size']}")
+        print(f"  num_epochs: {retriever_kwargs['num_epochs']}")
         print()
         
         fit_kwargs.update({

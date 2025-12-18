@@ -96,6 +96,25 @@ parser.add_argument('--bm3_dropout', type=float, default=0.05,
 parser.add_argument('--bm3_reg_weight', type=float, default=1e-4,
 					help='BM3 regularization weight (default: 1e-4, range: 1e-5 to 1e-3)')
 
+#===========================================================================
+# BERT4Rec-specific hyperparameters
+#===========================================================================
+parser.add_argument('--bert4rec_hidden_size', type=int, default=256,
+					help='BERT4Rec hidden dimension (default: 64, recommended: 256 for better performance)')
+parser.add_argument('--bert4rec_num_hidden_layers', type=int, default=2,
+					help='BERT4Rec number of transformer layers (default: 2, recommended: 2-4)')
+parser.add_argument('--bert4rec_num_attention_heads', type=int, default=4,
+					help='BERT4Rec number of attention heads (default: 2, recommended: 4-8 for better performance)')
+parser.add_argument('--bert4rec_intermediate_size', type=int, default=1024,
+					help='BERT4Rec feed-forward intermediate size (default: 256, recommended: 1024 for better performance)')
+parser.add_argument('--bert4rec_max_seq_length', type=int, default=200,
+					help='BERT4Rec maximum sequence length (default: 200, increase if users have long histories)')
+parser.add_argument('--bert4rec_attention_dropout', type=float, default=0.2,
+					help='BERT4Rec attention dropout rate (default: 0.2, range: 0.0-0.5)')
+parser.add_argument('--bert4rec_hidden_dropout', type=float, default=0.2,
+					help='BERT4Rec hidden dropout rate (default: 0.2, range: 0.0-0.5)')
+parser.add_argument('--bert4rec_warmup_steps', type=int, default=1000,
+					help='BERT4Rec learning rate warmup steps (default: 100, recommended: 1000-2000 for better convergence)')
 
 #===========================================================================
 # Training reranking arguments
