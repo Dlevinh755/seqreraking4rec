@@ -540,12 +540,16 @@ class VIP5Reranker(BaseReranker):
                 - user_history: List[int] - user's interaction history (optional)
                 - num_beams: int - beam size for generation (default: min(len(candidates), 20))
                 - num_return_sequences: int - number of sequences to return (default: min(len(candidates), top_k))
+                - skip_validation: bool - skip fitted validation (for internal use during training)
         
         Returns:
             List[Tuple[int, float]]: [(item_id, score)] đã sort giảm dần
             Score = negative rank (rank 1 -> -1, rank 2 -> -2, ...)
         """
-        self._validate_fitted()
+        # Skip validation if called during training (from _evaluate_split)
+        skip_validation = kwargs.get("skip_validation", False)
+        if not skip_validation:
+            self._validate_fitted()
         
         if self.model is None or self.tokenizer is None:
             raise RuntimeError("VIP5 model chưa được load. Gọi fit() trước!")
@@ -1021,11 +1025,13 @@ class VIP5Reranker(BaseReranker):
                 attention_mask = vip5_input["attention_mask"].to(self.device)
                 
                 # ✅ Use rerank() method với beam search generation (theo cách VIP5 gốc)
+                # Skip validation since we're in the middle of training
                 reranked = self.rerank(
                     user_id=user_id,
                     candidates=valid_candidates,
                     num_beams=min(len(valid_candidates), 20),
                     num_return_sequences=min(len(valid_candidates), k),
+                    skip_validation=True,  # ✅ Skip validation during training
                 )
                 
                 # Get top-K item IDs từ reranked results

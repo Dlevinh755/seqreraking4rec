@@ -20,9 +20,9 @@ parser.add_argument('--rerank_mode', type=str, default=None, help='Rerank mode (
 parser.add_argument('--data_path', type=str, default=None,
                     help='Path to data folder. If None, uses default "data" folder.')
 parser.add_argument('--dataset_code', type=str, default='beauty')
-parser.add_argument('--min_rating', type=int, default=3)    # minimum rating to consider positive
-parser.add_argument('--min_uc', type=int, default=5)   # min rating/user
-parser.add_argument('--min_sc', type=int, default=5)   # min rating/item
+parser.add_argument('--min_rating', type=int, default=4)    # minimum rating to consider positive
+parser.add_argument('--min_uc', type=int, default=7)   # min rating/user
+parser.add_argument('--min_sc', type=int, default=7)   # min rating/item
 parser.add_argument('--use_image', action='store_true', default=False, help='Filter out items without image')
 parser.add_argument('--use_text', action='store_true', default=False, help='Filter out items without text')
 parser.add_argument('--generate_caption', action='store_true', default=False, 
