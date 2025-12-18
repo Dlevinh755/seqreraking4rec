@@ -613,7 +613,7 @@ class VIP5Reranker(BaseReranker):
         with torch.no_grad():
             # Generate top-K items sử dụng beam search
             # Note: VIP5.generate() cần hỗ trợ whole_word_ids, category_ids, vis_feats, task
-            # Nếu không hỗ trợ, sẽ cần override generate() method hoặc dùng cách khác
+            # Fix: use_cache=False để tránh lỗi reorder_cache với tuple past_key_values
             try:
                 beam_outputs = self.model.generate(
                     input_ids=input_ids,
@@ -626,8 +626,9 @@ class VIP5Reranker(BaseReranker):
                     num_return_sequences=num_return_sequences,
                     no_repeat_ngram_size=0,
                     early_stopping=True,
+                    use_cache=False,  # ✅ Fix: Disable cache to avoid reorder_cache error with tuple past_key_values
                 )
-            except TypeError:
+            except (TypeError, AttributeError) as e:
                 # Fallback: Nếu generate() không hỗ trợ custom parameters, dùng encoder_outputs
                 # Encode trước, sau đó generate với encoder_outputs
                 encoder_outputs = self.model.encoder(
@@ -648,6 +649,7 @@ class VIP5Reranker(BaseReranker):
                     num_return_sequences=num_return_sequences,
                     no_repeat_ngram_size=0,
                     early_stopping=True,
+                    use_cache=False,  # ✅ Fix: Disable cache to avoid reorder_cache error
                 )
             
             # Decode generated sequences
