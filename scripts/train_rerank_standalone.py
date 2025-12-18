@@ -250,6 +250,7 @@ def main():
                     })
                 
                 print(f"  Prepared {len(training_samples)} training samples for Qwen LLM")
+                print(training_samples[0])
                 if training_samples:
                     training_kwargs["train_data_for_llm"] = training_samples
                 else:

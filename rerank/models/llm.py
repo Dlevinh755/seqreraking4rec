@@ -139,17 +139,13 @@ class LLMModel:
         from datasets import Dataset
 
         hf_train_dataset = Dataset.from_list(self.train_data)
-        hf_train_dataset = hf_train_dataset.map(
-            self.tokenize_response_only,
-            remove_columns=hf_train_dataset.column_names,
-        )
 
         # Get num_epochs from config if available
         try:
             from config import arg
             num_epochs = getattr(arg, 'rerank_epochs', 2)
         except ImportError:
-            num_epochs = 2
+            num_epochs = 1
         
         training_args = TrainingArguments(
             output_dir="./qwen_rerank",
