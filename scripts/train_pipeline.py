@@ -94,11 +94,17 @@ def main():
         method=args.retrieval_method,
         top_k=args.retrieval_top_k
     )
+    # Get num_negatives from config (default: 19 for 20 total candidates)
+    try:
+        num_negatives = getattr(arg, 'rerank_eval_candidates', 20) - 1  # 1 for ground truth
+    except (ImportError, AttributeError):
+        num_negatives = 19  # Default fallback (1 GT + 19 negatives = 20 total)
+    
     rerank_cfg = RerankConfig(
         method=args.rerank_method,
         top_k=args.rerank_top_k,
         mode=args.rerank_mode,
-        num_negatives=19,  # Ground truth + 19 negatives
+        num_negatives=num_negatives,  # From config (rerank_eval_candidates - 1)
         # Use unified reranker options
         qwen_mode=getattr(arg, 'qwen_mode', None) if args.rerank_method.lower() in ["qwen", "qwen3vl"] else None,
         qwen_model=getattr(arg, 'qwen_model', None) if args.rerank_method.lower() in ["qwen", "qwen3vl"] else None,

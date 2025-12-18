@@ -624,7 +624,16 @@ Answer with only one number (1-{num_candidates}).
             user_items_set = set(items)
             negative_candidates = [item for item in all_items if item not in user_items_set]
             
-            num_negatives = min(19, len(negative_candidates))
+            # Get num_negatives from config (default: 19 for 20 total candidates)
+            try:
+                from config import arg
+                # Use rerank_eval_candidates - 1 to get num_negatives (1 GT + N negatives = total)
+                total_candidates = getattr(arg, 'rerank_eval_candidates', 20)
+                num_negatives = total_candidates - 1  # 1 for ground truth
+            except ImportError:
+                num_negatives = 19  # Default fallback (1 GT + 19 negatives = 20 total)
+            
+            num_negatives = min(num_negatives, len(negative_candidates))
             if num_negatives > 0:
                 negatives = random.sample(negative_candidates, num_negatives)
             else:
