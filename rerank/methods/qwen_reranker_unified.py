@@ -114,7 +114,8 @@ def _count_prompt_tokens(
 MODEL_MAPPING = {
     "qwen3-0.6b": "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
     "qwen3-2bvl": "unsloth/Qwen3-VL-2B-Instruct",
-    "qwen3-1.7b": "unsloth/Qwen3-1.7B-unsloth-bnb-4bit",  # Note: Adjust model path if different
+    "qwen3-1.7b": "unsloth/Qwen3-1.7B-unsloth-bnb-4bit",
+    "qwen3-4b": "unsloth/Qwen3-4B-Instruct-2507"  # Note: Adjust model path if different
 }
 
 

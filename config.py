@@ -144,7 +144,7 @@ parser.add_argument('--qwen_mode', type=str, default='text_only',
 					choices=['text_only', 'caption', 'semantic_summary'],
 					help='Prompt mode for Qwen reranker: text_only (description only), caption, semantic_summary')
 parser.add_argument('--qwen_model', type=str, default='qwen3-0.6b',
-					choices=['qwen3-0.6b', 'qwen3-2bvl', 'qwen3-1.7b'],
+					choices=['qwen3-0.6b', 'qwen3-2bvl', 'qwen3-1.7b', 'qwen3-4b'],
 					help='Model for Qwen reranker: qwen3-0.6b (text), qwen3-2bvl (VL), qwen3-1.7b (text)')
 parser.add_argument('--qwen_max_history', type=int, default=5,
 					help='Maximum number of items in user history to use for Qwen reranker prompts (default: 5). History will be truncated to the last N items if longer.')
