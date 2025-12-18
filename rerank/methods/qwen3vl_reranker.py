@@ -14,6 +14,19 @@ from rerank.models.llm import rank_candidates
 from evaluation.metrics import recall_at_k
 
 
+def _get_max_seq_length() -> int:
+    """Get max_seq_length from config.
+    
+    Returns:
+        max_seq_length from config (default: 2048)
+    """
+    try:
+        from config import arg
+        return getattr(arg, 'qwen_max_seq_length', 2048)
+    except ImportError:
+        return 2048  # Default fallback
+
+
 def _truncate_item_text(text: str, max_chars: int = 200) -> str:
     """Truncate item text metadata to prevent it from being too long.
     
@@ -364,10 +377,11 @@ class Qwen3VLReranker(BaseReranker):
                 text = f"{inst}\n{out}" if not inp else f"{inst}\n{inp}\n{out}"
                 texts.append(text)
             
+            max_length = _get_max_seq_length()  # From config
             tokenized = self.qwen3vl_model.tokenizer(
                 texts,
                 truncation=True,
-                max_length=2048,
+                max_length=max_length,
                 padding="max_length",
             )
             tokenized["labels"] = tokenized["input_ids"].copy()
@@ -474,12 +488,13 @@ class Qwen3VLReranker(BaseReranker):
                 # For text-only mode, use tokenizer directly instead of apply_chat_template
                 # because apply_chat_template expects multimodal format (content as list)
                 # Tokenize the prompt directly
+                max_length = _get_max_seq_length()  # From config
                 inputs = processor.tokenizer(
                     prompt,
                     return_tensors="pt",
                     padding=False,
                     truncation=True,
-                    max_length=2048,
+                    max_length=max_length,
                 )
                 # Ensure inputs are on CPU (in case processor returns GPU tensors)
                 def ensure_cpu(obj):
@@ -644,7 +659,7 @@ class Qwen3VLReranker(BaseReranker):
                     remove_unused_columns=False,
                     dataset_text_field="",
                     dataset_kwargs={"skip_prepare_dataset": True},
-                    max_length=2048,
+                    max_length=_get_max_seq_length(),  # From config
                 )
                 
                 # Use SFTTrainer with UnslothVisionDataCollator for text-only modes

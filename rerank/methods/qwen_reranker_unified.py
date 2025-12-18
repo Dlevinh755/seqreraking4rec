@@ -12,6 +12,19 @@ from rerank.models.qwen3vl import Qwen3VLModel
 from evaluation.metrics import recall_at_k
 
 
+def _get_max_seq_length() -> int:
+    """Get max_seq_length from config.
+    
+    Returns:
+        max_seq_length from config (default: 2048)
+    """
+    try:
+        from config import arg
+        return getattr(arg, 'qwen_max_seq_length', 2048)
+    except ImportError:
+        return 2048  # Default fallback
+
+
 def _truncate_item_text(text: str, max_chars: int = 200) -> str:
     """Truncate item text metadata to prevent it from being too long.
     
@@ -720,7 +733,7 @@ Answer with only one number (1-{num_candidates}).
         print(f"    Total tokens: {stats['total']:,}")
         
         # Check if any prompts exceed max_length
-        max_length = 2048  # From tokenize_function
+        max_length = _get_max_seq_length()  # From config
         num_exceeding = sum(1 for count in stats.get('token_counts', []) if count > max_length)
         if num_exceeding > 0:
             print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} prompts exceed max_length={max_length} and will be truncated!")
@@ -747,10 +760,11 @@ Answer with only one number (1-{num_candidates}).
                 text = f"{inst}\n{out}" if not inp else f"{inst}\n{inp}\n{out}"
                 texts.append(text)
             
+            max_length = _get_max_seq_length()  # From config
             tokenized = self.qwen3vl_model.tokenizer(
                 texts,
                 truncation=True,
-                max_length=2048,
+                max_length=max_length,
                 padding="max_length",
             )
             tokenized["labels"] = tokenized["input_ids"].copy()
@@ -841,7 +855,7 @@ Answer with only one number (1-{num_candidates}).
         print(f"    Total tokens: {stats['total']:,}")
         
         # Check if any prompts exceed max_length
-        max_length = 2048  # From collate_fn
+        max_length = _get_max_seq_length()  # From config
         num_exceeding = sum(1 for count in stats.get('token_counts', []) if count > max_length)
         if num_exceeding > 0:
             print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} prompts exceed max_length={max_length} and will be truncated!")
@@ -880,7 +894,7 @@ Answer with only one number (1-{num_candidates}).
                     return_tensors="pt",
                     padding=False,
                     truncation=True,
-                    max_length=2048,
+                    max_length=_get_max_seq_length(),  # From config
                 )
                 
                 def ensure_cpu(obj):
@@ -1431,7 +1445,7 @@ Answer with only one number (1-{num_candidates}).
         print(f"    Total tokens: {stats['total']:,}")
         
         # Check if any prompts exceed max_length
-        max_length = 2048  # Standard max length for Qwen models
+        max_length = _get_max_seq_length()  # From config
         num_exceeding = sum(1 for count in stats.get('token_counts', []) if count > max_length)
         if num_exceeding > 0:
             print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} eval prompts exceed max_length={max_length} and will be truncated!")

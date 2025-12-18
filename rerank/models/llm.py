@@ -300,17 +300,40 @@ class LLMModel:
                     num_candidates = 20  # Default fallback
         
         # Get token IDs for numbers 1 to num_candidates
-        # Convert numbers to string tokens
+        # Try multiple tokenization strategies for numbers
         number_tokens = []
         for i in range(1, num_candidates + 1):
-            # Try to get token ID for number as string
+            # Strategy 1: Try direct string conversion
             num_str = str(i)
             token_id = self.tokenizer.convert_tokens_to_ids(num_str)
             if token_id != self.tokenizer.unk_token_id:
                 number_tokens.append((i, token_id))
+                continue
+            
+            # Strategy 2: Try with space prefix (common in BPE tokenizers)
+            token_id = self.tokenizer.convert_tokens_to_ids(" " + num_str)
+            if token_id != self.tokenizer.unk_token_id:
+                number_tokens.append((i, token_id))
+                continue
+            
+            # Strategy 3: Try encoding and taking first token
+            encoded = self.tokenizer.encode(num_str, add_special_tokens=False)
+            if len(encoded) > 0 and encoded[0] != self.tokenizer.unk_token_id:
+                number_tokens.append((i, encoded[0]))
+                continue
+        
+        # Debug: Check if we found number tokens
+        if len(number_tokens) < num_candidates:
+            print(f"[WARNING] Only found {len(number_tokens)}/{num_candidates} number tokens!")
+            print(f"  Found tokens: {[n for n, _ in number_tokens[:10]]}...")
+            # If we found very few tokens, this is a problem
+            if len(number_tokens) == 0:
+                print(f"[ERROR] No number tokens found! Falling back to uniform distribution.")
+                return np.ones(num_candidates) / num_candidates
         
         if not number_tokens:
-            # Fallback: use letters if numbers don't work
+            # Fallback: use letters if numbers don't work (but this is wrong for number prompts!)
+            print(f"[WARNING] No number tokens found, falling back to letters (this may cause incorrect predictions)")
             max_letters = min(num_candidates, 20)
             letters = list(string.ascii_uppercase[:max_letters])
             token_ids = self.tokenizer.convert_tokens_to_ids(letters)
@@ -333,6 +356,15 @@ class LLMModel:
         for idx, (cand_num, token_id) in enumerate(number_tokens):
             if cand_num <= num_candidates:
                 prob_array[cand_num - 1] = probs[0, idx].item()
+        
+        # Normalize probabilities (in case some numbers weren't found)
+        prob_sum = prob_array.sum()
+        if prob_sum > 0:
+            prob_array = prob_array / prob_sum
+        else:
+            # Fallback: uniform distribution if all probabilities are zero
+            print(f"[WARNING] All probabilities are zero, using uniform distribution")
+            prob_array = np.ones(num_candidates) / num_candidates
         
         return prob_array
     def evaluate(self,df, user2history, item_id2text):
