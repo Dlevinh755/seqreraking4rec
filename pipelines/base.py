@@ -131,6 +131,10 @@ class TwoStagePipeline:
                 # Use qwen_max_candidates from config, or default to retrieval_top_k
                 max_candidates = arg.qwen_max_candidates if hasattr(arg, 'qwen_max_candidates') and arg.qwen_max_candidates is not None else cfg.retrieval.top_k
                 reranker_kwargs["max_candidates"] = max_candidates
+                
+                # Use qwen_max_history from config
+                if hasattr(arg, 'qwen_max_history'):
+                    reranker_kwargs["max_history"] = arg.qwen_max_history
             
             self.reranker = RerankerCls(**reranker_kwargs)
         

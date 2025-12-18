@@ -129,7 +129,7 @@ class QwenReranker(BaseReranker):
         top_k: int = 50,
         mode: str = "text_only",
         model: str = "qwen3-0.6b",
-        max_history: int = 5,
+        max_history: Optional[int] = None,
         max_candidates: Optional[int] = None,
         batch_size: int = 32,
         num_epochs: int = 10,
@@ -141,7 +141,7 @@ class QwenReranker(BaseReranker):
             top_k: Số lượng items trả về sau rerank
             mode: Prompt mode - "text_only", "caption", "semantic_summary"
             model: Model name - "qwen3-0.6b", "qwen3-2bvl", "qwen3-1.6b"
-            max_history: Số lượng items trong history để dùng cho prompt (default: 5)
+            max_history: Số lượng items trong history để dùng cho prompt (None = lấy từ config, default: 5)
             max_candidates: Maximum number of candidates to process (None = no limit)
             batch_size: Batch size cho training (default: 32)
             num_epochs: Số epochs (default: 10)
@@ -151,7 +151,17 @@ class QwenReranker(BaseReranker):
         super().__init__(top_k=top_k)
         self.mode = mode.lower()
         self.model_name = model.lower()
-        self.max_history = max_history
+        
+        # Get max_history from config if not provided
+        if max_history is None:
+            try:
+                from config import arg
+                self.max_history = getattr(arg, 'qwen_max_history', 5)
+            except ImportError:
+                self.max_history = 5  # Default fallback
+        else:
+            self.max_history = max_history
+        
         self.max_candidates = max_candidates
         
         # Get batch_size from config if not provided
