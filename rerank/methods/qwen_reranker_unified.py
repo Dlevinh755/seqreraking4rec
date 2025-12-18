@@ -162,7 +162,15 @@ class QwenReranker(BaseReranker):
         else:
             self.max_history = max_history
         
-        self.max_candidates = max_candidates
+        # Get max_candidates from config if not provided
+        if max_candidates is None:
+            try:
+                from config import arg
+                self.max_candidates = getattr(arg, 'qwen_max_candidates', None)
+            except ImportError:
+                self.max_candidates = None  # Default fallback (no limit)
+        else:
+            self.max_candidates = max_candidates
         
         # Get batch_size from config if not provided
         if batch_size is None:

@@ -108,11 +108,11 @@ parser.add_argument('--rerank_lr', type=float, default=1e-4,
 					help='Learning rate for rerank models (default: 1e-4).')
 parser.add_argument('--rerank_patience', type=int, default=2,
 					help='Early stopping patience (epochs without val improvement) for rerank models.')
-parser.add_argument('--rerank_eval_candidates', type=int, default=20,
+parser.add_argument('--rerank_eval_candidates', type=int, default=50,
 					help='Number of candidates for reranker evaluation and data preparation (default: 20). Used for both validation and pre-generating candidates in data_prepare.py.')
-parser.add_argument('--qwen_max_candidates', type=int, default=20,
+parser.add_argument('--qwen_max_candidates', type=int, default=50,
 					help='Maximum number of candidates for Qwen reranker during inference (default: 20). If None, uses retrieval_top_k from pipeline config.')
-parser.add_argument('--vip5_max_candidates', type=int, default=20,
+parser.add_argument('--vip5_max_candidates', type=int, default=50,
 					help='Maximum number of candidates for VIP5 Direct Task training (default: 100). Number of negatives + 1 positive = total candidates.')
 parser.add_argument('--retrieval_eval_mode', type=str, default='full_ranking',
 					choices=['full_ranking', 'candidate_list'],
