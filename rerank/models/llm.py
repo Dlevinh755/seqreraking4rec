@@ -100,20 +100,30 @@ class LLMModel:
             self.model_name = model_name or "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
             self.train_data = train_data
 
-    def load_model(self, use_torch_compile=False):
+    def load_model(self, use_torch_compile=False, max_seq_length=None):
         """Load LLM model with 4-bit quantization (default for Unsloth models).
         
         Args:
             use_torch_compile: Whether to use torch.compile() for faster inference
+            max_seq_length: Maximum sequence length (None = get from config, default: 2048)
         
         Note:
             All Unsloth models are loaded with 4-bit quantization by default
             to reduce memory usage while maintaining performance.
         """
+        # Get max_seq_length from config if not provided
+        if max_seq_length is None:
+            try:
+                from config import arg
+                max_seq_length = getattr(arg, 'qwen_max_seq_length', 2048)
+            except ImportError:
+                max_seq_length = 2048  # Default fallback
+        
         print(f"Loading LLM model with 4-bit quantization: {self.model_name}")
+        print(f"  Max sequence length: {max_seq_length}")
         self.model, self.tokenizer = FastLanguageModel.from_pretrained(
             model_name = self.model_name,
-            max_seq_length = 2048,
+            max_seq_length = max_seq_length,
             dtype = torch.float16,
             load_in_4bit = True,  # 4-bit quantization enabled by default for all Unsloth models
         )

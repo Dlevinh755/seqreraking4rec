@@ -112,6 +112,8 @@ parser.add_argument('--rerank_eval_candidates', type=int, default=50,
 					help='Number of candidates for reranker evaluation and data preparation (default: 20). Used for both validation and pre-generating candidates in data_prepare.py.')
 parser.add_argument('--qwen_max_candidates', type=int, default=50,
 					help='Maximum number of candidates for Qwen reranker during inference (default: 20). If None, uses retrieval_top_k from pipeline config.')
+parser.add_argument('--qwen_max_seq_length', type=int, default=2048,
+					help='Maximum sequence length for Qwen LLM models (default: 2048). Increase for longer prompts (e.g., 4096 for multimodal with images).')
 parser.add_argument('--vip5_max_candidates', type=int, default=50,
 					help='Maximum number of candidates for VIP5 Direct Task training (default: 100). Number of negatives + 1 positive = total candidates.')
 parser.add_argument('--retrieval_eval_mode', type=str, default='full_ranking',

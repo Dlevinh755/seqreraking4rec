@@ -135,10 +135,17 @@ class Qwen3VLModel:
             if FAST_VISION_MODEL_AVAILABLE:
                 print("Using Unsloth FastVisionModel for LoRA support...")
                 try:
+                    # Get max_seq_length from config
+                    try:
+                        from config import arg
+                        max_seq_length = getattr(arg, 'qwen_max_seq_length', 2048)
+                    except ImportError:
+                        max_seq_length = 2048  # Default fallback
+                    
                     # Load model with FastVisionModel (supports LoRA)
                     self.model, _ = FastVisionModel.from_pretrained(
                         model_name=self.model_name,
-                        max_seq_length=2048,
+                        max_seq_length=max_seq_length,
                         dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
                         load_in_4bit=True,  # 4-bit quantization enabled by default
                         use_gradient_checkpointing="unsloth",  # Memory efficient
@@ -204,9 +211,17 @@ class Qwen3VLModel:
         """
         print(f"Loading Qwen text model with 4-bit quantization: {self.model_name}")
         try:
+            # Get max_seq_length from config
+            try:
+                from config import arg
+                max_seq_length = getattr(arg, 'qwen_max_seq_length', 2048)
+            except ImportError:
+                max_seq_length = 2048  # Default fallback
+            
+            print(f"  Max sequence length: {max_seq_length}")
             self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                 model_name=self.model_name,
-                max_seq_length=2048,
+                max_seq_length=max_seq_length,
                 dtype=torch.float16,
                 load_in_4bit=True,  # 4-bit quantization enabled by default for all Unsloth models
             )
@@ -404,8 +419,15 @@ User history:"""}
         with torch.no_grad():
             # ✅ For raw_image mode, use larger max_length because images consume many visual tokens
             # Each image can consume 256-1024 visual tokens, so with 20 candidates we need more space
-            # Qwen3-VL supports up to 8192 tokens, but we use 4096 to balance memory and completeness
-            max_len = 4096 if self.mode == "raw_image" else 2048
+            # Qwen3-VL supports up to 8192 tokens, but we use config value to balance memory and completeness
+            # Get max_seq_length from config
+            try:
+                from config import arg
+                base_max_len = getattr(arg, 'qwen_max_seq_length', 2048)
+            except ImportError:
+                base_max_len = 2048  # Default fallback
+            # Use larger for raw_image mode (2x base), smaller for text-only
+            max_len = base_max_len * 2 if self.mode == "raw_image" else base_max_len
             inputs = self.processor.apply_chat_template(
                 messages,
                 tokenize=True,
@@ -495,7 +517,12 @@ User history:"""}
         messages = [{"role": "user", "content": prompt}]
         
         with torch.no_grad():
-            # ✅ For caption mode (text-only), 2048 should be enough
+            # ✅ For caption mode (text-only), use max_seq_length from config
+            try:
+                from config import arg
+                max_length = getattr(arg, 'qwen_max_seq_length', 2048)
+            except ImportError:
+                max_length = 2048  # Default fallback
             inputs = self.processor.apply_chat_template(
                 messages,
                 tokenize=True,
@@ -503,7 +530,7 @@ User history:"""}
                 return_dict=True,
                 return_tensors="pt",
                 truncation=True,
-                max_length=2048,  # ✅ Text-only mode, 2048 is sufficient
+                max_length=max_length,  # ✅ Text-only mode, use from config
             )
             
             # Move to device - handle nested structures (Qwen3-VL may have complex input format)
@@ -581,7 +608,12 @@ User history:"""}
         messages = [{"role": "user", "content": prompt}]
         
         with torch.no_grad():
-            # ✅ For semantic_summary mode (text-only), 2048 should be enough
+            # ✅ For semantic_summary mode (text-only), use max_seq_length from config
+            try:
+                from config import arg
+                max_length = getattr(arg, 'qwen_max_seq_length', 2048)
+            except ImportError:
+                max_length = 2048  # Default fallback
             inputs = self.processor.apply_chat_template(
                 messages,
                 tokenize=True,
@@ -589,7 +621,7 @@ User history:"""}
                 return_dict=True,
                 return_tensors="pt",
                 truncation=True,
-                max_length=2048,  # ✅ Text-only mode, 2048 is sufficient
+                max_length=max_length,  # ✅ Text-only mode, use from config
             )
             
             # Move to device - handle nested structures (Qwen3-VL may have complex input format)
