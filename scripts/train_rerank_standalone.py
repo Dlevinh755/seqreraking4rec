@@ -227,16 +227,27 @@ def main():
                     candidates = [target_item] + negatives
                     random.shuffle(candidates)  # Shuffle so target is not always first
                     
-                    # Find target index in candidates (1-indexed for prompt)
-                    target_idx = candidates.index(target_item) + 1
+                    # Find target index in candidates (0-indexed for letter mapping)
+                    target_idx = candidates.index(target_item)
                     
-                    # Build prompt
+                    # Validate number of candidates
+                    from rerank.models.llm import LETTERS
+                    if len(candidates) > len(LETTERS):
+                        raise ValueError(
+                            f"Too many candidates ({len(candidates)}). Maximum supported: {len(LETTERS)} candidates "
+                            f"(using letters A-Z, a-z). Consider reducing num_candidates."
+                        )
+                    
+                    # Build prompt (now uses letters instead of numbers)
                     prompt = build_prompt_from_candidates(
                         history_texts,
                         candidates,
                         item_id2text,
                         max_candidates=None
                     )
+                    
+                    # Use letter index (LlamaRec style) instead of number
+                    target_letter = LETTERS[target_idx]  # Letter index (A, B, C, ...)
                     
                     # Format for Unsloth (messages format)
                     training_samples.append({
@@ -251,7 +262,7 @@ def main():
                             },
                             {
                                 "role": "assistant",
-                                "content": str(target_idx)  # Answer is the target candidate number (1-indexed)
+                                "content": target_letter  # Answer is the target candidate letter (A, B, C, ...)
                             }
                         ]
                     })

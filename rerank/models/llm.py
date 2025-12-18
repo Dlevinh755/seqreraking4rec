@@ -11,7 +11,8 @@ import ast
 import numpy as np
 
 # Legacy: Keep for backward compatibility, but now we use numbers
-LETTERS = list(string.ascii_uppercase[:20])  # A-T (for backward compatibility)
+# Use both uppercase and lowercase for up to 52 candidates (A-Z, a-z)
+LETTERS = list(string.ascii_uppercase) + list(string.ascii_lowercase)  # A-Z, a-z (52 letters)
 
 
 def build_prompt_from_candidates(user_history, candidate_ids, item_id2text, max_candidates=None):
@@ -24,7 +25,7 @@ def build_prompt_from_candidates(user_history, candidate_ids, item_id2text, max_
         max_candidates: Maximum number of candidates (None = no limit, uses all)
         
     Returns:
-        Formatted prompt string with candidate labels (1, 2, 3, ...)
+        Formatted prompt string with candidate labels (A, B, C, ... or a, b, c, ...)
     """
     if max_candidates is not None and len(candidate_ids) > max_candidates:
         candidate_ids = candidate_ids[:max_candidates]
@@ -32,13 +33,25 @@ def build_prompt_from_candidates(user_history, candidate_ids, item_id2text, max_
     history_text = "\n".join([f"- {h}" for h in user_history])
 
     candidates = [item_id2text.get(cid, f"item_{cid}") for cid in candidate_ids]
-    # Use numbers instead of letters for flexibility
+    num_candidates = len(candidates)
+    
+    # Use letters (A-Z, a-z) for up to 52 candidates (LlamaRec style)
+    if num_candidates > len(LETTERS):
+        raise ValueError(
+            f"Too many candidates ({num_candidates}). Maximum supported: {len(LETTERS)} candidates "
+            f"(using letters A-Z, a-z). Consider reducing max_candidates or using number labels."
+        )
+    
+    # Use letters instead of numbers (LlamaRec style)
     cand_text = "\n".join(
-        [f"{i+1}. {c}" for i, c in enumerate(candidates)]
+        [f"{LETTERS[i]}. {c}" for i, c in enumerate(candidates)]
     )
 
-    num_candidates = len(candidates)
-    answer_format = f"Answer with only one number (1-{num_candidates})." if num_candidates > 1 else "Answer with only one number (1)."
+    # Answer format with letters
+    if num_candidates <= 26:
+        answer_format = f"Answer with only one letter (A-{LETTERS[num_candidates-1]})."
+    else:
+        answer_format = f"Answer with only one letter (A-Z, a-{LETTERS[num_candidates-1]})."
 
     prompt = f"""
 You are a recommendation ranking assistant.
@@ -264,10 +277,10 @@ class LLMModel:
         return dict(zip(letters, probs[0].tolist()))
     
     def predict_probs(self, prompt, num_candidates=None):
-        """Predict probabilities for candidates using numbers (1, 2, 3, ...).
+        """Predict probabilities for candidates using letters (A, B, C, ... or a, b, c, ...) - LlamaRec style.
         
         Args:
-            prompt: Input prompt
+            prompt: Input prompt (plain text, will be converted to chat template format)
             num_candidates: Number of candidates (if None, infers from prompt)
             
         Returns:
@@ -280,8 +293,21 @@ class LLMModel:
         except ImportError:
             max_length = 2048  # Default fallback
         
+        # ✅ Convert plain text prompt to chat template format (consistency with training)
+        # Training uses apply_chat_template, so inference should too
+        messages = [{"role": "user", "content": prompt}]
+        
+        # Apply chat template with generation prompt (adds <|im_start|>assistant\n at the end)
+        # This ensures consistency with training format
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True  # ✅ Add <|im_start|>assistant\n for generation
+        )
+        
+        # Tokenize the chat template formatted text
         inputs = self.tokenizer(
-            prompt, 
+            text, 
             return_tensors="pt",
             truncation=True,  # ✅ Truncate if too long
             max_length=max_length,  # ✅ Use from config
@@ -292,84 +318,80 @@ class LLMModel:
 
         logits = outputs.logits[:, -1]  # [vocab_size]
         
-        # Infer num_candidates from prompt if not provided
+        # Infer num_candidates from original prompt (before chat template) if not provided
+        # Note: We use the original prompt for inference, not the chat template formatted text
+        # because the chat template adds special tokens that might interfere with parsing
         if num_candidates is None:
-            # Count "Candidate items:" section in prompt
+            # Count "Candidate items:" section in original prompt
             if "Candidate items:" in prompt:
                 candidates_section = prompt.split("Candidate items:")[1].split("Answer")[0]
                 num_candidates = candidates_section.strip().count("\n") + 1
             else:
                 # Fallback: try to infer from answer format
-                if "Answer with only one number" in prompt:
-                    # Extract range like "1-50"
+                if "Answer with only one letter" in prompt:
+                    # Extract letter range like "A-Z" or "A-Z, a-z"
                     import re
-                    match = re.search(r'\((\d+)-(\d+)\)', prompt)
+                    # Try to match patterns like "A-Z" or "A-Z, a-z"
+                    match = re.search(r'\(([A-Z])-([A-Za-z])\)', prompt)
                     if match:
-                        num_candidates = int(match.group(2))
+                        start_letter = match.group(1)
+                        end_letter = match.group(2)
+                        start_idx = LETTERS.index(start_letter) if start_letter in LETTERS else 0
+                        end_idx = LETTERS.index(end_letter) if end_letter in LETTERS else len(LETTERS) - 1
+                        num_candidates = end_idx - start_idx + 1
                     else:
-                        num_candidates = 20  # Default fallback
+                        num_candidates = min(20, len(LETTERS))  # Default fallback
                 else:
-                    num_candidates = 20  # Default fallback
+                    num_candidates = min(20, len(LETTERS))  # Default fallback
         
-        # Get token IDs for numbers 1 to num_candidates
-        # Try multiple tokenization strategies for numbers
-        number_tokens = []
-        for i in range(1, num_candidates + 1):
-            # Strategy 1: Try direct string conversion
-            num_str = str(i)
-            token_id = self.tokenizer.convert_tokens_to_ids(num_str)
+        # Validate num_candidates
+        if num_candidates > len(LETTERS):
+            print(f"[WARNING] num_candidates ({num_candidates}) exceeds max letters ({len(LETTERS)}). Truncating to {len(LETTERS)}.")
+            num_candidates = len(LETTERS)
+        
+        # Get token IDs for letters A-Z, a-z (LlamaRec style)
+        letter_tokens = []
+        for i in range(num_candidates):
+            letter = LETTERS[i]
+            
+            # Strategy 1: Try direct letter token
+            token_id = self.tokenizer.convert_tokens_to_ids(letter)
             if token_id != self.tokenizer.unk_token_id:
-                number_tokens.append((i, token_id))
+                letter_tokens.append((i, letter, token_id))
                 continue
             
             # Strategy 2: Try with space prefix (common in BPE tokenizers)
-            token_id = self.tokenizer.convert_tokens_to_ids(" " + num_str)
+            token_id = self.tokenizer.convert_tokens_to_ids(" " + letter)
             if token_id != self.tokenizer.unk_token_id:
-                number_tokens.append((i, token_id))
+                letter_tokens.append((i, letter, token_id))
                 continue
             
             # Strategy 3: Try encoding and taking first token
-            encoded = self.tokenizer.encode(num_str, add_special_tokens=False)
+            encoded = self.tokenizer.encode(letter, add_special_tokens=False)
             if len(encoded) > 0 and encoded[0] != self.tokenizer.unk_token_id:
-                number_tokens.append((i, encoded[0]))
+                letter_tokens.append((i, letter, encoded[0]))
                 continue
         
-        # Debug: Check if we found number tokens
-        if len(number_tokens) < num_candidates:
-            print(f"[WARNING] Only found {len(number_tokens)}/{num_candidates} number tokens!")
-            print(f"  Found tokens: {[n for n, _ in number_tokens[:10]]}...")
+        # Debug: Check if we found letter tokens
+        if len(letter_tokens) < num_candidates:
+            print(f"[WARNING] Only found {len(letter_tokens)}/{num_candidates} letter tokens!")
+            print(f"  Found letters: {[l for _, l, _ in letter_tokens[:10]]}...")
             # If we found very few tokens, this is a problem
-            if len(number_tokens) == 0:
-                print(f"[ERROR] No number tokens found! Falling back to uniform distribution.")
+            if len(letter_tokens) == 0:
+                print(f"[ERROR] No letter tokens found! Falling back to uniform distribution.")
                 return np.ones(num_candidates) / num_candidates
         
-        if not number_tokens:
-            # Fallback: use letters if numbers don't work (but this is wrong for number prompts!)
-            print(f"[WARNING] No number tokens found, falling back to letters (this may cause incorrect predictions)")
-            max_letters = min(num_candidates, 20)
-            letters = list(string.ascii_uppercase[:max_letters])
-            token_ids = self.tokenizer.convert_tokens_to_ids(letters)
-            probs = F.softmax(logits[:, token_ids], dim=-1)
-            # Pad to num_candidates if needed
-            probs_np = probs[0].cpu().numpy()
-            if len(probs_np) < num_candidates:
-                # Pad with zeros
-                padded = np.zeros(num_candidates)
-                padded[:len(probs_np)] = probs_np
-                return padded
-            return probs_np[:num_candidates]
-        
-        # Extract probabilities for number tokens
-        token_ids = [tid for _, tid in number_tokens]
+        # Extract probabilities for letter tokens
+        token_ids = [tid for _, _, tid in letter_tokens]
         probs = F.softmax(logits[:, token_ids], dim=-1)
         
-        # Map back to candidate indices (1-indexed)
+        # Map back to candidate indices (0-indexed)
         prob_array = np.zeros(num_candidates)
-        for idx, (cand_num, token_id) in enumerate(number_tokens):
-            if cand_num <= num_candidates:
-                prob_array[cand_num - 1] = probs[0, idx].item()
+        for idx, (cand_idx, letter, token_id) in enumerate(letter_tokens):
+            if cand_idx < num_candidates:
+                prob_array[cand_idx] = probs[0, idx].item()
         
-        # Normalize probabilities (in case some numbers weren't found)
+        # Normalize probabilities (in case some letters weren't found)
         prob_sum = prob_array.sum()
         if prob_sum > 0:
             prob_array = prob_array / prob_sum

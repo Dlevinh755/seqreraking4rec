@@ -342,8 +342,22 @@ class QwenReranker(BaseReranker):
                                     candidate_texts.append(text)
                         
                         history_str = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
-                        cand_str = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
+                        # Use letters (LlamaRec style) instead of numbers
+                        from rerank.models.llm import LETTERS
                         num_candidates = len(candidates)
+                        if num_candidates > len(LETTERS):
+                            raise ValueError(
+                                f"Too many candidates ({num_candidates}). Maximum supported: {len(LETTERS)} candidates "
+                                f"(using letters A-Z, a-z). Consider reducing max_candidates."
+                            )
+                        
+                        cand_str = "\n".join([f"{LETTERS[i]}. {c}" for i, c in enumerate(candidate_texts)])
+                        
+                        # Answer format with letters
+                        if num_candidates <= 26:
+                            answer_format = f"Answer with only one letter (A-{LETTERS[num_candidates-1]})."
+                        else:
+                            answer_format = f"Answer with only one letter (A-Z, a-{LETTERS[num_candidates-1]})."
                         
                         prompt = f"""You are a recommendation ranking assistant.
 
@@ -355,10 +369,17 @@ User history:
 Candidate items:
 {cand_str}
 
-Answer with only one number (1-{num_candidates}).
+{answer_format}
 """.strip()
                         
-                        target = str(target_idx + 1)  # 1-indexed
+                        # Use letter index (LlamaRec style) instead of number
+                        from rerank.models.llm import LETTERS
+                        if target_idx >= len(LETTERS):
+                            raise ValueError(
+                                f"Target index {target_idx} exceeds max letters ({len(LETTERS)}). "
+                                f"Reduce num_candidates or use number labels."
+                            )
+                        target = LETTERS[target_idx]  # Letter index (A, B, C, ...)
                         train_data_for_llm.append({
                             "messages": [
                                 {"role": "user", "content": prompt},
@@ -493,9 +514,24 @@ Answer with only one number (1-{num_candidates}).
                         else:
                             candidate_texts.append(text)
                 
+                # Use letters (LlamaRec style) instead of numbers
+                from rerank.models.llm import LETTERS
                 history_str = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
-                cand_str = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
                 num_candidates = len(candidates)
+                
+                if num_candidates > len(LETTERS):
+                    raise ValueError(
+                        f"Too many candidates ({num_candidates}). Maximum supported: {len(LETTERS)} candidates "
+                        f"(using letters A-Z, a-z). Consider reducing num_candidates."
+                    )
+                
+                cand_str = "\n".join([f"{LETTERS[i]}. {c}" for i, c in enumerate(candidate_texts)])
+                
+                # Answer format with letters
+                if num_candidates <= 26:
+                    answer_format = f"Answer with only one letter (A-{LETTERS[num_candidates-1]})."
+                else:
+                    answer_format = f"Answer with only one letter (A-Z, a-{LETTERS[num_candidates-1]})."
                 
                 prompt = f"""You are a recommendation ranking assistant.
 
@@ -507,7 +543,7 @@ User history:
 Candidate items:
 {cand_str}
 
-Answer with only one number (1-{num_candidates}).
+{answer_format}
 """.strip()
             
             # ✅ Collect eval prompts for token analysis (only if not pre-built)
@@ -699,7 +735,15 @@ Answer with only one number (1-{num_candidates}).
         targets = []
         for sample in train_samples:
             prompt = self._build_training_prompt(sample)
-            target = str(sample["target_idx"] + 1)  # 1-indexed
+            # Use letter index (LlamaRec style) instead of number
+            from rerank.models.llm import LETTERS
+            target_idx = sample["target_idx"]
+            if target_idx >= len(LETTERS):
+                raise ValueError(
+                    f"Target index {target_idx} exceeds max letters ({len(LETTERS)}). "
+                    f"Reduce num_candidates or use number labels."
+                )
+            target = LETTERS[target_idx]  # Letter index (A, B, C, ...)
             
             prompts.append(prompt)
             targets.append(target)
@@ -816,7 +860,15 @@ Answer with only one number (1-{num_candidates}).
         prompts = []
         targets = []
         for sample in train_samples:
-            target = str(sample["target_idx"] + 1)  # 1-indexed
+            # Use letter index (LlamaRec style) instead of number
+            from rerank.models.llm import LETTERS
+            target_idx = sample["target_idx"]
+            if target_idx >= len(LETTERS):
+                raise ValueError(
+                    f"Target index {target_idx} exceeds max letters ({len(LETTERS)}). "
+                    f"Reduce num_candidates or use number labels."
+                )
+            target = LETTERS[target_idx]  # Letter index (A, B, C, ...)
             prompt = self._build_training_prompt(sample)
             
             prompts.append(prompt)
@@ -1092,8 +1144,22 @@ Answer with only one number (1-{num_candidates}).
         
         # Build prompt
         history_str = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
-        cand_str = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
+        # Use letters (LlamaRec style) instead of numbers
+        from rerank.models.llm import LETTERS
         num_candidates = len(candidates)
+        if num_candidates > len(LETTERS):
+            raise ValueError(
+                f"Too many candidates ({num_candidates}). Maximum supported: {len(LETTERS)} candidates "
+                f"(using letters A-Z, a-z). Consider reducing num_candidates."
+            )
+        
+        cand_str = "\n".join([f"{LETTERS[i]}. {c}" for i, c in enumerate(candidate_texts)])
+        
+        # Answer format with letters
+        if num_candidates <= 26:
+            answer_format = f"Answer with only one letter (A-{LETTERS[num_candidates-1]})."
+        else:
+            answer_format = f"Answer with only one letter (A-Z, a-{LETTERS[num_candidates-1]})."
         
         prompt = f"""You are a recommendation ranking assistant.
 
@@ -1105,7 +1171,7 @@ User history:
 Candidate items:
 {cand_str}
 
-Answer with only one number (1-{num_candidates}).
+{answer_format}
 """.strip()
         
         return prompt
@@ -1191,10 +1257,24 @@ Answer with only one number (1-{num_candidates}).
                 text = _truncate_item_text(text, max_chars=truncate_limit)
                 candidate_texts.append(text)
         
-        # Build prompt
+        # Build prompt with letters (LlamaRec style)
+        from rerank.models.llm import LETTERS
         history_str = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
-        cand_str = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
         num_candidates = len(candidates)
+        
+        if num_candidates > len(LETTERS):
+            raise ValueError(
+                f"Too many candidates ({num_candidates}). Maximum supported: {len(LETTERS)} candidates "
+                f"(using letters A-Z, a-z). Consider reducing num_candidates."
+            )
+        
+        cand_str = "\n".join([f"{LETTERS[i]}. {c}" for i, c in enumerate(candidate_texts)])
+        
+        # Answer format with letters
+        if num_candidates <= 26:
+            answer_format = f"Answer with only one letter (A-{LETTERS[num_candidates-1]})."
+        else:
+            answer_format = f"Answer with only one letter (A-Z, a-{LETTERS[num_candidates-1]})."
         
         prompt = f"""You are a recommendation ranking assistant.
 
@@ -1207,7 +1287,7 @@ Candidate items:
 {cand_str}
 {f'... (and {num_candidates - 10} more candidates)' if num_candidates > 10 else ''}
 
-Answer with only one number (1-{num_candidates}).
+{answer_format}
 """.strip()
         
         return prompt
@@ -1377,9 +1457,24 @@ Answer with only one number (1-{num_candidates}).
                             else:
                                 candidate_texts.append(text)
                     
+                    # Use letters (LlamaRec style) instead of numbers
+                    from rerank.models.llm import LETTERS
                     history_str = "\n".join([f"- {h}" for h in history_texts]) if history_texts else "No previous interactions."
-                    cand_str = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidate_texts)])
                     num_candidates = len(candidates)
+                    
+                    if num_candidates > len(LETTERS):
+                        raise ValueError(
+                            f"Too many candidates ({num_candidates}). Maximum supported: {len(LETTERS)} candidates "
+                            f"(using letters A-Z, a-z). Consider reducing num_candidates."
+                        )
+                    
+                    cand_str = "\n".join([f"{LETTERS[i]}. {c}" for i, c in enumerate(candidate_texts)])
+                    
+                    # Answer format with letters
+                    if num_candidates <= 26:
+                        answer_format = f"Answer with only one letter (A-{LETTERS[num_candidates-1]})."
+                    else:
+                        answer_format = f"Answer with only one letter (A-Z, a-{LETTERS[num_candidates-1]})."
                     
                     prompt = f"""You are a recommendation ranking assistant.
 
@@ -1391,7 +1486,7 @@ User history:
 Candidate items:
 {cand_str}
 
-Answer with only one number (1-{num_candidates}).
+{answer_format}
 """.strip()
             else:
                 # For VL model, build sample prompt
