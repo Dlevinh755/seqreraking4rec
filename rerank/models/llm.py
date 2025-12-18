@@ -1,3 +1,5 @@
+
+##%%writefile /kaggle/working/rerank/models/llm.py
 from unsloth import FastLanguageModel
 import torch
 from transformers import Trainer, TrainingArguments
@@ -137,8 +139,50 @@ class LLMModel:
     def train(self):
 
         from datasets import Dataset
+        from trl import SFTTrainer, SFTConfig
+        from unsloth.chat_templates import train_on_responses_only
 
         hf_train_dataset = Dataset.from_list(self.train_data)
+        
+        # ✅ Format messages to text using chat template (like notebook Cell 7)
+        def formatting_prompts_func(examples):
+            """Format conversations to text using chat template.
+            
+            When batched=True: examples["messages"] is a list of message lists
+            When batched=False: examples["messages"] is a single message list
+            """
+            messages_list = examples["messages"]
+            
+            # Check if batched (list of lists) or single (single list)
+            if isinstance(messages_list, list) and len(messages_list) > 0:
+                # Check if first element is a list (batched) or dict (single message list)
+                if isinstance(messages_list[0], list):
+                    # Batched: list of message lists
+                    texts = []
+                    for messages in messages_list:
+                        text = self.tokenizer.apply_chat_template(
+                            messages,
+                            tokenize=False,
+                            add_generation_prompt=False
+                        )
+                        texts.append(text)
+                    return {"text": texts}
+                elif isinstance(messages_list[0], dict):
+                    # Single: messages_list is already a list of message dicts
+                    text = self.tokenizer.apply_chat_template(
+                        messages_list,
+                        tokenize=False,
+                        add_generation_prompt=False
+                    )
+                    return {"text": text}
+            
+            raise ValueError(f"Invalid messages format: {type(messages_list)}")
+        
+        # ✅ Map to format as text (like notebook Cell 7) - use batched=True for efficiency
+        hf_train_dataset = hf_train_dataset.map(
+            formatting_prompts_func,
+            batched=True,  # Process in batches for efficiency (like notebook)
+        )
 
         # Get num_epochs from config if available
         try:
@@ -147,7 +191,9 @@ class LLMModel:
         except ImportError:
             num_epochs = 1
         
-        training_args = TrainingArguments(
+        # ✅ Use SFTConfig and SFTTrainer (like notebook Cell 8)
+        training_args = SFTConfig(
+            dataset_text_field="text",  # Field name in dataset
             output_dir="./qwen_rerank",
             per_device_train_batch_size=8,
             gradient_accumulation_steps=4,
@@ -156,14 +202,22 @@ class LLMModel:
             logging_steps=50,
             save_steps=500,
             report_to="none",
-            # bf16=True,
+            fp16=True,
+            optim="adamw_8bit",
         )
-
-        trainer = Trainer(
+        
+        trainer = SFTTrainer(
             model=self.model,
-            args=training_args,
-            train_dataset=hf_train_dataset,
             tokenizer=self.tokenizer,
+            train_dataset=hf_train_dataset,
+            args=training_args,
+        )
+        
+        # ✅ Use train_on_responses_only to automatically mask prompt tokens (like notebook)
+        trainer = train_on_responses_only(
+            trainer,
+            instruction_part="<|im_start|>user\n",
+            response_part="<|im_start|>assistant\n",
         )
         
         # ✅ Actually train the model!
@@ -291,69 +345,6 @@ class LLMModel:
             **{f"Recall@{k}": sum(v)/len(v) for k, v in recalls.items()},
             **{f"NDCG@{k}": sum(v)/len(v) for k, v in ndcgs.items()}
         }
-    def tokenize_response_only(self, example):
-        """Tokenize training example for Unsloth.
-        
-        Uses apply_chat_template and lets Unsloth handle label masking automatically.
-        This is the recommended approach for Unsloth compatibility.
-        """
-        messages = example["messages"]
-        
-        # ✅ Use apply_chat_template for proper formatting (Unsloth-compatible)
-        text = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False
-        )
-        
-        # Tokenize the full text
-        # ✅ Pad to max_length to ensure all sequences have same length
-        tokenized = self.tokenizer(
-            text,
-            truncation=True,
-            max_length=2048,
-            padding="max_length",  # Pad to max_length for consistent batch shapes
-            return_tensors=None,  # Return lists, not tensors (for Dataset.map)
-        )
-        
-        # ✅ Get input_ids and ensure it's a flat list
-        input_ids = tokenized["input_ids"]
-        
-        # Handle different return formats from tokenizer
-        if isinstance(input_ids, list):
-            if len(input_ids) > 0 and isinstance(input_ids[0], list):
-                # Flatten nested list
-                input_ids = [item for sublist in input_ids for item in sublist]
-            # Ensure all elements are ints
-            input_ids = [int(x) for x in input_ids]
-        else:
-            # Convert tensor or other type to list
-            input_ids = [int(x) for x in list(input_ids)]
-        
-        # ✅ Create labels: copy input_ids
-        # For Unsloth, labels should be a copy of input_ids
-        # Unsloth will handle masking automatically based on chat template
-        labels = input_ids.copy()
-        
-        # ✅ Ensure both are flat lists of ints (critical for Unsloth)
-        input_ids = [int(x) for x in input_ids]
-        labels = [int(x) for x in labels]
-        
-        # ✅ Critical: ensure exact same length
-        if len(input_ids) != len(labels):
-            min_len = min(len(input_ids), len(labels))
-            input_ids = input_ids[:min_len]
-            labels = labels[:min_len]
-        
-        # ✅ Final check: ensure no nested structures
-        assert all(isinstance(x, int) for x in input_ids), "input_ids must be flat list of ints"
-        assert all(isinstance(x, int) for x in labels), "labels must be flat list of ints"
-        assert len(input_ids) == len(labels), f"Length mismatch: {len(input_ids)} vs {len(labels)}"
-        
-        tokenized["input_ids"] = input_ids
-        tokenized["labels"] = labels
-
-        return tokenized
 
 
 

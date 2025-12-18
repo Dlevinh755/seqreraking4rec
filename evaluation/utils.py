@@ -16,6 +16,8 @@ def evaluate_split(
     k: int = 10,
     ground_truth_mode: bool = False,
     ks: Optional[List[int]] = None,
+    num_workers: int = 0,
+    batch_size: int = 100,
 ) -> Dict[str, float]:
     """Evaluate recommendations on a split.
     
@@ -28,12 +30,15 @@ def evaluate_split(
         k: Cutoff for metrics (used if ks is None)
         ground_truth_mode: If True, pass ground_truth to recommend_fn (for rerank ground_truth mode)
         ks: List of K values to evaluate (e.g., [5, 10, 20]). If None, uses [k]
+        num_workers: Number of parallel workers (0 = no multiprocessing, use sequential)
+        batch_size: Batch size for progress updates
         
     Returns:
         Dict with keys: recall@K, ndcg@K, hit@K for each K in ks (or just k if ks is None)
         Also includes "num_users" key.
     """
     from evaluation.metrics import hit_at_k
+    from tqdm import tqdm
     
     if ks is None:
         ks = [k]
@@ -51,7 +56,10 @@ def evaluate_split(
     skipped_no_recs = 0
     evaluated = 0
     
-    for user_id in users:
+    # Use tqdm for progress bar
+    user_iterator = tqdm(users, desc="Evaluating", unit="user", disable=False)
+    
+    for user_id in user_iterator:
         gt_items = split.get(user_id, [])
         if not gt_items:
             skipped_no_gt += 1
@@ -79,6 +87,13 @@ def evaluate_split(
             metrics_by_k[k_val]["recalls"].append(r)
             metrics_by_k[k_val]["ndcgs"].append(n)
             metrics_by_k[k_val]["hits"].append(h)
+        
+        # Update progress bar description
+        if evaluated % batch_size == 0:
+            user_iterator.set_postfix({"evaluated": evaluated, "skipped": skipped_no_gt + skipped_no_recs})
+    
+    # Close progress bar
+    user_iterator.close()
     
     # Debug info
     if skipped_no_gt > 0 or skipped_no_recs > 0:

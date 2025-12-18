@@ -3,7 +3,6 @@ import argparse
 import os
 
 
-RAW_DATASET_ROOT_FOLDER = 'data'
 EXPERIMENT_ROOT = 'experiments'
 
 
@@ -18,6 +17,8 @@ parser.add_argument('--rerank_mode', type=str, default=None, help='Rerank mode (
 #=========================================================================
 # Data preparation arguments
 #=========================================================================
+parser.add_argument('--data_path', type=str, default=None,
+                    help='Path to data folder. If None, uses default "data" folder.')
 parser.add_argument('--dataset_code', type=str, default='beauty')
 parser.add_argument('--min_rating', type=int, default=3)    # minimum rating to consider positive
 parser.add_argument('--min_uc', type=int, default=5)   # min rating/user
@@ -138,5 +139,9 @@ parser.add_argument('--max_text_length', type=int, default=256,
 parser.add_argument('--retrieval_method', type=str, default=None, help='Retrieval method (used by train_retrieval.py)')
 parser.add_argument('--mode', type=str, default=None, help='Training mode (used by train_rerank_standalone.py)')
 arg = parser.parse_args()
+
+# Set RAW_DATASET_ROOT_FOLDER based on data_path argument
+# If data_path is provided, use it; otherwise use default "data" folder
+RAW_DATASET_ROOT_FOLDER = arg.data_path if arg.data_path is not None else 'data'
 
 

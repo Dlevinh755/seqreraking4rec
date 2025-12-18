@@ -273,8 +273,34 @@ def main():
     print(f"\n[4/4] Evaluating reranker...")
     ks = [1, 5, 10, 20]
     
-    def recommend_fn(user_id, ground_truth=None):
+    # Try to load pre-generated candidates for faster evaluation
+    precomputed_candidates = None
+    try:
+        from evaluation.utils import load_rerank_candidates
+        precomputed_candidates = load_rerank_candidates(
+            dataset_code=arg.dataset_code,
+            min_rating=arg.min_rating,
+            min_uc=arg.min_uc,
+            min_sc=arg.min_sc,
+        )
+        if precomputed_candidates.get("val") or precomputed_candidates.get("test"):
+            print("  Using pre-generated candidates for faster evaluation")
+    except Exception as e:
+        # If loading fails, continue without precomputed candidates
+        pass
+    
+    def recommend_fn(user_id, ground_truth=None, split_name="val"):
         """Recommendation function for evaluation."""
+        # Try to use precomputed candidates first (faster)
+        if precomputed_candidates:
+            split_candidates = precomputed_candidates.get(split_name, {})
+            if user_id in split_candidates:
+                candidates = split_candidates[user_id]
+                if candidates:
+                    scored = reranker.rerank(user_id, candidates)
+                    return [item_id for item_id, _ in scored]
+        
+        # Fallback to original logic
         if args.mode == "ground_truth":
             # Ground truth mode: use gt + random negatives
             if ground_truth is None:
@@ -330,8 +356,15 @@ def main():
             return [item_id for item_id, _ in scored]
     
     # Evaluate on val and test
-    val_metrics = evaluate_split(recommend_fn, val, k=args.metric_k, ks=ks, ground_truth_mode=(args.mode == "ground_truth"))
-    test_metrics = evaluate_split(recommend_fn, test, k=args.metric_k, ks=ks, ground_truth_mode=(args.mode == "ground_truth"))
+    # Create wrapper functions to pass split_name
+    def val_recommend_fn(user_id, ground_truth=None):
+        return recommend_fn(user_id, ground_truth, split_name="val")
+    
+    def test_recommend_fn(user_id, ground_truth=None):
+        return recommend_fn(user_id, ground_truth, split_name="test")
+    
+    val_metrics = evaluate_split(val_recommend_fn, val, k=args.metric_k, ks=ks, ground_truth_mode=(args.mode == "ground_truth"))
+    test_metrics = evaluate_split(test_recommend_fn, test, k=args.metric_k, ks=ks, ground_truth_mode=(args.mode == "ground_truth"))
     
     # Print results
     print("=" * 80)
