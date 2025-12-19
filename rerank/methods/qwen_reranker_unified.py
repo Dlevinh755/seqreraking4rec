@@ -207,10 +207,10 @@ class QwenReranker(BaseReranker):
             )
         
         # Validate model
+        # ✅ Allow direct HuggingFace model names if not in mapping
         if self.model_name not in MODEL_MAPPING:
-            raise ValueError(
-                f"Invalid model: {model}. Must be one of: {list(MODEL_MAPPING.keys())}"
-            )
+            print(f"[QwenReranker] Model '{self.model_name}' not in MODEL_MAPPING, using as direct HuggingFace model name")
+            print(f"[QwenReranker] Available mappings: {list(MODEL_MAPPING.keys())}")
         
         # Validate mode-model compatibility
         if self.mode == "text_only" and self.model_name == "qwen3-2bvl":
@@ -292,7 +292,8 @@ class QwenReranker(BaseReranker):
         
         if use_text_model:
             # Use LLMModel for text-only mode or caption/semantic_summary with text models
-            model_path = MODEL_MAPPING[self.model_name]
+            # ✅ Use mapping if available, otherwise use model_name directly as HuggingFace path
+            model_path = MODEL_MAPPING.get(self.model_name, self.model_name)
             train_data_for_llm = kwargs.get("train_data_for_llm")
             
             # For caption/semantic_summary modes, prepare training data from item_meta
@@ -403,7 +404,8 @@ Candidate items:
                 self.llm_model.load_model(use_torch_compile=use_torch_compile)
         else:
             # Use Qwen3VLModel for caption/semantic_summary with VL model (qwen3-2bvl)
-            model_path = MODEL_MAPPING[self.model_name]
+            # ✅ Use mapping if available, otherwise use model_name directly as HuggingFace path
+            model_path = MODEL_MAPPING.get(self.model_name, self.model_name)
             
             self.qwen3vl_model = Qwen3VLModel(
                 mode=self.mode,
