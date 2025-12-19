@@ -261,8 +261,15 @@ class LLMModel:
         
         # ✅ Actually train the model!
         print(f"[LLMModel] Starting training for {num_epochs} epochs...")
+        print(f"[LLMModel] Training config: lr={learning_rate}, batch_size={batch_size}, epochs={num_epochs}")
+        print(f"[LLMModel] Dataset size: {len(hf_train_dataset)} samples")
+        print(f"[LLMModel] Total steps: {len(hf_train_dataset) // (batch_size * 2) * num_epochs}")
+        
         trainer.train()
+        
+        # ✅ Log final training loss
         print(f"[LLMModel] Training completed!")
+        print(f"[LLMModel] Check training logs above for loss progression")
 
 
 
@@ -390,6 +397,7 @@ class LLMModel:
             # If we found very few tokens, this is a problem
             if len(letter_tokens) == 0:
                 print(f"[ERROR] No letter tokens found! Falling back to uniform distribution.")
+                print(f"[ERROR] This will cause recall = random! Check tokenizer compatibility.")
                 return np.ones(num_candidates) / num_candidates
         
         # Extract probabilities for letter tokens
@@ -409,7 +417,15 @@ class LLMModel:
         else:
             # Fallback: uniform distribution if all probabilities are zero
             print(f"[WARNING] All probabilities are zero, using uniform distribution")
+            print(f"[WARNING] This will cause recall = random! Model may not have learned anything.")
             prob_array = np.ones(num_candidates) / num_candidates
+        
+        # ✅ Debug: Check if probabilities are uniform (model chưa học được gì)
+        prob_std = np.std(prob_array)
+        expected_uniform_std = 0.0  # Uniform distribution has std = 0
+        if prob_std < 0.01:  # Nearly uniform
+            print(f"[WARNING] Probabilities are nearly uniform (std={prob_std:.4f})!")
+            print(f"[WARNING] Model may not have learned anything. Check training loss.")
         
         return prob_array
     def evaluate(self,df, user2history, item_id2text):
