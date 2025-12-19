@@ -267,9 +267,18 @@ class LLMModel:
         
         trainer.train()
         
+        # ✅ Save final model (vì load_best_model_at_end=False)
+        print(f"[LLMModel] Saving final model...")
+        trainer.save_model()  # Save to output_dir
+        print(f"[LLMModel] Model saved to {training_args.output_dir}")
+        
         # ✅ Log final training loss
         print(f"[LLMModel] Training completed!")
         print(f"[LLMModel] Check training logs above for loss progression")
+        print(f"[LLMModel] If loss did not decrease, check:")
+        print(f"  - Learning rate (current: {learning_rate})")
+        print(f"  - Training data quality")
+        print(f"  - Model size (current: {self.model_name})")
 
 
 

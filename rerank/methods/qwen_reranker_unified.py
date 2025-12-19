@@ -1334,6 +1334,9 @@ Candidate items:
         """Compute average Recall@K for validation."""
         recalls = []
         
+        # ✅ Debug: Track first few samples
+        debug_samples = []
+        
         for user_id, gt_items in split.items():
             if user_id not in self.train_user_history:
                 continue
@@ -1363,13 +1366,41 @@ Candidate items:
             except Exception:
                 continue
             
+            # ✅ Debug: Check GT in candidates
+            gt_in_candidates = any(item in candidates for item in gt_items)
+            if not gt_in_candidates:
+                print(f"[WARNING] User {user_id}: GT items {gt_items} not in candidates! Skipping.")
+                continue
+            
             random.shuffle(candidates)
             reranked = self.rerank(user_id, candidates, user_history=history)
             top_k_items = [item_id for item_id, _ in reranked[:k]]
             
             hits = len(set(top_k_items) & set(gt_items))
             if len(gt_items) > 0:
-                recalls.append(hits / len(gt_items))
+                recall = hits / len(gt_items)
+                recalls.append(recall)
+                
+                # ✅ Debug: Track first 3 samples
+                if len(debug_samples) < 3:
+                    debug_samples.append({
+                        "user_id": user_id,
+                        "gt_items": gt_items,
+                        "top_k": top_k_items[:5],
+                        "hits": hits,
+                        "recall": recall,
+                        "reranked_scores": [score for _, score in reranked[:5]]
+                    })
+        
+        # ✅ Debug: Print first few samples
+        if debug_samples:
+            print(f"\n[DEBUG] Evaluation samples (first {len(debug_samples)}):")
+            for i, sample in enumerate(debug_samples):
+                print(f"  Sample {i+1}:")
+                print(f"    User: {sample['user_id']}, GT: {sample['gt_items']}")
+                print(f"    Top-5: {sample['top_k']}")
+                print(f"    Hits: {sample['hits']}, Recall@{k}: {sample['recall']:.4f}")
+                print(f"    Scores: {[f'{s:.4f}' for s in sample['reranked_scores'][:5]]}")
         
         return float(np.mean(recalls)) if recalls else 0.0
     
