@@ -282,10 +282,48 @@ def main():
         retriever.fit(train, item_count=item_count, val_data=val)
         print("  Retrieval model loaded and ready")
     
-    # Train reranker
-    print(f"\n[3/3] Training reranker...")
-    reranker.fit(train, **training_kwargs)
-    print("  Rerank training completed!")
+    # Check action: train or eval
+    rerank_action = getattr(arg, 'rerank_action', 'train') or 'train'
+    
+    if rerank_action == "eval":
+        # Eval mode: Load pretrained model and skip training
+        # Note: Pass model path to --qwen_model, Unsloth will automatically load the adapter
+        print(f"\n[3/3] Loading pretrained reranker (eval mode)...")
+        print(f"  Model path: {reranker_kwargs.get('model', 'N/A')}")
+        print("  Skipping training...")
+        
+        # For Qwen rerankers, model will be loaded from qwen_model path
+        # Unsloth automatically loads adapter when loading from pretrained path
+        if args.rerank_method in ["qwen", "qwen3vl"]:
+            # Get mode and model name (which should be the pretrained path)
+            qwen_mode = reranker_kwargs.get("mode", "text_only")
+            use_text_model = qwen_mode == "text_only" or (qwen_mode in ["caption", "semantic_summary"] and reranker_kwargs.get("model", "qwen3-0.6b") in ["qwen3-0.6b", "qwen3-1.6b"])
+            
+            if use_text_model:
+                # Load LLM model - Unsloth will automatically load adapter from model_name path
+                from rerank.models.llm import LLMModel
+                model_path = reranker_kwargs.get("model", "qwen3-0.6b")
+                reranker.llm_model = LLMModel(
+                    train_data=None,
+                    model_name=model_path  # This path should contain the pretrained adapter
+                )
+                # Load model - Unsloth automatically loads adapter if path contains adapter weights
+                reranker.llm_model.load_model(use_torch_compile=False)
+                print(f"  ✅ Pretrained LLM model loaded from: {model_path}")
+                print("  Note: Unsloth automatically loaded adapter weights from the model path.")
+            else:
+                # For VL models, loading from pretrained path is more complex
+                print(f"  ⚠️  Warning: Loading pretrained Qwen3VL models is not yet fully supported.")
+                print(f"  Continuing with base model...")
+        else:
+            # For other rerankers (VIP5, BERT4Rec), loading from checkpoint would need similar logic
+            print(f"  ⚠️  Warning: Loading pretrained {args.rerank_method} models from path is not yet implemented.")
+            print(f"  Continuing with base model...")
+    else:
+        # Train mode: Train the model
+        print(f"\n[3/3] Training reranker...")
+        reranker.fit(train, **training_kwargs)
+        print("  Rerank training completed!")
     
     # Evaluate
     print(f"\n[4/4] Evaluating reranker...")

@@ -147,6 +147,19 @@ parser.add_argument('--qwen_model', type=str, default='qwen3-0.6b',
 					help='Model for Qwen reranker. Can be: qwen3-0.6b, qwen3-2bvl, qwen3-1.7b, qwen3-4b, or any HuggingFace model name (e.g., Qwen/Qwen2.5-0.5B-Instruct)')
 parser.add_argument('--qwen_max_history', type=int, default=5,
 					help='Maximum number of items in user history to use for Qwen reranker prompts (default: 5). History will be truncated to the last N items if longer.')
+parser.add_argument('--qwen_gradient_accumulation_steps', type=int, default=2,
+					help='Gradient accumulation steps for Qwen LLM training (default: 2). Effective batch size = batch_size * gradient_accumulation_steps.')
+parser.add_argument('--qwen_warmup_steps', type=int, default=20,
+					help='Number of warmup steps for Qwen LLM training (default: 20).')
+parser.add_argument('--qwen_lora_r', type=int, default=8,
+					help='LoRA rank (r) for Qwen LLM fine-tuning (default: 8). Higher values = more parameters but better capacity.')
+parser.add_argument('--qwen_lora_alpha', type=int, default=16,
+					help='LoRA alpha for Qwen LLM fine-tuning (default: 16). Usually set to 2 * lora_r.')
+parser.add_argument('--qwen_lora_dropout', type=float, default=0.05,
+					help='LoRA dropout rate for Qwen LLM fine-tuning (default: 0.05).')
+parser.add_argument('--rerank_action', type=str, default='train',
+					choices=['train', 'eval'],
+					help='Action for rerank: train (train model) or eval (load pretrained model and evaluate only, default: train). When eval, pass model path to --qwen_model and Unsloth will automatically load the adapter.')
 # Legacy: Keep qwen3vl_mode for backward compatibility (will be removed in future)
 parser.add_argument('--qwen3vl_mode', type=str, default=None,
 					choices=['caption', 'semantic_summary', 'semantic_summary_small'],

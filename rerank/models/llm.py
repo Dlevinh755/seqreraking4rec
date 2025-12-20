@@ -122,8 +122,9 @@ class LLMModel:
             max_seq_length: Maximum sequence length (None = get from config, default: 2048)
         
         Note:
-            All Unsloth models are loaded with 4-bit quantization by default
-            to reduce memory usage while maintaining performance.
+            - All Unsloth models are loaded with 4-bit quantization by default
+            - If self.model_name points to a path with adapter weights, Unsloth will automatically
+              load the adapter. Otherwise, it loads base model and prepares for training.
         """
         # Get max_seq_length from config if not provided
         if max_seq_length is None:
@@ -133,8 +134,12 @@ class LLMModel:
             except ImportError:
                 max_seq_length = 2048  # Default fallback
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        print(f"Loading LLM model with 4-bit quantization: {self.model_name}")
+        
+        print(f"Loading LLM model: {self.model_name}")
         print(f"  Max sequence length: {max_seq_length}")
+        print(f"  Note: Unsloth will automatically load adapter if present in the model path")
+        
+        # Unsloth automatically detects and loads adapter weights if present
         self.model, self.tokenizer = FastLanguageModel.from_pretrained(
             model_name = self.model_name,
             max_seq_length = max_seq_length,
@@ -142,16 +147,59 @@ class LLMModel:
             load_in_4bit = True,  # 4-bit quantization enabled by default for all Unsloth models
             device_map={'': local_rank},
         )
-
-        self.model = FastLanguageModel.get_peft_model(
-            self.model,
-            r = 8,
-            target_modules = ["q_proj","k_proj","v_proj","o_proj"],
-            lora_alpha = 16,
-            lora_dropout = 0.05,
-            bias = "none",
-            use_gradient_checkpointing = True,
-        )
+        
+        # Only add LoRA if model doesn't already have adapter weights
+        # Unsloth's from_pretrained automatically loads adapter if present, so we check
+        # If adapter is already loaded, get_peft_model will reuse it
+        try:
+            # Get LoRA parameters from config
+            try:
+                from config import arg
+                lora_r = getattr(arg, 'qwen_lora_r', 8)
+                lora_alpha = getattr(arg, 'qwen_lora_alpha', 16)
+                lora_dropout = getattr(arg, 'qwen_lora_dropout', 0.05)
+            except ImportError:
+                lora_r = 8
+                lora_alpha = 16
+                lora_dropout = 0.05
+            
+            # Check if model already has adapter (from pretrained path)
+            if hasattr(self.model, 'peft_config') and self.model.peft_config:
+                print(f"  ✅ Adapter weights loaded from pretrained model")
+            else:
+                # No adapter found, prepare for training by adding LoRA
+                print(f"  No adapter found, adding LoRA for training...")
+                print(f"    LoRA config: r={lora_r}, alpha={lora_alpha}, dropout={lora_dropout}")
+                self.model = FastLanguageModel.get_peft_model(
+                    self.model,
+                    r = lora_r,
+                    target_modules = ["q_proj","k_proj","v_proj","o_proj"],
+                    lora_alpha = lora_alpha,
+                    lora_dropout = lora_dropout,
+                    bias = "none",
+                    use_gradient_checkpointing = True,
+                )
+        except Exception as e:
+            # Fallback: always add LoRA if check fails
+            print(f"  Adding LoRA (fallback)...")
+            try:
+                from config import arg
+                lora_r = getattr(arg, 'qwen_lora_r', 8)
+                lora_alpha = getattr(arg, 'qwen_lora_alpha', 16)
+                lora_dropout = getattr(arg, 'qwen_lora_dropout', 0.05)
+            except ImportError:
+                lora_r = 8
+                lora_alpha = 16
+                lora_dropout = 0.05
+            self.model = FastLanguageModel.get_peft_model(
+                self.model,
+                r = lora_r,
+                target_modules = ["q_proj","k_proj","v_proj","o_proj"],
+                lora_alpha = lora_alpha,
+                lora_dropout = lora_dropout,
+                bias = "none",
+                use_gradient_checkpointing = True,
+            )
         
         # Compile model if requested (PyTorch 2.0+)
         if use_torch_compile and hasattr(torch, 'compile'):
@@ -209,7 +257,7 @@ class LLMModel:
             batched=True,  # Process in batches for efficiency (like notebook)
         )
 
-        # Get num_epochs, batch_size, and learning_rate from config if available
+        # Get training parameters from config if available
         try:
             from config import arg
             num_epochs = getattr(arg, 'rerank_epochs', 2)
@@ -218,21 +266,27 @@ class LLMModel:
                 batch_size = getattr(arg, 'rerank_batch_size', 16)
             # Get learning rate from config (default: 1e-4, was hardcoded to 2e-5)
             learning_rate = getattr(arg, 'rerank_lr', 1e-4)
+            # Get gradient accumulation steps from config
+            gradient_accumulation_steps = getattr(arg, 'qwen_gradient_accumulation_steps', 2)
+            # Get warmup steps from config
+            warmup_steps = getattr(arg, 'qwen_warmup_steps', 20)
         except ImportError:
             num_epochs = 1
             if batch_size is None:
                 batch_size = 16  # Default fallback
             learning_rate = 1e-4  # Default fallback
+            gradient_accumulation_steps = 2  # Default fallback
+            warmup_steps = 20  # Default fallback
         
         # ✅ Use SFTConfig and SFTTrainer (like notebook Cell 8)
         training_args = SFTConfig(
             dataset_text_field="text",  # Field name in dataset
             output_dir="./qwen_rerank",
             per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=2,
+            gradient_accumulation_steps=gradient_accumulation_steps,  # ✅ Use from config
             learning_rate=learning_rate,  # ✅ Use from config (default: 1e-4)
             num_train_epochs=num_epochs,
-            logging_steps=10,
+            logging_steps=5,
             save_steps=500,
             report_to="none",
             fp16=True,
@@ -241,7 +295,7 @@ class LLMModel:
             dataloader_pin_memory = False,
             load_best_model_at_end=False, 
             lr_scheduler_type = "cosine",
-            warmup_steps = 20,
+            warmup_steps = warmup_steps,  # ✅ Use from config
             weight_decay = 0.1,
         )
         
