@@ -10,6 +10,7 @@ import pandas as pd
 import ast
 import numpy as np
 import os
+from transformers.utils import logging as transformers_logging
 
 # Legacy: Keep for backward compatibility, but now we use numbers
 # Use both uppercase and lowercase for up to 52 candidates (A-Z, a-z)
@@ -109,10 +110,16 @@ def ndcg_at_k(ranked_items, gt_item, k):
     return 1.0 / math.log2(rank + 1)
 
 class LLMModel:
-    def __init__(self, train_data=None, model_name=None):
+    def __init__(self, train_data=None, model_name=None, verbose=1):
             # Priority: Use Unsloth models by default for better performance and 4-bit quantization
             self.model_name = model_name or "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
             self.train_data = train_data
+            # Verbosity level: 0 (minimal), 1 (normal), 2 (verbose/debug)
+            try:
+                from config import arg
+                self.verbose = getattr(arg, 'qwen_verbose', verbose)
+            except ImportError:
+                self.verbose = verbose
 
     def load_model(self, use_torch_compile=False, max_seq_length=None):
         """Load LLM model with 4-bit quantization (default for Unsloth models).
@@ -453,14 +460,17 @@ class LLMModel:
                 letter_tokens.append((i, letter, encoded[0]))
                 continue
         
-        # Debug: Check if we found letter tokens
+        # Debug: Check if we found letter tokens (only warn if verbose >= 1)
         if len(letter_tokens) < num_candidates:
-            print(f"[WARNING] Only found {len(letter_tokens)}/{num_candidates} letter tokens!")
-            print(f"  Found letters: {[l for _, l, _ in letter_tokens[:10]]}...")
+            if self.verbose >= 1:
+                print(f"[WARNING] Only found {len(letter_tokens)}/{num_candidates} letter tokens!")
+                if self.verbose >= 2:
+                    print(f"  Found letters: {[l for _, l, _ in letter_tokens[:10]]}...")
             # If we found very few tokens, this is a problem
             if len(letter_tokens) == 0:
-                print(f"[ERROR] No letter tokens found! Falling back to uniform distribution.")
-                print(f"[ERROR] This will cause recall = random! Check tokenizer compatibility.")
+                if self.verbose >= 1:
+                    print(f"[ERROR] No letter tokens found! Falling back to uniform distribution.")
+                    print(f"[ERROR] This will cause recall = random! Check tokenizer compatibility.")
                 return np.ones(num_candidates) / num_candidates
         
         # Extract probabilities for letter tokens
@@ -479,16 +489,18 @@ class LLMModel:
             prob_array = prob_array / prob_sum
         else:
             # Fallback: uniform distribution if all probabilities are zero
-            print(f"[WARNING] All probabilities are zero, using uniform distribution")
-            print(f"[WARNING] This will cause recall = random! Model may not have learned anything.")
+            if self.verbose >= 1:
+                print(f"[WARNING] All probabilities are zero, using uniform distribution")
+                print(f"[WARNING] This will cause recall = random! Model may not have learned anything.")
             prob_array = np.ones(num_candidates) / num_candidates
         
-        # ✅ Debug: Check if probabilities are uniform (model chưa học được gì)
-        prob_std = np.std(prob_array)
-        expected_uniform_std = 0.0  # Uniform distribution has std = 0
-        if prob_std < 0.01:  # Nearly uniform
-            print(f"[WARNING] Probabilities are nearly uniform (std={prob_std:.4f})!")
-            print(f"[WARNING] Model may not have learned anything. Check training loss.")
+        # ✅ Debug: Check if probabilities are uniform (model chưa học được gì) - only warn if verbose >= 2
+        if self.verbose >= 2:
+            prob_std = np.std(prob_array)
+            expected_uniform_std = 0.0  # Uniform distribution has std = 0
+            if prob_std < 0.01:  # Nearly uniform
+                print(f"[WARNING] Probabilities are nearly uniform (std={prob_std:.4f})!")
+                print(f"[WARNING] Model may not have learned anything. Check training loss.")
         
         return prob_array
     def evaluate(self,df, user2history, item_id2text):

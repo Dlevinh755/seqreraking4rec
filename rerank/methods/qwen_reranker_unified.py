@@ -1339,6 +1339,30 @@ Candidate items:
         # ✅ Debug: Track first few samples
         debug_samples = []
         
+        # Get progress bar setting
+        try:
+            from config import arg
+            disable_progress = getattr(arg, 'qwen_disable_progress_bar', False)
+            verbose = getattr(arg, 'qwen_verbose', 1)
+        except ImportError:
+            disable_progress = False
+            verbose = 1
+        
+        # Disable progress bars if requested
+        if disable_progress:
+            import os
+            os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+            # Also disable tqdm if available
+            try:
+                from tqdm import tqdm
+                tqdm._instances.clear()  # Clear existing instances
+            except ImportError:
+                pass
+        
+        total_users = len(split)
+        processed = 0
+        progress_interval = max(1, total_users // 20) if verbose >= 1 else total_users  # Show progress every 5% if verbose >= 1
+        
         for user_id, gt_items in split.items():
             if user_id not in self.train_user_history:
                 continue
@@ -1393,9 +1417,18 @@ Candidate items:
                         "recall": recall,
                         "reranked_scores": [score for _, score in reranked[:5]]
                     })
+            
+            # Progress update (only if verbose >= 1 and not disabled)
+            processed += 1
+            if not disable_progress and verbose >= 1 and processed % progress_interval == 0:
+                print(f"  Processed {processed}/{total_users} users ({100*processed//total_users}%)...", end='\r')
         
-        # ✅ Debug: Print first few samples
-        if debug_samples:
+        # Print final progress if needed
+        if not disable_progress and verbose >= 1 and processed > 0 and processed % progress_interval != 0:
+            print(f"  Processed {processed}/{total_users} users (100%)")
+        
+        # ✅ Debug: Print first few samples (only if verbose >= 2)
+        if debug_samples and verbose >= 2:
             print(f"\n[DEBUG] Evaluation samples (first {len(debug_samples)}):")
             for i, sample in enumerate(debug_samples):
                 print(f"  Sample {i+1}:")
@@ -1426,7 +1459,15 @@ Candidate items:
         if self._eval_prompts_prebuilt:
             return  # Already built
         
-        print(f"\n[QwenReranker] Building all eval prompts ({len(users)} users)...")
+        # Only print if verbose >= 1
+        try:
+            from config import arg
+            verbose = getattr(arg, 'qwen_verbose', 1)
+        except ImportError:
+            verbose = 1
+        
+        if verbose >= 1:
+            print(f"\n[QwenReranker] Building all eval prompts ({len(users)} users)...")
         
         if user_histories is None:
             user_histories = self.user_history
@@ -1529,11 +1570,24 @@ Candidate items:
             self._eval_prompts.append(prompt)
         
         self._eval_prompts_prebuilt = True
-        print(f"  Built {len(self._eval_prompts)} prompts")
         
-        # Analyze all prompts
-        if len(self._eval_prompts) > 0:
+        # Get verbose level
+        try:
+            from config import arg
+            verbose = getattr(arg, 'qwen_verbose', 1)
+        except ImportError:
+            verbose = 1
+        
+        if verbose >= 1:
+            print(f"  Built {len(self._eval_prompts)} prompts")
+        
+        # Analyze all prompts (only if verbose >= 2)
+        if len(self._eval_prompts) > 0 and verbose >= 2:
             print("\n[QwenReranker] Analyzing all eval prompt token counts...")
+            self._analyze_eval_prompt_tokens()
+            self._eval_prompts_analyzed = True
+        elif len(self._eval_prompts) > 0:
+            # Still analyze but don't print
             self._analyze_eval_prompt_tokens()
             self._eval_prompts_analyzed = True
     
@@ -1577,8 +1631,10 @@ Candidate items:
         max_length = _get_max_seq_length()  # From config
         num_exceeding = sum(1 for count in stats.get('token_counts', []) if count > max_length)
         if num_exceeding > 0:
-            print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} eval prompts exceed max_length={max_length} and will be truncated!")
+            if verbose >= 1:
+                print(f"  ⚠️  WARNING: {num_exceeding}/{stats['count']} eval prompts exceed max_length={max_length} and will be truncated!")
         else:
-            print(f"  ✅ All eval prompts fit within max_length={max_length}")
+            if verbose >= 2:
+                print(f"  ✅ All eval prompts fit within max_length={max_length}")
         print()
 

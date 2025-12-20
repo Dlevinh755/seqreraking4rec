@@ -157,6 +157,11 @@ parser.add_argument('--qwen_lora_alpha', type=int, default=16,
 					help='LoRA alpha for Qwen LLM fine-tuning (default: 16). Usually set to 2 * lora_r.')
 parser.add_argument('--qwen_lora_dropout', type=float, default=0.05,
 					help='LoRA dropout rate for Qwen LLM fine-tuning (default: 0.05).')
+parser.add_argument('--qwen_verbose', type=int, default=1,
+					choices=[0, 1, 2],
+					help='Verbosity level for Qwen reranker: 0 (minimal), 1 (normal), 2 (verbose/debug, default: 1).')
+parser.add_argument('--qwen_disable_progress_bar', action='store_true',
+					help='Disable progress bars during Qwen reranker evaluation (default: False). Progress bars are shown by default.')
 parser.add_argument('--rerank_action', type=str, default='train',
 					choices=['train', 'eval'],
 					help='Action for rerank: train (train model) or eval (load pretrained model and evaluate only, default: train). When eval, pass model path to --qwen_model and Unsloth will automatically load the adapter.')
