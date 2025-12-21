@@ -1596,6 +1596,13 @@ Candidate items:
         if not self._eval_prompts:
             return
         
+        # Get verbose level
+        try:
+            from config import arg
+            verbose = getattr(arg, 'qwen_verbose', 1)
+        except ImportError:
+            verbose = 1
+        
         # Determine which tokenizer to use
         tokenizer = None
         if self.llm_model and hasattr(self.llm_model, 'tokenizer'):
