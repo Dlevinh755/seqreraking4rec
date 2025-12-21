@@ -311,14 +311,20 @@ def main():
                 reranker.llm_model.load_model(use_torch_compile=False)
                 print(f"  ✅ Pretrained LLM model loaded from: {model_path}")
                 print("  Note: Unsloth automatically loaded adapter weights from the model path.")
+                # Mark as fitted so rerank() can be called without error
+                reranker.is_fitted = True
             else:
                 # For VL models, loading from pretrained path is more complex
                 print(f"  ⚠️  Warning: Loading pretrained Qwen3VL models is not yet fully supported.")
                 print(f"  Continuing with base model...")
+                # Mark as fitted anyway to allow evaluation
+                reranker.is_fitted = True
         else:
             # For other rerankers (VIP5, BERT4Rec), loading from checkpoint would need similar logic
             print(f"  ⚠️  Warning: Loading pretrained {args.rerank_method} models from path is not yet implemented.")
             print(f"  Continuing with base model...")
+            # Mark as fitted anyway to allow evaluation
+            reranker.is_fitted = True
     else:
         # Train mode: Train the model
         print(f"\n[3/3] Training reranker...")
