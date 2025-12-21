@@ -569,7 +569,7 @@ class LLMModel:
             probs = F.softmax(scaled_logits, dim=-1)
         else:
             # Standard softmax (no temperature scaling)
-        probs = F.softmax(logits[:, token_ids], dim=-1)
+            probs = F.softmax(logits[:, token_ids], dim=-1)
 
         # Map back to candidate indices (0-indexed)
         prob_array = np.zeros(num_candidates)
