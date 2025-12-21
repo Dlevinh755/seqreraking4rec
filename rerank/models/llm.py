@@ -194,15 +194,15 @@ class LLMModel:
                 lora_r = 8
                 lora_alpha = 16
                 lora_dropout = 0.05
-            self.model = FastLanguageModel.get_peft_model(
-                self.model,
+        self.model = FastLanguageModel.get_peft_model(
+            self.model,
                 r = lora_r,
-                target_modules = ["q_proj","k_proj","v_proj","o_proj"],
+            target_modules = ["q_proj","k_proj","v_proj","o_proj"],
                 lora_alpha = lora_alpha,
                 lora_dropout = lora_dropout,
-                bias = "none",
-                use_gradient_checkpointing = True,
-            )
+            bias = "none",
+            use_gradient_checkpointing = True,
+        )
         
         # Compile model if requested (PyTorch 2.0+)
         if use_torch_compile and hasattr(torch, 'compile'):
@@ -325,14 +325,14 @@ class LLMModel:
         print(hf_train_dataset[0]["text"])
         training_args = SFTConfig(
             dataset_text_field="text",  # Field name in dataset
-            output_dir="./qwen_rerank",
+        output_dir="./qwen_rerank",
             per_device_train_batch_size=batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,  # ✅ Use from config
             learning_rate=learning_rate,  # ✅ Use from config (default: 1e-4)
             num_train_epochs=num_epochs,
             logging_steps=5,
-            save_steps=500,
-            report_to="none",
+        save_steps=500,
+        report_to="none",
             fp16=True,
             optim="adamw_8bit",
             ddp_find_unused_parameters = False,
@@ -438,6 +438,18 @@ class LLMModel:
             max_length=max_length,  # ✅ Use from config
         ).to(self.model.device)
 
+        # ✅ Debug: Check prompt format and tokenization (only if verbose >= 2)
+        if self.verbose >= 2:
+            # Check if prompt ends correctly (should end with <|im_start|>assistant\n)
+            if not text.rstrip().endswith("<|im_start|>assistant"):
+                print(f"[DEBUG] Prompt may not end correctly. Last 50 chars: {text[-50:]}")
+            
+            # Check token count
+            input_ids = inputs["input_ids"][0]
+            print(f"[DEBUG] Prompt token count: {len(input_ids)}")
+            print(f"[DEBUG] Last 10 tokens: {input_ids[-10:].tolist()}")
+            print(f"[DEBUG] Last 10 token texts: {[self.tokenizer.decode([t]) for t in input_ids[-10:]]}")
+
         with torch.no_grad():
             outputs = self.model(**inputs)
 
@@ -482,20 +494,44 @@ class LLMModel:
             # Strategy 1: Try direct letter token
             token_id = self.tokenizer.convert_tokens_to_ids(letter)
             if token_id != self.tokenizer.unk_token_id:
-                letter_tokens.append((i, letter, token_id))
-                continue
+                # ✅ Verify it's a single token
+                encoded = self.tokenizer.encode(letter, add_special_tokens=False)
+                if len(encoded) == 1:
+                    letter_tokens.append((i, letter, token_id))
+                    continue
+                elif self.verbose >= 2:
+                    print(f"[DEBUG] Letter '{letter}' encodes to {len(encoded)} tokens: {encoded}")
             
             # Strategy 2: Try with space prefix (common in BPE tokenizers)
-            token_id = self.tokenizer.convert_tokens_to_ids(" " + letter)
+            space_letter = " " + letter
+            token_id = self.tokenizer.convert_tokens_to_ids(space_letter)
             if token_id != self.tokenizer.unk_token_id:
-                letter_tokens.append((i, letter, token_id))
-                continue
+                # ✅ Verify it's a single token
+                encoded = self.tokenizer.encode(space_letter, add_special_tokens=False)
+                if len(encoded) == 1:
+                    letter_tokens.append((i, letter, token_id))
+                    continue
+                elif self.verbose >= 2:
+                    print(f"[DEBUG] Space+letter ' {letter}' encodes to {len(encoded)} tokens: {encoded}")
             
-            # Strategy 3: Try encoding and taking first token
+            # Strategy 3: Try encoding and taking first token (fallback)
             encoded = self.tokenizer.encode(letter, add_special_tokens=False)
             if len(encoded) > 0 and encoded[0] != self.tokenizer.unk_token_id:
+                # ⚠️ Warning: This may not be a single token
+                if len(encoded) > 1 and self.verbose >= 1:
+                    print(f"[WARNING] Letter '{letter}' encodes to {len(encoded)} tokens, using first token only")
                 letter_tokens.append((i, letter, encoded[0]))
                 continue
+        
+        # ✅ Debug: Verify all letter tokens are single tokens (only if verbose >= 2)
+        if self.verbose >= 2:
+            for cand_idx, letter, token_id in letter_tokens[:5]:  # Check first 5
+                # Check if letter encodes to single token
+                encoded = self.tokenizer.encode(letter, add_special_tokens=False)
+                if len(encoded) > 1:
+                    print(f"[DEBUG] Letter '{letter}' (candidate {cand_idx}) encodes to {len(encoded)} tokens: {encoded}")
+                else:
+                    print(f"[DEBUG] Letter '{letter}' (candidate {cand_idx}) = token {token_id} (single token ✓)")
         
         # Debug: Check if we found letter tokens (only warn if verbose >= 1)
         if len(letter_tokens) < num_candidates:
@@ -530,7 +566,7 @@ class LLMModel:
         else:
             # Standard softmax (no temperature scaling)
             probs = F.softmax(logits[:, token_ids], dim=-1)
-        
+
         # Map back to candidate indices (0-indexed)
         prob_array = np.zeros(num_candidates)
         for idx, (cand_idx, letter, token_id) in enumerate(letter_tokens):
