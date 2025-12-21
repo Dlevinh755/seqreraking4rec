@@ -158,6 +158,9 @@ def main():
         if item_id2text:
             training_kwargs["item_id2text"] = item_id2text
             training_kwargs["user_history"] = user_history_text
+            # ✅ Also add to reranker_kwargs so reranker can use it during eval
+            reranker_kwargs["item_id2text"] = item_id2text
+            reranker_kwargs["user_history"] = user_history_text
         
         # Add item_meta for multimodal modes (caption, semantic_summary)
         if args.rerank_method in ["qwen", "qwen3vl"]:
@@ -165,6 +168,12 @@ def main():
             qwen_mode = reranker_kwargs.get("mode", "text_only")
             if qwen_mode in ["caption", "semantic_summary"]:
                 training_kwargs["item_meta"] = item_meta
+                # ✅ Also add to reranker_kwargs so reranker can use it during eval
+                reranker_kwargs["item_meta"] = item_meta
+            else:
+                # ✅ For text_only mode, also add item_meta if available (for ground_truth mode)
+                if item_meta:
+                    reranker_kwargs["item_meta"] = item_meta
     
     # Prepare training data for Qwen reranker (text_only mode)
     if args.rerank_method in ["qwen", "qwen3vl"]:
