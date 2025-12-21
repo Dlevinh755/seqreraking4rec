@@ -233,13 +233,17 @@ class LLMModel:
             
             def clean_thinking_content(text):
                 """Remove thinking content from text if present."""
-                # Remove <think>...</think> tags (Qwen3 format)
+                # Remove <think>...</think> tags (Qwen3 thinking format)
                 text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-                # Remove <think>...</think> tags (generic format)
+                # Remove <think>...</think> tags (Qwen3 format)  
                 text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-                # Clean up extra newlines
-                text = re.sub(r'\n\n+', '\n\n', text)
-                return text.strip()
+                # Remove empty lines between assistant tag and response (if thinking was removed)
+                # This ensures format: <|im_start|>assistant\nA<|im_end|> instead of <|im_start|>assistant\n\nA<|im_end|>
+                text = re.sub(r'(<\|im_start\|>assistant\n)\n+', r'\1', text)
+                # Clean up extra newlines but preserve structure
+                # Don't strip() to preserve leading/trailing structure for train_on_responses_only
+                text = re.sub(r'\n\n+', '\n', text)  # Replace multiple newlines with single newline
+                return text
             
             # Check if batched (list of lists) or single (single list)
             if isinstance(messages_list, list) and len(messages_list) > 0:
@@ -277,6 +281,24 @@ class LLMModel:
             formatting_prompts_func,
             batched=True,  # Process in batches for efficiency (like notebook)
         )
+        
+        # ✅ Debug: Print first sample to verify format (only if verbose >= 2)
+        if self.verbose >= 2:
+            print("\n[LLMModel] Debug: First training sample format:")
+            print("-" * 80)
+            first_text = hf_train_dataset[0]["text"]
+            print(first_text[:500] + "..." if len(first_text) > 500 else first_text)
+            print("-" * 80)
+            # Check if response part exists
+            if "<|im_start|>assistant" in first_text:
+                print("✅ Response part found: <|im_start|>assistant")
+            else:
+                print("❌ Response part NOT found: <|im_start|>assistant")
+            if "<|im_start|>user" in first_text:
+                print("✅ Instruction part found: <|im_start|>user")
+            else:
+                print("❌ Instruction part NOT found: <|im_start|>user")
+            print("-" * 80)
 
         # Get training parameters from config if available
         try:
