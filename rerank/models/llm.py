@@ -70,109 +70,82 @@ Candidate items:
     return prompt
 
 def rank_candidates(probs, candidate_ids):
-    """Rank candidates by probabilities.
+    """
+    Rank candidates by probability.
     
     Args:
-        probs: Array of probabilities (one per candidate)
+        probs: numpy array of probabilities [num_candidates]
         candidate_ids: List of candidate item IDs
         
     Returns:
-        List of candidate IDs sorted by probability (descending)
-        
-    Raises:
-        ValueError: If len(probs) != len(candidate_ids)
+        List of (item_id, score) tuples, sorted by score (descending)
     """
     if len(probs) != len(candidate_ids):
-        raise ValueError(
-            f"Mismatch: {len(candidate_ids)} candidates but {len(probs)} probabilities. "
-            f"Each candidate must have exactly one probability."
-        )
+        raise ValueError(f"Length mismatch: probs ({len(probs)}) != candidate_ids ({len(candidate_ids)})")
     
-    ranked = sorted(
-        zip(candidate_ids, probs),
-        key=lambda x: x[1],
-        reverse=True
-    )
-    return [cid for cid, _ in ranked]
+    scored = list(zip(candidate_ids, probs))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored
 
-def recall_at_k(ranked_items, gt_item, k):
-    return int(gt_item in ranked_items[:k])
-
-
-def ndcg_at_k(ranked_items, gt_item, k):
-    if gt_item not in ranked_items[:k]:
-        return 0.0
-    rank = ranked_items.index(gt_item) + 1
-    return 1.0 / math.log2(rank + 1)
 
 class LLMModel:
     def __init__(self, train_data=None, model_name=None, verbose=1):
             # Priority: Use Unsloth models by default for better performance and 4-bit quantization
-            self.model_name = model_name or "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
-            self.train_data = train_data
-            # Verbosity level: 0 (minimal), 1 (normal), 2 (verbose/debug)
-            try:
-                from config import arg
-                self.verbose = getattr(arg, 'qwen_verbose', verbose)
-            except ImportError:
-                self.verbose = verbose
+            
+        self.train_data = train_data
+        self.model_name = model_name
+        self.model = None
+        self.tokenizer = None
+        self.verbose = verbose
 
     def load_model(self, use_torch_compile=False, max_seq_length=None):
-        """Load LLM model with 4-bit quantization (default for Unsloth models).
+        """Load model and tokenizer using Unsloth for fast training."""
+        from unsloth import FastLanguageModel
+        from transformers import AutoTokenizer
         
-        Args:
-            use_torch_compile: Whether to use torch.compile() for faster inference
-            max_seq_length: Maximum sequence length (None = get from config, default: 2048)
-        
-        Note:
-            - All Unsloth models are loaded with 4-bit quantization by default
-            - If self.model_name points to a path with adapter weights, Unsloth will automatically
-              load the adapter. Otherwise, it loads base model and prepares for training.
-        """
         # Get max_seq_length from config if not provided
         if max_seq_length is None:
             try:
                 from config import arg
-                max_seq_length = getattr(arg, 'qwen_max_seq_length', 2048)
+                max_seq_length = getattr(arg, 'qwen_max_seq_length', 3000)
             except ImportError:
-                max_seq_length = 2048  # Default fallback
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+                max_seq_length = 3000  # Default fallback
         
-        print(f"Loading LLM model: {self.model_name}")
-        print(f"  Max sequence length: {max_seq_length}")
-        print(f"  Note: Unsloth will automatically load adapter if present in the model path")
+        if self.verbose >= 1:
+            print(f"Loading LLM model: {self.model_name}")
+            print(f"  Max sequence length: {max_seq_length}")
+            print(f"  Note: Unsloth will automatically load adapter if present in the model path")
         
-        # Unsloth automatically detects and loads adapter weights if present
+        # Load model and tokenizer using Unsloth
         self.model, self.tokenizer = FastLanguageModel.from_pretrained(
             model_name = self.model_name,
             max_seq_length = max_seq_length,
-            dtype = torch.float16,
-            load_in_4bit = True,  # 4-bit quantization enabled by default for all Unsloth models
-            device_map={'': local_rank},
+            dtype = None, # Auto detection
+            load_in_4bit = True, # ✅ Use 4-bit quantization for memory efficiency
         )
         
-        # Only add LoRA if model doesn't already have adapter weights
-        # Unsloth's from_pretrained automatically loads adapter if present, so we check
-        # If adapter is already loaded, get_peft_model will reuse it
+        # Get LoRA parameters from config
         try:
-            # Get LoRA parameters from config
-            try:
-                from config import arg
-                lora_r = getattr(arg, 'qwen_lora_r', 8)
-                lora_alpha = getattr(arg, 'qwen_lora_alpha', 16)
-                lora_dropout = getattr(arg, 'qwen_lora_dropout', 0.05)
-            except ImportError:
-                lora_r = 8
-                lora_alpha = 16
-                lora_dropout = 0.05
-            
+            from config import arg
+            lora_r = getattr(arg, 'qwen_lora_r', 8)
+            lora_alpha = getattr(arg, 'qwen_lora_alpha', 16)
+            lora_dropout = getattr(arg, 'qwen_lora_dropout', 0.05)
+        except ImportError:
+            lora_r = 8
+            lora_alpha = 16
+            lora_dropout = 0.05
+        
+        # ✅ Check if model already has adapter (from pretrained path)
+        try:
             # Check if model already has adapter (from pretrained path)
             if hasattr(self.model, 'peft_config') and self.model.peft_config:
-                print(f"  ✅ Adapter weights loaded from pretrained model")
+                if self.verbose >= 1:
+                    print(f"  ✅ Adapter weights loaded from pretrained model")
             else:
                 # No adapter found, prepare for training by adding LoRA
-                print(f"  No adapter found, adding LoRA for training...")
-                print(f"    LoRA config: r={lora_r}, alpha={lora_alpha}, dropout={lora_dropout}")
+                if self.verbose >= 1:
+                    print(f"  No adapter found, adding LoRA for training...")
+                    print(f"    LoRA config: r={lora_r}, alpha={lora_alpha}, dropout={lora_dropout}")
                 self.model = FastLanguageModel.get_peft_model(
                     self.model,
                     r = lora_r,
@@ -183,33 +156,24 @@ class LLMModel:
                     use_gradient_checkpointing = True,
                 )
         except Exception as e:
-            # Fallback: always add LoRA if check fails
-            print(f"  Adding LoRA (fallback)...")
-            try:
-                from config import arg
-                lora_r = getattr(arg, 'qwen_lora_r', 8)
-                lora_alpha = getattr(arg, 'qwen_lora_alpha', 16)
-                lora_dropout = getattr(arg, 'qwen_lora_dropout', 0.05)
-            except ImportError:
-                lora_r = 8
-                lora_alpha = 16
-                lora_dropout = 0.05
-        self.model = FastLanguageModel.get_peft_model(
-            self.model,
+            if self.verbose >= 1:
+                print(f"  Adding LoRA (fallback)... Error: {e}")
+            self.model = FastLanguageModel.get_peft_model(
+                self.model,
                 r = lora_r,
-            target_modules = ["q_proj","k_proj","v_proj","o_proj"],
+                target_modules = ["q_proj","k_proj","v_proj","o_proj"],
                 lora_alpha = lora_alpha,
                 lora_dropout = lora_dropout,
-            bias = "none",
-            use_gradient_checkpointing = True,
-        )
+                bias = "none",
+                use_gradient_checkpointing = True,
+            )
         
-        # Compile model if requested (PyTorch 2.0+)
-        if use_torch_compile and hasattr(torch, 'compile'):
+        # ✅ Optional: Use torch.compile for faster inference (if available)
+        if use_torch_compile:
             try:
-                print("Compiling LLM model with torch.compile() for faster inference...")
-                self.model = torch.compile(self.model, mode="reduce-overhead")
-                print("LLM model compiled successfully!")
+                self.model = torch.compile(self.model)
+                if self.verbose >= 1:
+                    print(f"  ✅ Model compiled with torch.compile() for faster inference")
             except Exception as e:
                 print(f"Warning: torch.compile() failed: {e}. Continuing without compilation.")
     def train(self, batch_size=None):
@@ -306,33 +270,30 @@ class LLMModel:
             num_epochs = getattr(arg, 'rerank_epochs', 2)
             # Use batch_size parameter if provided, otherwise get from config
             if batch_size is None:
-                batch_size = getattr(arg, 'rerank_batch_size', 16)
-            # Get learning rate from config (default: 1e-4, was hardcoded to 2e-5)
-            learning_rate = getattr(arg, 'rerank_lr', 1e-4)
-            # Get gradient accumulation steps from config
+                batch_size = getattr(arg, 'rerank_batch_size', 8)
+            learning_rate = getattr(arg, 'rerank_lr', 5e-4)
             gradient_accumulation_steps = getattr(arg, 'qwen_gradient_accumulation_steps', 2)
-            # Get warmup steps from config
             warmup_steps = getattr(arg, 'qwen_warmup_steps', 20)
         except ImportError:
-            num_epochs = 1
+            num_epochs = 2
             if batch_size is None:
-                batch_size = 16  # Default fallback
-            learning_rate = 1e-4  # Default fallback
-            gradient_accumulation_steps = 2  # Default fallback
-            warmup_steps = 20  # Default fallback
+                batch_size = 8
+            learning_rate = 5e-4
+            gradient_accumulation_steps = 2
+            warmup_steps = 20
         
         # ✅ Use SFTConfig and SFTTrainer (like notebook Cell 8)
         print(hf_train_dataset[0]["text"])
         training_args = SFTConfig(
             dataset_text_field="text",  # Field name in dataset
-        output_dir="./qwen_rerank",
+            output_dir="./qwen_rerank",
             per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=gradient_accumulation_steps,  # ✅ Use from config
-            learning_rate=learning_rate,  # ✅ Use from config (default: 1e-4)
+            gradient_accumulation_steps=gradient_accumulation_steps,  # Use from config
+            learning_rate=learning_rate,
             num_train_epochs=num_epochs,
-            logging_steps=5,
-        save_steps=500,
-        report_to="none",
+            logging_steps=5,  # Use from config
+            save_steps=500,
+            report_to="none",
             fp16=True,
             optim="adamw_8bit",
             ddp_find_unused_parameters = False,
@@ -430,6 +391,17 @@ class LLMModel:
             enable_thinking=False  # ✅ Disable thinking mode for direct answer prediction
         )
         
+        # ✅ Remove thinking content if present (some tokenizers may still add it despite enable_thinking=False)
+        import re
+        # Remove <think>...</think> tags and content (Qwen3 thinking format)
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # Remove <think>...</think> tags (if present)
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # Remove empty lines between assistant tag and end (if thinking was removed)
+        text = re.sub(r'(<\|im_start\|>assistant\n)\n+', r'\1', text)
+        # Clean up trailing newlines but keep structure
+        text = text.rstrip() + '\n'  # Ensure ends with single newline after assistant tag
+        
         # Tokenize the chat template formatted text
         inputs = self.tokenizer(
             text, 
@@ -438,8 +410,8 @@ class LLMModel:
             max_length=max_length,  # ✅ Use from config
         ).to(self.model.device)
 
-        # ✅ Debug: Check prompt format and tokenization (only if verbose >= 2)
-        if self.verbose >= 2:
+        # ✅ Debug: Check prompt format and tokenization (only if verbose >= 2, and only once)
+        if self.verbose >= 2 and not hasattr(self, '_debug_prompt_checked'):
             # Check if prompt ends correctly (should end with <|im_start|>assistant\n)
             if not text.rstrip().endswith("<|im_start|>assistant"):
                 print(f"[DEBUG] Prompt may not end correctly. Last 50 chars: {text[-50:]}")
@@ -449,6 +421,7 @@ class LLMModel:
             print(f"[DEBUG] Prompt token count: {len(input_ids)}")
             print(f"[DEBUG] Last 10 tokens: {input_ids[-10:].tolist()}")
             print(f"[DEBUG] Last 10 token texts: {[self.tokenizer.decode([t]) for t in input_ids[-10:]]}")
+            self._debug_prompt_checked = True  # Only check once
 
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -523,8 +496,8 @@ class LLMModel:
                 letter_tokens.append((i, letter, encoded[0]))
                 continue
         
-        # ✅ Debug: Verify all letter tokens are single tokens (only if verbose >= 2)
-        if self.verbose >= 2:
+        # ✅ Debug: Verify all letter tokens are single tokens (only if verbose >= 2, and only once)
+        if self.verbose >= 2 and not hasattr(self, '_debug_letter_tokens_checked'):
             for cand_idx, letter, token_id in letter_tokens[:5]:  # Check first 5
                 # Check if letter encodes to single token
                 encoded = self.tokenizer.encode(letter, add_special_tokens=False)
@@ -532,6 +505,7 @@ class LLMModel:
                     print(f"[DEBUG] Letter '{letter}' (candidate {cand_idx}) encodes to {len(encoded)} tokens: {encoded}")
                 else:
                     print(f"[DEBUG] Letter '{letter}' (candidate {cand_idx}) = token {token_id} (single token ✓)")
+            self._debug_letter_tokens_checked = True  # Only check once
         
         # Debug: Check if we found letter tokens (only warn if verbose >= 1)
         if len(letter_tokens) < num_candidates:
@@ -566,7 +540,7 @@ class LLMModel:
         else:
             # Standard softmax (no temperature scaling)
             probs = F.softmax(logits[:, token_ids], dim=-1)
-
+        
         # Map back to candidate indices (0-indexed)
         prob_array = np.zeros(num_candidates)
         for idx, (cand_idx, letter, token_id) in enumerate(letter_tokens):
@@ -584,37 +558,55 @@ class LLMModel:
                 print(f"[WARNING] This will cause recall = random! Model may not have learned anything.")
             prob_array = np.ones(num_candidates) / num_candidates
         
-        # ✅ Debug: Check if probabilities are uniform (model chưa học được gì) - only warn if verbose >= 2
-        if self.verbose >= 2:
-            prob_std = np.std(prob_array)
-            expected_uniform_std = 0.0  # Uniform distribution has std = 0
-            if prob_std < 0.01:  # Nearly uniform
-                print(f"[WARNING] Probabilities are nearly uniform (std={prob_std:.4f})!")
-                print(f"[WARNING] Model may not have learned anything. Check training loss.")
-        
         return prob_array
-    def evaluate(self,df, user2history, item_id2text):
-        recalls = {1: [], 5: [], 10: []}
-        ndcgs = {5: [], 10: []}
 
-        for _, row in df.iterrows():
-            user_id = row["user_index"]
-            gt_item = row["label"]
-
-            candidate_ids = ast.literal_eval(row["candidate_ids"])
-            history = user2history[user_id][-10:]
-
-            prompt = build_prompt_from_candidates(history, candidate_ids,item_id2text)
+    def evaluate(self, test_data, item_id2text, k=20):
+        """Evaluate model on test data.
+        
+        Args:
+            test_data: Dict[user_id, List[item_ids]] - test user-item interactions
+            item_id2text: Dict[item_id, str] - mapping from item_id to item text
+            k: Top-k for evaluation metrics
+            
+        Returns:
+            Dict with evaluation metrics (recall@k, ndcg@k, etc.)
+        """
+        from evaluation.utils import evaluate_split
+        
+        def recommend_fn(user_id, ground_truth=None):
+            """Recommend items for a user."""
+            if user_id not in test_data:
+                return []
+            
+            # Get user history
+            user_items = test_data[user_id]
+            if len(user_items) < 2:
+                return []
+            
+            # Use last item as target, rest as history
+            history = user_items[:-1]
+            target = user_items[-1]
+            
+            # Get all items as candidates (excluding user's history)
+            all_items = set(item_id2text.keys())
+            candidates = [item for item in all_items if item not in set(history)]
+            
+            if len(candidates) == 0:
+                return []
+            
+            # Build prompt
+            history_texts = [item_id2text.get(item_id, f"item_{item_id}") for item_id in history]
+            prompt = build_prompt_from_candidates(history_texts, candidates, item_id2text)
+            
+            # Get probabilities
             probs = self.predict_probs(prompt)
-            ranked_items = rank_candidates(probs, candidate_ids)
-
-            for k in recalls:
-                recalls[k].append(recall_at_k(ranked_items, gt_item, k))
-
-            for k in ndcgs:
-                ndcgs[k].append(ndcg_at_k(ranked_items, gt_item, k))
-
-        return {
-            **{f"Recall@{k}": sum(v)/len(v) for k, v in recalls.items()},
-            **{f"NDCG@{k}": sum(v)/len(v) for k, v in ndcgs.items()}
-        }
+            
+            # Rank candidates
+            ranked = rank_candidates(probs, candidates)
+            
+            # Return top-k
+            return [item_id for item_id, _ in ranked[:k]]
+        
+        # Evaluate
+        metrics = evaluate_split(recommend_fn, test_data, k=k)
+        return metrics
