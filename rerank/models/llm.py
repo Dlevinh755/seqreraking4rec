@@ -322,7 +322,7 @@ class LLMModel:
             warmup_steps = 20  # Default fallback
         
         # ✅ Use SFTConfig and SFTTrainer (like notebook Cell 8)
-        print(hf_train_dataset[0])
+        print(hf_train_dataset[0]["text"])
         training_args = SFTConfig(
             dataset_text_field="text",  # Field name in dataset
             output_dir="./qwen_rerank",
