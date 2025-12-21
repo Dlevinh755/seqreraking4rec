@@ -116,12 +116,14 @@ class LLMModel:
             print(f"  Max sequence length: {max_seq_length}")
             print(f"  Note: Unsloth will automatically load adapter if present in the model path")
         
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
         # Load model and tokenizer using Unsloth
         self.model, self.tokenizer = FastLanguageModel.from_pretrained(
             model_name = self.model_name,
             max_seq_length = max_seq_length,
             dtype = None, # Auto detection
             load_in_4bit = True, # ✅ Use 4-bit quantization for memory efficiency
+            device_map={'': local_rank},
         )
         
         # Get LoRA parameters from config
