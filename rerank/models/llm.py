@@ -221,6 +221,8 @@ class LLMModel:
         hf_train_dataset = Dataset.from_list(self.train_data)
         
         # ✅ Format messages to text using chat template (like notebook Cell 7)
+        import re  # For removing thinking content
+        
         def formatting_prompts_func(examples):
             """Format conversations to text using chat template.
             
@@ -228,6 +230,16 @@ class LLMModel:
             When batched=False: examples["messages"] is a single message list
             """
             messages_list = examples["messages"]
+            
+            def clean_thinking_content(text):
+                """Remove thinking content from text if present."""
+                # Remove <think>...</think> tags (Qwen3 format)
+                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+                # Remove <think>...</think> tags (generic format)
+                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+                # Clean up extra newlines
+                text = re.sub(r'\n\n+', '\n\n', text)
+                return text.strip()
             
             # Check if batched (list of lists) or single (single list)
             if isinstance(messages_list, list) and len(messages_list) > 0:
@@ -239,8 +251,11 @@ class LLMModel:
                         text = self.tokenizer.apply_chat_template(
                             messages,
                             tokenize=False,
-                            add_generation_prompt=False
+                            add_generation_prompt=False,
+                            enable_thinking=False  # ✅ Disable thinking mode for training consistency
                         )
+                        # ✅ Remove thinking content if present (some tokenizers may still add it)
+                        text = clean_thinking_content(text)
                         texts.append(text)
                     return {"text": texts}
                 elif isinstance(messages_list[0], dict):
@@ -248,8 +263,11 @@ class LLMModel:
                     text = self.tokenizer.apply_chat_template(
                         messages_list,
                         tokenize=False,
-                        add_generation_prompt=False
+                        add_generation_prompt=False,
+                        enable_thinking=False  # ✅ Disable thinking mode for training consistency
                     )
+                    # ✅ Remove thinking content if present (some tokenizers may still add it)
+                    text = clean_thinking_content(text)
                     return {"text": text}
             
             raise ValueError(f"Invalid messages format: {type(messages_list)}")

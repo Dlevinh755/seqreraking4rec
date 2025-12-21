@@ -575,22 +575,40 @@ Candidate items:
                     self._analyze_eval_prompt_tokens()
                     self._eval_prompts_count_at_analysis = len(self._eval_prompts)  # Update to avoid repeated prints
             
-            # ✅ Print sample test prompt for debugging (only once)
+            # ✅ Print sample test prompt for debugging (only once, controlled by verbose)
             if not self._debug_test_prompt_printed:
-                print("\n[QwenReranker] Sample Test Prompt (for debugging):")
-                print("-" * 80)
-                print(f"User ID: {user_id}")
-                print(f"History items: {history}")
-                print(f"Candidates: {candidates[:10]}..." if len(candidates) > 10 else f"Candidates: {candidates}")
-                print(f"\nPrompt:\n{prompt}")
-                # Count tokens if tokenizer is available
-                if hasattr(self.llm_model, 'tokenizer') and self.llm_model.tokenizer:
-                    try:
-                        tokens = self.llm_model.tokenizer.encode(prompt, add_special_tokens=False)
-                        print(f"\nPrompt tokens: {len(tokens)}")
-                    except:
-                        pass
-                print("-" * 80)
+                try:
+                    from config import arg
+                    verbose = getattr(arg, 'qwen_verbose', 1)
+                except ImportError:
+                    verbose = 1
+                
+                if verbose >= 1:
+                    # Minimal info for verbose >= 1
+                    if hasattr(self.llm_model, 'tokenizer') and self.llm_model.tokenizer:
+                        try:
+                            tokens = self.llm_model.tokenizer.encode(prompt, add_special_tokens=False)
+                            print(f"\n[QwenReranker] Sample eval prompt: {len(tokens)} tokens, {len(candidates)} candidates")
+                        except:
+                            print(f"\n[QwenReranker] Sample eval prompt: {len(candidates)} candidates")
+                
+                if verbose >= 2:
+                    # Full details only for verbose >= 2
+                    print("\n[QwenReranker] Sample Test Prompt (for debugging):")
+                    print("-" * 80)
+                    print(f"User ID: {user_id}")
+                    print(f"History items: {history}")
+                    print(f"Candidates: {candidates[:10]}..." if len(candidates) > 10 else f"Candidates: {candidates}")
+                    print(f"\nPrompt:\n{prompt}")
+                    # Count tokens if tokenizer is available
+                    if hasattr(self.llm_model, 'tokenizer') and self.llm_model.tokenizer:
+                        try:
+                            tokens = self.llm_model.tokenizer.encode(prompt, add_special_tokens=False)
+                            print(f"\nPrompt tokens: {len(tokens)}")
+                        except:
+                            pass
+                    print("-" * 80)
+                
                 self._debug_test_prompt_printed = True
             
             probs = self.llm_model.predict_probs(prompt, num_candidates=num_candidates)
@@ -604,36 +622,64 @@ Candidate items:
                 sample_prompt = self._build_test_prompt_sample(user_id, history, candidates)
                 self._eval_prompts.append(sample_prompt)
                 
+                # ✅ Get verbose level for conditional logging
+                try:
+                    from config import arg
+                    verbose = getattr(arg, 'qwen_verbose', 1)
+                except ImportError:
+                    verbose = 1
+                
                 # Analyze after first prompt is printed and we have at least 10 prompts (early analysis)
-                if not self._eval_prompts_analyzed and self._debug_test_prompt_printed and len(self._eval_prompts) >= 10:
-                    print("\n[QwenReranker] Early eval prompt token analysis (first 10 prompts):")
-                    self._analyze_eval_prompt_tokens()
-                    self._eval_prompts_analyzed = True
-                    self._eval_prompts_count_at_analysis = len(self._eval_prompts)
-                # Final analysis if we've collected significantly more prompts (e.g., 10x more)
-                elif self._eval_prompts_analyzed and len(self._eval_prompts) >= self._eval_prompts_count_at_analysis * 10:
-                    print(f"\n[QwenReranker] Final eval prompt token analysis (all {len(self._eval_prompts)} prompts):")
-                    self._analyze_eval_prompt_tokens()
-                    self._eval_prompts_count_at_analysis = len(self._eval_prompts)  # Update to avoid repeated prints
+                # ✅ Only print analysis if verbose >= 1
+                if verbose >= 1:
+                    if not self._eval_prompts_analyzed and self._debug_test_prompt_printed and len(self._eval_prompts) >= 10:
+                        print("\n[QwenReranker] Early eval prompt token analysis (first 10 prompts):")
+                        self._analyze_eval_prompt_tokens()
+                        self._eval_prompts_analyzed = True
+                        self._eval_prompts_count_at_analysis = len(self._eval_prompts)
+                    # Final analysis if we've collected significantly more prompts (e.g., 10x more)
+                    elif self._eval_prompts_analyzed and len(self._eval_prompts) >= self._eval_prompts_count_at_analysis * 10:
+                        print(f"\n[QwenReranker] Final eval prompt token analysis (all {len(self._eval_prompts)} prompts):")
+                        self._analyze_eval_prompt_tokens()
+                        self._eval_prompts_count_at_analysis = len(self._eval_prompts)  # Update to avoid repeated prints
             
-            # ✅ Print sample test prompt for debugging (only once)
+            # ✅ Print sample test prompt for debugging (only once, controlled by verbose)
             if not self._debug_test_prompt_printed:
+                try:
+                    from config import arg
+                    verbose = getattr(arg, 'qwen_verbose', 1)
+                except ImportError:
+                    verbose = 1
+                
                 # Build a sample prompt to show (similar to training prompt format)
                 sample_prompt = self._build_test_prompt_sample(user_id, history, candidates)
-                print("\n[QwenReranker] Sample Test Prompt (for debugging):")
-                print("-" * 80)
-                print(f"User ID: {user_id}")
-                print(f"History items: {history}")
-                print(f"Candidates: {candidates[:10]}..." if len(candidates) > 10 else f"Candidates: {candidates}")
-                print(f"\nPrompt:\n{sample_prompt}")
-                # Count tokens if tokenizer is available
-                if hasattr(self.qwen3vl_model, 'processor') and hasattr(self.qwen3vl_model.processor, 'tokenizer'):
-                    try:
-                        tokens = self.qwen3vl_model.processor.tokenizer.encode(sample_prompt, add_special_tokens=False)
-                        print(f"\nPrompt tokens: {len(tokens)}")
-                    except:
-                        pass
-                print("-" * 80)
+                
+                if verbose >= 1:
+                    # Minimal info for verbose >= 1
+                    if hasattr(self.qwen3vl_model, 'processor') and hasattr(self.qwen3vl_model.processor, 'tokenizer'):
+                        try:
+                            tokens = self.qwen3vl_model.processor.tokenizer.encode(sample_prompt, add_special_tokens=False)
+                            print(f"\n[QwenReranker] Sample eval prompt: {len(tokens)} tokens, {len(candidates)} candidates")
+                        except:
+                            print(f"\n[QwenReranker] Sample eval prompt: {len(candidates)} candidates")
+                
+                if verbose >= 2:
+                    # Full details only for verbose >= 2
+                    print("\n[QwenReranker] Sample Test Prompt (for debugging):")
+                    print("-" * 80)
+                    print(f"User ID: {user_id}")
+                    print(f"History items: {history}")
+                    print(f"Candidates: {candidates[:10]}..." if len(candidates) > 10 else f"Candidates: {candidates}")
+                    print(f"\nPrompt:\n{sample_prompt}")
+                    # Count tokens if tokenizer is available
+                    if hasattr(self.qwen3vl_model, 'processor') and hasattr(self.qwen3vl_model.processor, 'tokenizer'):
+                        try:
+                            tokens = self.qwen3vl_model.processor.tokenizer.encode(sample_prompt, add_special_tokens=False)
+                            print(f"\nPrompt tokens: {len(tokens)}")
+                        except:
+                            pass
+                    print("-" * 80)
+                
                 self._debug_test_prompt_printed = True
             
             probs = self.qwen3vl_model.predict_probs(
@@ -1630,19 +1676,26 @@ Candidate items:
             include_target=False,
             targets=None
         )
-        print(f"  Total samples analyzed: {stats['count']}")
-        print(f"  Token statistics (prompt only):")
-        print(f"    Min: {stats['min']} tokens")
-        print(f"    Max: {stats['max']} tokens")
-        print(f"    Mean: {stats['mean']:.1f} tokens")
-        print(f"    Median: {stats['median']:.1f} tokens")
-        print(f"    Percentiles:")
-        print(f"      P50: {stats['p50']:.1f} tokens")
-        print(f"      P75: {stats['p75']:.1f} tokens")
-        print(f"      P90: {stats['p90']:.1f} tokens")
-        print(f"      P95: {stats['p95']:.1f} tokens")
-        print(f"      P99: {stats['p99']:.1f} tokens")
-        print(f"    Total tokens: {stats['total']:,}")
+        
+        # ✅ Print summary based on verbose level
+        if verbose >= 1:
+            print(f"  Total samples: {stats['count']}, Mean tokens: {stats['mean']:.1f}, Max: {stats['max']}")
+        
+        if verbose >= 2:
+            # Full statistics only for verbose >= 2
+            print(f"  Total samples analyzed: {stats['count']}")
+            print(f"  Token statistics (prompt only):")
+            print(f"    Min: {stats['min']} tokens")
+            print(f"    Max: {stats['max']} tokens")
+            print(f"    Mean: {stats['mean']:.1f} tokens")
+            print(f"    Median: {stats['median']:.1f} tokens")
+            print(f"    Percentiles:")
+            print(f"      P50: {stats['p50']:.1f} tokens")
+            print(f"      P75: {stats['p75']:.1f} tokens")
+            print(f"      P90: {stats['p90']:.1f} tokens")
+            print(f"      P95: {stats['p95']:.1f} tokens")
+            print(f"      P99: {stats['p99']:.1f} tokens")
+            print(f"    Total tokens: {stats['total']:,}")
         
         # Check if any prompts exceed max_length
         max_length = _get_max_seq_length()  # From config
@@ -1653,5 +1706,7 @@ Candidate items:
         else:
             if verbose >= 2:
                 print(f"  ✅ All eval prompts fit within max_length={max_length}")
-        print()
+        
+        if verbose >= 1:
+            print()  # Empty line for readability
 
