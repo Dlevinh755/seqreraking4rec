@@ -16,13 +16,26 @@ from PIL import Image
 
 try:
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
-    from unsloth import FastLanguageModel
+    from unsloth import FastVisionModel
     QWEN3VL_AVAILABLE = True
-    UNSLOTH_AVAILABLE = True
+    FAST_VISION_MODEL_AVAILABLE = True
 except ImportError:
     QWEN3VL_AVAILABLE = False
-    UNSLOTH_AVAILABLE = False
-    print("Warning: transformers or unsloth library not available. Qwen3-VL semantic summary generation will be disabled.")
+    FAST_VISION_MODEL_AVAILABLE = False
+    # Try to import separately
+    try:
+        from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+        QWEN3VL_AVAILABLE = True
+    except ImportError:
+        QWEN3VL_AVAILABLE = False
+    try:
+        from unsloth import FastVisionModel
+        FAST_VISION_MODEL_AVAILABLE = True
+    except ImportError:
+        FAST_VISION_MODEL_AVAILABLE = False
+    
+    if not QWEN3VL_AVAILABLE or not FAST_VISION_MODEL_AVAILABLE:
+        print("Warning: transformers or unsloth FastVisionModel not available. Qwen3-VL semantic summary generation will be disabled.")
 
 
 # Batch size for semantic summary generation (configurable via args)
@@ -42,14 +55,17 @@ Avoid describing low-level visual details.
 Keep the summary concise."""
 
 def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
-    """Load Qwen3-VL model from unsloth repository using Unsloth optimizations.
+    """Load Qwen3-VL model using Unsloth FastVisionModel for optimized inference.
     
-    Uses unsloth/Qwen3-VL-2B-Instruct which includes unsloth chat template fixes and optimizations.
-    Note: Qwen3-VL is a vision-language model, so we use transformers API but with Unsloth's model.
+    Uses unsloth FastVisionModel which provides:
+    - Automatic 4-bit quantization
+    - Optimized inference speed
+    - Better memory efficiency
+    - Chat template fixes
     
     Args:
         device: Device to load model on
-        use_quantization: Whether to use 4-bit quantization (default: True for all LLM models)
+        use_quantization: Whether to use 4-bit quantization (default: True)
         Note: 4-bit quantization is enabled by default for all LLM models to save memory
         
     Returns:
@@ -58,18 +74,45 @@ def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
     if not QWEN3VL_AVAILABLE:
         raise ImportError("transformers library is required. Install with: pip install transformers")
     
-    print("Loading Qwen3-VL model from unsloth repository with 4-bit quantization (default)...")
+    # Use unsloth's Qwen3-VL model (includes unsloth optimizations and chat template fixes)
+    model_name = "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit"
     
+    # Load processor (still need from transformers)
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    
+    # Try to use FastVisionModel from Unsloth (preferred method)
+    if FAST_VISION_MODEL_AVAILABLE:
+        print("Loading Qwen3-VL model using Unsloth FastVisionModel with 4-bit quantization...")
+        try:
+            # Get max_seq_length from config if available
+            try:
+                from config import arg
+                max_seq_length = getattr(arg, 'qwen_max_seq_length', 2048)
+            except ImportError:
+                max_seq_length = 2048  # Default fallback
+            
+            # Load model with FastVisionModel (automatically handles 4-bit quantization)
+            model, _ = FastVisionModel.from_pretrained(
+                model_name=model_name,
+                max_seq_length=max_seq_length,
+                dtype=torch.float16 if device.type == "cuda" else torch.float32,
+                load_in_4bit=use_quantization and device.type == "cuda",  # 4-bit quantization enabled by default
+                use_gradient_checkpointing="unsloth",  # Memory efficient
+            )
+            
+            model.eval()
+            print(f"Qwen3-VL model loaded on {device} using Unsloth FastVisionModel: {model_name}")
+            return model, processor
+            
+        except Exception as e:
+            print(f"Warning: Failed to load with FastVisionModel: {e}")
+            print("Falling back to standard transformers API...")
+            # Fall through to transformers fallback
+    
+    # Fallback: Use standard transformers API (if FastVisionModel not available or failed)
+    print("Loading Qwen3-VL model using standard transformers API...")
     try:
-        # Use unsloth's Qwen3-VL model (includes unsloth optimizations and chat template fixes)
-        model_name = "unsloth/Qwen3-VL-2B-Instruct"
-        
-        # Load processor and model
-        # Note: Qwen3-VL requires latest transformers from source
-        # pip install git+https://github.com/huggingface/transformers
-        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-        
-        # Setup 4-bit quantization by default (priority: use Unsloth with 4-bit for all LLM)
+        # Setup 4-bit quantization manually if needed
         quantization_config = None
         if use_quantization and device.type == "cuda":
             try:
@@ -80,13 +123,12 @@ def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
                     bnb_4bit_use_double_quant=True,
                     bnb_4bit_quant_type="nf4",
                 )
-                print("Using 4-bit quantization for Qwen3-VL model (via Unsloth - default for all LLM)")
+                print("Using 4-bit quantization for Qwen3-VL model (via transformers)")
             except ImportError:
                 print("Warning: bitsandbytes not available. Install with: pip install bitsandbytes")
                 quantization_config = None
         
-        # Load model with Unsloth optimizations
-        # Note: Unsloth's Qwen3-VL models are pre-optimized for faster inference
+        # Load model with transformers API
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_name,
             dtype="auto" if device.type == "cuda" else torch.float32,
@@ -99,18 +141,7 @@ def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
             model = model.to(device)
         
         model.eval()
-        
-        # Apply Unsloth optimizations if available
-        if UNSLOTH_AVAILABLE:
-            try:
-                # Unsloth models are already optimized, but we can apply additional optimizations
-                print("Applying Unsloth optimizations for faster inference...")
-                # Note: FastLanguageModel optimizations are for text models only
-                # For VL models, Unsloth's pre-optimized weights are already applied
-            except Exception as e:
-                print(f"Note: Additional Unsloth optimizations not applicable for VL models: {e}")
-        
-        print(f"Qwen3-VL model loaded on {device} (from Unsloth): {model_name}")
+        print(f"Qwen3-VL model loaded on {device} (from Unsloth repository, using transformers API): {model_name}")
         return model, processor
         
     except Exception as e:
@@ -120,6 +151,30 @@ def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
             model_name = "Qwen/Qwen3-VL-2B-Instruct"
             print(f"Trying original Qwen repository: {model_name}")
             processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+            
+            # Try FastVisionModel first if available
+            if FAST_VISION_MODEL_AVAILABLE:
+                try:
+                    try:
+                        from config import arg
+                        max_seq_length = getattr(arg, 'qwen_max_seq_length', 2048)
+                    except ImportError:
+                        max_seq_length = 2048
+                    
+                    model, _ = FastVisionModel.from_pretrained(
+                        model_name=model_name,
+                        max_seq_length=max_seq_length,
+                        dtype=torch.float16 if device.type == "cuda" else torch.float32,
+                        load_in_4bit=use_quantization and device.type == "cuda",
+                        use_gradient_checkpointing="unsloth",
+                    )
+                    model.eval()
+                    print(f"Qwen3-VL model loaded on {device} using FastVisionModel: {model_name}")
+                    return model, processor
+                except Exception:
+                    pass  # Fall through to transformers API
+            
+            # Fallback to transformers API
             model = Qwen3VLForConditionalGeneration.from_pretrained(
                 model_name,
                 dtype="auto" if device.type == "cuda" else torch.float32,
