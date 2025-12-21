@@ -162,6 +162,8 @@ parser.add_argument('--qwen_verbose', type=int, default=1,
 					help='Verbosity level for Qwen reranker: 0 (minimal), 1 (normal), 2 (verbose/debug, default: 1).')
 parser.add_argument('--qwen_disable_progress_bar', action='store_true',
 					help='Disable progress bars during Qwen reranker evaluation (default: False). Progress bars are shown by default.')
+parser.add_argument('--qwen_temperature', type=float, default=1.0,
+					help='Temperature for probability scaling in Qwen reranker (default: 1.0). Temperature < 1.0 makes distribution sharper, > 1.0 makes it smoother. Only affects probability extraction, not generation.')
 parser.add_argument('--rerank_action', type=str, default='train',
 					choices=['train', 'eval'],
 					help='Action for rerank: train (train model) or eval (load pretrained model and evaluate only, default: train). When eval, pass model path to --qwen_model and Unsloth will automatically load the adapter.')

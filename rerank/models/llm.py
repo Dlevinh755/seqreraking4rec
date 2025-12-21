@@ -282,6 +282,7 @@ class LLMModel:
             warmup_steps = 20  # Default fallback
         
         # ✅ Use SFTConfig and SFTTrainer (like notebook Cell 8)
+        print(hf_train_dataset[0])
         training_args = SFTConfig(
             dataset_text_field="text",  # Field name in dataset
             output_dir="./qwen_rerank",
@@ -368,10 +369,12 @@ class LLMModel:
         
         # Apply chat template with generation prompt (adds <|im_start|>assistant\n at the end)
         # This ensures consistency with training format
+        # ✅ Disable thinking mode to ensure direct answer prediction (for reranking, we want direct letter answers)
         text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True  # ✅ Add <|im_start|>assistant\n for generation
+            add_generation_prompt=True,  # ✅ Add <|im_start|>assistant\n for generation
+            enable_thinking=False  # ✅ Disable thinking mode for direct answer prediction
         )
         
         # Tokenize the chat template formatted text
@@ -456,7 +459,24 @@ class LLMModel:
         
         # Extract probabilities for letter tokens
         token_ids = [tid for _, _, tid in letter_tokens]
-        probs = F.softmax(logits[:, token_ids], dim=-1)
+        
+        # ✅ Apply temperature scaling if specified (default: 1.0 = no scaling)
+        # Temperature < 1.0: sharper distribution (more confident)
+        # Temperature > 1.0: smoother distribution (less confident)
+        # Temperature = 1.0: standard softmax (default)
+        try:
+            from config import arg
+            temperature = getattr(arg, 'qwen_temperature', 1.0)
+        except ImportError:
+            temperature = 1.0  # Default: no temperature scaling
+        
+        if temperature != 1.0:
+            # Apply temperature scaling: logits / temperature
+            scaled_logits = logits[:, token_ids] / temperature
+            probs = F.softmax(scaled_logits, dim=-1)
+        else:
+            # Standard softmax (no temperature scaling)
+            probs = F.softmax(logits[:, token_ids], dim=-1)
         
         # Map back to candidate indices (0-indexed)
         prob_array = np.zeros(num_candidates)
