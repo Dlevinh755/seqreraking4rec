@@ -2,15 +2,13 @@
 ##%%writefile /kaggle/working/rerank/models/llm.py
 from unsloth import FastLanguageModel
 import torch
-from transformers import Trainer, TrainingArguments
-from transformers import TrainingArguments
 import torch.nn.functional as F
 import string
 import pandas as pd
 import ast
 import numpy as np
 import os
-from transformers.utils import logging as transformers_logging
+import math
 
 # Legacy: Keep for backward compatibility, but now we use numbers
 # Use both uppercase and lowercase for up to 52 candidates (A-Z, a-z)
@@ -100,8 +98,6 @@ def rank_candidates(probs, candidate_ids):
 def recall_at_k(ranked_items, gt_item, k):
     return int(gt_item in ranked_items[:k])
 
-
-import math
 
 def ndcg_at_k(ranked_items, gt_item, k):
     if gt_item not in ranked_items[:k]:
@@ -320,50 +316,35 @@ class LLMModel:
             response_part="<|im_start|>assistant\n",
         )
         
-        # ✅ Actually train the model!
-        print(f"[LLMModel] Starting training for {num_epochs} epochs...")
-        print(f"[LLMModel] Training config: lr={learning_rate}, batch_size={batch_size}, epochs={num_epochs}")
-        print(f"[LLMModel] Dataset size: {len(hf_train_dataset)} samples")
-        print(f"[LLMModel] Total steps: {len(hf_train_dataset) // (batch_size * 2) * num_epochs}")
+        # ✅ Check if in eval mode - skip training if so
+        try:
+            from config import arg
+            rerank_action = getattr(arg, 'rerank_action', 'train') or 'train'
+        except ImportError:
+            rerank_action = 'train'
         
-        trainer.train()
-        
-        # ✅ Save final model (vì load_best_model_at_end=False)
-        print(f"[LLMModel] Saving final model...")
-        trainer.save_model()  # Save to output_dir
-        print(f"[LLMModel] Model saved to {training_args.output_dir}")
-        
-        # ✅ Log final training loss
-        print(f"[LLMModel] Training completed!")
-        print(f"[LLMModel] Check training logs above for loss progression")
-        print(f"[LLMModel] If loss did not decrease, check:")
-        print(f"  - Learning rate (current: {learning_rate})")
-        print(f"  - Training data quality")
-        print(f"  - Model size (current: {self.model_name})")
+        # ✅ Actually train the model! (skip if eval mode)
+        if rerank_action != "eval":
+            print(f"[LLMModel] Starting training for {num_epochs} epochs...")
+            print(f"[LLMModel] Training config: lr={learning_rate}, batch_size={batch_size}, epochs={num_epochs}")
+            print(f"[LLMModel] Dataset size: {len(hf_train_dataset)} samples")
+            print(f"[LLMModel] Total steps: {len(hf_train_dataset) // (batch_size * 2) * num_epochs}")
+            
+            trainer.train()
+            
+            # ✅ Save final model (vì load_best_model_at_end=False)
+            print(f"[LLMModel] Saving final model...")
+            trainer.save_model()  # Save to output_dir
+            print(f"[LLMModel] Model saved to {training_args.output_dir}")
+            
+            # ✅ Log final training loss
+            print(f"[LLMModel] Training completed!")
+            print(f"[LLMModel] Check training logs above for loss progression")
+            print(f"[LLMModel] If loss did not decrease, check:")
+            print(f"  - Learning rate (current: {learning_rate})")
+            print(f"  - Training data quality")
+            print(f"  - Model size (current: {self.model_name})")
 
-
-
-    def predict_prob(self, prompt, num_candidates=None):
-        """Predict probabilities for candidates (legacy method, uses letters).
-        
-        Args:
-            prompt: Input prompt
-            num_candidates: Number of candidates (for backward compatibility)
-        """
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
-
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            logits = outputs.logits[:, -1]
-
-        # Use letters for backward compatibility
-        max_letters = num_candidates if num_candidates and num_candidates <= 20 else 20
-        letters = list(string.ascii_uppercase[:max_letters])
-        token_ids = self.tokenizer.convert_tokens_to_ids(letters)
-        probs = F.softmax(logits[:, token_ids], dim=-1)
-
-        return dict(zip(letters, probs[0].tolist()))
-    
     def predict_probs(self, prompt, num_candidates=None):
         """Predict probabilities for candidates using letters (A, B, C, ... or a, b, c, ...) - LlamaRec style.
         
@@ -528,7 +509,3 @@ class LLMModel:
             **{f"Recall@{k}": sum(v)/len(v) for k, v in recalls.items()},
             **{f"NDCG@{k}": sum(v)/len(v) for k, v in ndcgs.items()}
         }
-
-
-
-
