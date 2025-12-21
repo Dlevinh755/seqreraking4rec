@@ -399,6 +399,9 @@ class LLMModel:
         Returns:
             numpy array of probabilities [num_candidates]
         """
+        # ✅ Increment debug counter FIRST (before any debug prints)
+        self._debug_predict_count += 1
+        
         # Get max_length from config
         try:
             from config import arg
@@ -442,17 +445,17 @@ class LLMModel:
         ).to(self.model.device)
 
         # ✅ Debug: Check prompt format and tokenization (only if verbose >= 2, and only for first few samples)
-        if self.verbose >= 2 and self._debug_predict_count < self._max_debug_prints:
+        if self.verbose >= 2 and self._debug_predict_count <= self._max_debug_prints:
             # Check if prompt ends correctly (should end with <|im_start|>assistant\n)
             if not text.rstrip().endswith("<|im_start|>assistant"):
-                print(f"[DEBUG] Sample {self._debug_predict_count + 1}: Prompt may not end correctly. Last 50 chars: {text[-50:]}")
+                print(f"[DEBUG] Sample {self._debug_predict_count}: Prompt may not end correctly. Last 50 chars: {text[-50:]}")
             
             # Check token count
             input_ids = inputs["input_ids"][0]
-            print(f"[DEBUG] Sample {self._debug_predict_count + 1}: Prompt token count: {len(input_ids)}")
-            if self._debug_predict_count == 0:  # Only print full details for first sample
-                print(f"[DEBUG] Sample {self._debug_predict_count + 1}: Last 10 tokens: {input_ids[-10:].tolist()}")
-                print(f"[DEBUG] Sample {self._debug_predict_count + 1}: Last 10 token texts: {[self.tokenizer.decode([t]) for t in input_ids[-10:]]}")
+            print(f"[DEBUG] Sample {self._debug_predict_count}: Prompt token count: {len(input_ids)}")
+            if self._debug_predict_count == 1:  # Only print full details for first sample
+                print(f"[DEBUG] Sample {self._debug_predict_count}: Last 10 tokens: {input_ids[-10:].tolist()}")
+                print(f"[DEBUG] Sample {self._debug_predict_count}: Last 10 token texts: {[self.tokenizer.decode([t]) for t in input_ids[-10:]]}")
 
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -528,7 +531,7 @@ class LLMModel:
                 continue
         
         # ✅ Debug: Verify all letter tokens are single tokens (only if verbose >= 2, and only for first sample)
-        if self.verbose >= 2 and self._debug_predict_count == 0:
+        if self.verbose >= 2 and self._debug_predict_count == 1:
             for cand_idx, letter, token_id in letter_tokens[:5]:  # Check first 5
                 # Check if letter encodes to single token
                 encoded = self.tokenizer.encode(letter, add_special_tokens=False)
