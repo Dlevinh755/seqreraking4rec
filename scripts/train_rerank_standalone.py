@@ -255,6 +255,16 @@ def main():
                         max_candidates=None
                     )
                     
+                    # ✅ Remove "You are a recommendation ranking assistant." from prompt if present
+                    # (already in system message to avoid duplication)
+                    system_msg = "You are a recommendation ranking assistant."
+                    if prompt.strip().startswith(system_msg):
+                        # Remove system message from prompt (already in system message)
+                        prompt = prompt.strip()[len(system_msg):].strip()
+                        # Remove leading newline if present
+                        if prompt.startswith("\n"):
+                            prompt = prompt[1:]
+                    
                     # Use letter index (LlamaRec style) instead of number
                     target_letter = LETTERS[target_idx]  # Letter index (A, B, C, ...)
                     
@@ -263,7 +273,7 @@ def main():
                         "messages": [
                             {
                                 "role": "system",
-                                "content": "You are a recommendation ranking assistant."
+                                "content": system_msg
                             },
                             {
                                 "role": "user",

@@ -404,8 +404,21 @@ class LLMModel:
             max_length = 2048  # Default fallback
         
         # ✅ Convert plain text prompt to chat template format (consistency with training)
-        # Training uses apply_chat_template, so inference should too
-        messages = [{"role": "user", "content": prompt}]
+        # Training uses apply_chat_template with system message, so inference should too
+        # ✅ Remove "You are a recommendation ranking assistant." from prompt if present (already in system message)
+        system_msg = "You are a recommendation ranking assistant."
+        if prompt.strip().startswith(system_msg):
+            # Remove system message from prompt (already in system message)
+            prompt = prompt.strip()[len(system_msg):].strip()
+            # Remove leading newline if present
+            if prompt.startswith("\n"):
+                prompt = prompt[1:]
+        
+        # ✅ Add system message to match training format
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": prompt}
+        ]
         
         # Apply chat template with generation prompt (adds <|im_start|>assistant\n at the end)
         # This ensures consistency with training format
