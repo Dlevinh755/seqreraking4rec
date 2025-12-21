@@ -395,7 +395,17 @@ Candidate items:
                     model_name=model_path
                 )
                 self.llm_model.load_model(use_torch_compile=False)
-                self.llm_model.train(batch_size=self.batch_size)
+                # ✅ Check if eval mode - skip training if so
+                try:
+                    from config import arg
+                    rerank_action = getattr(arg, 'rerank_action', 'train') or 'train'
+                except ImportError:
+                    rerank_action = 'train'
+                
+                if rerank_action != "eval":
+                    self.llm_model.train(batch_size=self.batch_size)
+                else:
+                    print("  [Eval mode] Skipping training (trainer.train() skipped)")
             else:
                 self.llm_model = LLMModel(
                     train_data=None,
