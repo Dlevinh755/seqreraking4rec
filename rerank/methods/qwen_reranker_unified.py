@@ -8,7 +8,8 @@ from copy import deepcopy
 
 from rerank.base import BaseReranker
 from rerank.models.llm import LLMModel, build_prompt_from_candidates, rank_candidates
-from rerank.models.qwen3vl import Qwen3VLModel
+# ✅ REFACTORED: Qwen3VLModel is no longer used. All modes (text_only, caption, semantic_summary) use LLMModel.
+# from rerank.models.qwen3vl import Qwen3VLModel  # Deprecated
 from evaluation.metrics import recall_at_k
 
 
@@ -120,17 +121,29 @@ MODEL_MAPPING = {
 
 
 class QwenReranker(BaseReranker):
-    """Unified Qwen reranker supporting text-only and multimodal modes.
+    """Unified Qwen reranker supporting multiple prompt modes.
+    
+    **IMPORTANT**: All 3 modes (`text_only`, `caption`, `semantic_summary`) use the SAME training
+    and evaluation process. They ONLY differ in how the prompt is built:
+    - `text_only`: Uses only item text: "{text}"
+    - `caption`: Adds caption info: "{text} (Image: {caption})"
+    - `semantic_summary`: Adds semantic summary: "{text} (Semantic: {semantic_summary})"
+    
+    All modes use the same LLMModel (for all models including qwen3-2bvl),
+    with identical training loops, loss functions, and evaluation metrics.
     
     **3 Prompt Modes**:
     1. `text_only`: Chỉ sử dụng description (text)
-    2. `caption`: Sử dụng image caption
-    3. `semantic_summary`: Sử dụng image semantic summary
+    2. `caption`: Sử dụng image caption (thêm thông tin caption vào prompt)
+    3. `semantic_summary`: Sử dụng image semantic summary (thêm thông tin semantic summary vào prompt)
     
     **3 Model Options**:
-    1. `qwen3-0.6b`: Text-only model (for text_only mode)
-    2. `qwen3-2bvl`: Vision-Language model (for caption/semantic_summary modes)
-    3. `qwen3-1.6b`: Text model (for text_only or semantic_summary mode)
+    1. `qwen3-0.6b`: Text model (for text_only, caption, semantic_summary modes)
+    2. `qwen3-2bvl`: Can be used for all modes (text_only, caption, semantic_summary) - uses LLMModel
+    3. `qwen3-1.6b`: Text model (for text_only, caption, semantic_summary modes)
+    
+    Note: Even `qwen3-2bvl` (VL model) uses LLMModel for caption/semantic_summary modes
+    because captions/semantic_summaries are pre-generated text, not images.
     
     **Requirements**:
     - Mode `text_only`: Requires text in item_meta or item_id2text
@@ -223,7 +236,8 @@ class QwenReranker(BaseReranker):
         
         # Model instances
         self.llm_model: Optional[LLMModel] = None
-        self.qwen3vl_model: Optional[Qwen3VLModel] = None
+        # ✅ REFACTORED: Qwen3VLModel is no longer used. All modes use LLMModel.
+        # self.qwen3vl_model: Optional[Qwen3VLModel] = None  # Deprecated
         
         # Data structures
         self.user_history: Dict[int, List[str]] = {}  # user_id -> [item_texts]
@@ -284,14 +298,18 @@ class QwenReranker(BaseReranker):
         use_torch_compile = getattr(arg, 'use_torch_compile', False)
         
         # Load model based on mode and model type
-        # For caption/semantic_summary with text-only models (qwen3-0.6b, qwen3-1.6b):
-        #   Use LLMModel because captions/semantic_summaries are pre-generated (no need for VL model)
-        # For caption/semantic_summary with VL model (qwen3-2bvl):
-        #   Use Qwen3VLModel
-        use_text_model = self.mode == "text_only" or (self.mode in ["caption", "semantic_summary"] and self.model_name in ["qwen3-0.6b", "qwen3-1.6b"])
+        # ✅ IMPORTANT: All 3 modes (text_only, caption, semantic_summary) use the SAME model and training process.
+        #    They ONLY differ in prompt format (caption/semantic_summary add extra info to prompt).
+        # ✅ REFACTORED: All caption/semantic_summary modes use LLMModel because captions/semantic_summaries 
+        #    are pre-generated text (no need for VL model, even if using qwen3-2bvl).
+        #    Qwen3VLModel is only needed for raw_image mode (loading images directly), which is not supported here.
+        use_text_model = self.mode in ["text_only", "caption", "semantic_summary"]
         
         if use_text_model:
-            # Use LLMModel for text-only mode or caption/semantic_summary with text models
+            # ✅ Use LLMModel for ALL modes (text_only, caption, semantic_summary)
+            #    Training and evaluation are identical, only prompt format differs
+            #    Note: Even if model is qwen3-2bvl (VL model), we use LLMModel because
+            #    caption/semantic_summary modes only use pre-generated text, not images.
             # ✅ Use mapping if available, otherwise use model_name directly as HuggingFace path
             model_path = MODEL_MAPPING.get(self.model_name, self.model_name)
             train_data_for_llm = kwargs.get("train_data_for_llm")
@@ -412,27 +430,9 @@ Candidate items:
                     model_name=model_path
                 )
                 self.llm_model.load_model(use_torch_compile=use_torch_compile)
-        else:
-            # Use Qwen3VLModel for caption/semantic_summary with VL model (qwen3-2bvl)
-            # ✅ Use mapping if available, otherwise use model_name directly as HuggingFace path
-            model_path = MODEL_MAPPING.get(self.model_name, self.model_name)
-            
-            self.qwen3vl_model = Qwen3VLModel(
-                mode=self.mode,
-                model_name=model_path
-            )
-            
-            # Training support for multimodal modes
-            if self.mode in ["caption", "semantic_summary"]:
-                train_samples = self._prepare_training_samples(train_data)
-                if len(train_samples) == 0:
-                    print("Warning: No training samples generated. Skipping training.")
-                    self.is_fitted = True
-                    return
-                
-                print(f"Generated {len(train_samples)} training samples")
-                self._train_model(train_samples, val_data)
         
+        # ✅ REFACTORED: All modes (text_only, caption, semantic_summary) now use LLMModel.
+        #    Qwen3VLModel is only needed for raw_image mode (not supported in unified reranker).
         self.is_fitted = True
     
     def rerank(
@@ -470,15 +470,17 @@ Candidate items:
         history = history[-self.max_history:]  # Truncate to max_history
         
         # Predict probabilities based on mode and model type
-        # For caption/semantic_summary with text-only models (qwen3-0.6b, qwen3-1.6b):
-        #   Use LLMModel because captions/semantic_summaries are pre-generated (no need for VL model)
-        # For caption/semantic_summary with VL model (qwen3-2bvl):
-        #   Use Qwen3VLModel
+        # ✅ IMPORTANT: All 3 modes use the SAME evaluation process. They only differ in prompt format.
+        # ✅ REFACTORED: All caption/semantic_summary modes use LLMModel because captions/semantic_summaries 
+        #    are pre-generated text (no need for VL model, even if using qwen3-2bvl).
         num_candidates = len(candidates)
-        use_text_model = self.mode == "text_only" or (self.mode in ["caption", "semantic_summary"] and self.model_name in ["qwen3-0.6b", "qwen3-1.6b"])
+        use_text_model = self.mode in ["text_only", "caption", "semantic_summary"]
         
         if use_text_model:
-            # Use LLMModel for text-only mode or caption/semantic_summary with text models
+            # ✅ Use LLMModel for ALL modes (text_only, caption, semantic_summary)
+            #    Evaluation is identical, only prompt format differs
+            #    Note: Even if model is qwen3-2bvl (VL model), we use LLMModel because
+            #    caption/semantic_summary modes only use pre-generated text, not images.
             if self.llm_model is None:
                 raise RuntimeError("LLM model chưa được load. Gọi fit() trước!")
             
@@ -613,80 +615,11 @@ Candidate items:
             
             probs = self.llm_model.predict_probs(prompt, num_candidates=num_candidates)
         else:
-            # Use Qwen3VLModel for caption/semantic_summary with VL model (qwen3-2bvl)
-            if self.qwen3vl_model is None:
-                raise RuntimeError("Qwen3-VL model chưa được load. Gọi fit() trước!")
-            
-            # ✅ Collect eval prompts for token analysis (only if not pre-built)
-            if not self._eval_prompts_prebuilt:
-                sample_prompt = self._build_test_prompt_sample(user_id, history, candidates)
-                self._eval_prompts.append(sample_prompt)
-                
-                # ✅ Get verbose level for conditional logging
-                try:
-                    from config import arg
-                    verbose = getattr(arg, 'qwen_verbose', 1)
-                except ImportError:
-                    verbose = 1
-                
-                # Analyze after first prompt is printed and we have at least 10 prompts (early analysis)
-                # ✅ Only print analysis if verbose >= 1
-                if verbose >= 1:
-                    if not self._eval_prompts_analyzed and self._debug_test_prompt_printed and len(self._eval_prompts) >= 10:
-                        print("\n[QwenReranker] Early eval prompt token analysis (first 10 prompts):")
-                        self._analyze_eval_prompt_tokens()
-                        self._eval_prompts_analyzed = True
-                        self._eval_prompts_count_at_analysis = len(self._eval_prompts)
-                    # Final analysis if we've collected significantly more prompts (e.g., 10x more)
-                    elif self._eval_prompts_analyzed and len(self._eval_prompts) >= self._eval_prompts_count_at_analysis * 10:
-                        print(f"\n[QwenReranker] Final eval prompt token analysis (all {len(self._eval_prompts)} prompts):")
-                        self._analyze_eval_prompt_tokens()
-                        self._eval_prompts_count_at_analysis = len(self._eval_prompts)  # Update to avoid repeated prints
-            
-            # ✅ Print sample test prompt for debugging (only once, controlled by verbose)
-            if not self._debug_test_prompt_printed:
-                try:
-                    from config import arg
-                    verbose = getattr(arg, 'qwen_verbose', 1)
-                except ImportError:
-                    verbose = 1
-                
-                # Build a sample prompt to show (similar to training prompt format)
-                sample_prompt = self._build_test_prompt_sample(user_id, history, candidates)
-                
-                if verbose >= 1:
-                    # Minimal info for verbose >= 1
-                    if hasattr(self.qwen3vl_model, 'processor') and hasattr(self.qwen3vl_model.processor, 'tokenizer'):
-                        try:
-                            tokens = self.qwen3vl_model.processor.tokenizer.encode(sample_prompt, add_special_tokens=False)
-                            print(f"\n[QwenReranker] Sample eval prompt: {len(tokens)} tokens, {len(candidates)} candidates")
-                        except:
-                            print(f"\n[QwenReranker] Sample eval prompt: {len(candidates)} candidates")
-                
-                if verbose >= 2:
-                    # Full details only for verbose >= 2
-                    print("\n[QwenReranker] Sample Test Prompt (for debugging):")
-                    print("-" * 80)
-                    print(f"User ID: {user_id}")
-                    print(f"History items: {history}")
-                    print(f"Candidates: {candidates[:10]}..." if len(candidates) > 10 else f"Candidates: {candidates}")
-                    print(f"\nPrompt:\n{sample_prompt}")
-                    # Count tokens if tokenizer is available
-                    if hasattr(self.qwen3vl_model, 'processor') and hasattr(self.qwen3vl_model.processor, 'tokenizer'):
-                        try:
-                            tokens = self.qwen3vl_model.processor.tokenizer.encode(sample_prompt, add_special_tokens=False)
-                            print(f"\nPrompt tokens: {len(tokens)}")
-                        except:
-                            pass
-                    print("-" * 80)
-                
-                self._debug_test_prompt_printed = True
-            
-            probs = self.qwen3vl_model.predict_probs(
-                user_history=history,
-                candidates=candidates,
-                item_meta=self.item_meta,
-                num_candidates=num_candidates
+            # ✅ REFACTORED: This branch should no longer be reached.
+            #    All supported modes (text_only, caption, semantic_summary) use LLMModel.
+            raise ValueError(
+                f"Invalid mode: {self.mode}. All supported modes (text_only, caption, semantic_summary) "
+                f"use LLMModel. Qwen3VLModel is only needed for raw_image mode, which is not supported here."
             )
         
         # Validate probabilities
@@ -766,26 +699,28 @@ Candidate items:
         train_samples: List[Dict],
         val_data: Optional[Dict[int, List[int]]] = None
     ) -> None:
-        """Train model based on mode."""
-        if self.qwen3vl_model is None:
-            raise RuntimeError("Qwen3VLModel not initialized")
+        """Train model based on mode.
         
-        # Check if text model (semantic_summary with small model) or VL model
-        if self.mode == "semantic_summary" and self.model_name in ["qwen3-0.6b", "qwen3-1.6b"]:
-            self._train_text_model(train_samples, val_data)
-        else:
-            self._train_vl_model(train_samples, val_data)
+        ✅ REFACTORED: This method is deprecated. All modes (text_only, caption, semantic_summary) 
+        now use LLMModel and training is handled by LLMModel.train() in fit() method.
+        """
+        # ✅ REFACTORED: All modes now use LLMModel, so this method is no longer needed.
+        raise RuntimeError(
+            f"_train_model() is deprecated. All modes (text_only, caption, semantic_summary) "
+            f"use LLMModel and training is handled by LLMModel.train() in fit() method."
+        )
     
-    def _train_text_model(
-        self,
-        train_samples: List[Dict],
-        val_data: Optional[Dict[int, List[int]]] = None
-    ) -> None:
-        """Train text model with Unsloth."""
-        if not hasattr(self.qwen3vl_model, 'model') or not hasattr(self.qwen3vl_model, 'tokenizer'):
-            print("Warning: Text model does not support training. Using pretrained model only.")
-            return
-        
+    # ✅ REFACTORED: This method is deprecated. All modes now use LLMModel.train().
+    # Commented out entire method to avoid confusion.
+    # def _train_text_model(
+    #     self,
+    #     train_samples: List[Dict],
+    #     val_data: Optional[Dict[int, List[int]]] = None
+    # ) -> None:
+    #     """Train text model with Unsloth."""
+    #     # ... (deprecated - all modes now use LLMModel.train())
+    #     pass
+
         from datasets import Dataset
         from transformers import TrainingArguments, Trainer
         
@@ -1123,7 +1058,14 @@ Candidate items:
         self._run_training_loop(trainer, val_data)
     
     def _build_training_prompt(self, sample: Dict) -> str:
-        """Build training prompt from sample."""
+        """Build training prompt from sample.
+        
+        ✅ IMPORTANT: This is the ONLY place where modes differ. All 3 modes (text_only, caption, semantic_summary)
+           use the same training process, loss function, and evaluation. They only differ in prompt format:
+           - text_only: "{text}"
+           - caption: "{text} (Image: {caption})"
+           - semantic_summary: "{text} (Semantic: {semantic_summary})"
+        """
         history = sample["history"]
         candidates = sample["candidates"]
         
@@ -1660,11 +1602,10 @@ Candidate items:
             verbose = 1
         
         # Determine which tokenizer to use
+        # ✅ REFACTORED: All modes now use LLMModel, so only check llm_model.tokenizer
         tokenizer = None
         if self.llm_model and hasattr(self.llm_model, 'tokenizer'):
             tokenizer = self.llm_model.tokenizer
-        elif self.qwen3vl_model and hasattr(self.qwen3vl_model, 'processor') and hasattr(self.qwen3vl_model.processor, 'tokenizer'):
-            tokenizer = self.qwen3vl_model.processor.tokenizer
         
         if tokenizer is None:
             return

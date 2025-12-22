@@ -161,6 +161,9 @@ python scripts/train_pipeline.py \
 | `caption` | Image captions (BLIP2) | `qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl` | `--use_image --generate_caption` |
 | `semantic_summary` | Semantic summaries (Qwen3-VL) | `qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl` | `--use_image --generate_semantic_summary` |
 
+**Note**: All modes (text_only, caption, semantic_summary) use the same LLMModel, even with `qwen3-2bvl`. 
+Captions and semantic summaries are pre-generated text, so no VL model is needed.
+
 ### Rerank Modes
 
 | Mode | Description | Use Case |
