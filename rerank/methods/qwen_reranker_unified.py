@@ -598,9 +598,23 @@ Candidate items:
                     # Full details only for verbose >= 2
                     print("\n[QwenReranker] Sample Test Prompt (for debugging):")
                     print("-" * 80)
+                    print(f"Mode: {self.mode}")
                     print(f"User ID: {user_id}")
                     print(f"History items: {history}")
                     print(f"Candidates: {candidates[:10]}..." if len(candidates) > 10 else f"Candidates: {candidates}")
+                    # Debug: Check item_meta for semantic_summary
+                    if self.mode == "semantic_summary":
+                        print(f"\n[DEBUG] Checking semantic_summary in item_meta:")
+                        sample_item_id = candidates[0] if candidates else None
+                        if sample_item_id:
+                            sample_meta = self.item_meta.get(sample_item_id, {})
+                            has_semantic = "semantic_summary" in sample_meta and sample_meta.get("semantic_summary")
+                            print(f"  Sample item {sample_item_id}: has semantic_summary = {has_semantic}")
+                            if has_semantic:
+                                semantic_preview = sample_meta["semantic_summary"][:100] if len(sample_meta["semantic_summary"]) > 100 else sample_meta["semantic_summary"]
+                                print(f"  Semantic preview: {semantic_preview}...")
+                            else:
+                                print(f"  Available keys in item_meta: {list(sample_meta.keys())}")
                     print(f"\nPrompt:\n{prompt}")
                     # Count tokens if tokenizer is available
                     if hasattr(self.llm_model, 'tokenizer') and self.llm_model.tokenizer:
@@ -699,27 +713,10 @@ Candidate items:
         train_samples: List[Dict],
         val_data: Optional[Dict[int, List[int]]] = None
     ) -> None:
-        """Train model based on mode.
-        
-        ✅ REFACTORED: This method is deprecated. All modes (text_only, caption, semantic_summary) 
-        now use LLMModel and training is handled by LLMModel.train() in fit() method.
-        """
-        # ✅ REFACTORED: All modes now use LLMModel, so this method is no longer needed.
         raise RuntimeError(
             f"_train_model() is deprecated. All modes (text_only, caption, semantic_summary) "
             f"use LLMModel and training is handled by LLMModel.train() in fit() method."
         )
-    
-    # ✅ REFACTORED: This method is deprecated. All modes now use LLMModel.train().
-    # Commented out entire method to avoid confusion.
-    # def _train_text_model(
-    #     self,
-    #     train_samples: List[Dict],
-    #     val_data: Optional[Dict[int, List[int]]] = None
-    # ) -> None:
-    #     """Train text model with Unsloth."""
-    #     # ... (deprecated - all modes now use LLMModel.train())
-    #     pass
 
         from datasets import Dataset
         from transformers import TrainingArguments, Trainer
