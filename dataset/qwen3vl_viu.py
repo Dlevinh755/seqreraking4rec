@@ -32,21 +32,31 @@ except ImportError:
 
 
 # VIU prompt template
-VIU_PROMPT = """Describe ONLY what is clearly visible in the image. If something is not readable/uncertain, write "Unknown".
+VIU_PROMPT = """You are a visual product attribute extractor. Describe ONLY what is clearly visible in the image.
+If a field is not readable or uncertain, output "Unknown". Do not guess.
 
-Output in bullet points with EXACT keys (keep the same order):
+Return EXACTLY this bullet list in this exact order (no extra text, no extra bullets):
+
 - Product name:
 - Category:
 - Type/form:
 - Brand:
-- Packaging (primary color, secondary color, container type, cap/pump):
+- Packaging (primary color, secondary color, container type, closure type):
 - Size/volume:
-- On-pack claims (verbatim or near-verbatim text):
+- On-pack claims:
 
-Rules:
-- Do NOT guess or infer ingredients, benefits, usage, hair/skin type, or product category if it is not explicitly written.
-- Do NOT use outside knowledge about the brand or typical product lines.
-- If only partial text is readable, include only that partial text and mark the rest Unknown.
+Definitions / rules:
+1) "Product name" must be the specific name printed on the package. If only the line/series is visible, write that; otherwise Unknown. Do NOT write a generic type as a name (e.g., "Shampoo", "Conditioner").
+2) "Category" and "Type/form" must be supported by visible text on-pack (e.g., "shampoo", "conditioner", "cleanser"). If not explicitly visible, write Unknown.
+3) "Brand" only if clearly readable; otherwise Unknown.
+4) "Packaging": container type must be one of {bottle, tube, jar, pump bottle, spray bottle, aerosol can, pouch}. Closure type must be one of {flip-top cap, screw cap, pump, trigger spray, spray nozzle, aerosol}. If unclear, write Unknown.
+5) "Size/volume" only if visible (e.g., "12 fl oz", "400 mL"); otherwise Unknown.
+6) "On-pack claims" must be a list of up to 8 short phrases copied from the package (verbatim or near-verbatim). Each claim must appear AT MOST ONCE. If none are readable, write "Unknown".
+
+Anti-repetition / self-check (must apply BEFORE final answer):
+- If any word/phrase repeats more than 2 times anywhere, rewrite that field using deduplicated items or "Unknown".
+- If On-pack claims would exceed 8 items, keep only the 8 most prominent/large-text claims.
+- If output starts repeating tokens/phrases, STOP and output "Unknown" for the affected field.
 """
 
 def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
@@ -272,6 +282,22 @@ def generate_viu(
             print(f"Warning: torch.compile() failed: {e}. Continuing without compilation.")
     
     summaries = {}
+        # -----------------------------
+    # Option A decoding config (strict / stable)
+    # -----------------------------
+    gen_cfg = dict(
+        do_sample=False,
+        num_beams=1,
+        use_cache=True,
+        repetition_penalty=1.10,
+        no_repeat_ngram_size=4,
+        pad_token_id=processor.tokenizer.eos_token_id,
+    )
+
+    # If caller passes a too-small max_new_tokens, Option A should override to a safer default
+    if max_new_tokens is None or max_new_tokens < 120:
+        max_new_tokens = 160
+
     
     # Pre-load all images in parallel (to reduce I/O bottleneck)
     print("Pre-loading images in parallel to reduce I/O bottleneck...")
@@ -388,12 +414,10 @@ def generate_viu(
                         # Generate for batch
                         batch_generated_ids = model.generate(
                             **batch_inputs,
-                            max_new_tokens=max_new_tokens,  # Configurable max tokens
-                            do_sample=False,
-                            num_beams=1,
-                            pad_token_id=processor.tokenizer.eos_token_id,
-                            use_cache=True,
+                            max_new_tokens=max_new_tokens,
+                            **gen_cfg,
                         )
+
                         
                         # Decode batch
                         if isinstance(batch_inputs.get("input_ids"), torch.Tensor):
@@ -487,13 +511,10 @@ def generate_viu(
                         # Generate summary with optimized settings
                         generated_ids = model.generate(
                             **inputs,
-                            max_new_tokens=max_new_tokens,  # Configurable max tokens
-                            do_sample=False,
-                            num_beams=1,
-                            pad_token_id=processor.tokenizer.eos_token_id,
-                            use_cache=True,
-                            repetition_penalty=1.0,  # Disable repetition penalty for speed
+                            max_new_tokens=max_new_tokens,
+                            **gen_cfg,
                         )
+
                         
                         # Decode summary
                         generated_ids_trimmed = [
@@ -560,7 +581,7 @@ def maybe_generate_viu(
     
     # Get optimization settings from args
     batch_size = getattr(args, 'viu_batch_size', 4)
-    max_new_tokens = getattr(args, 'viu_max_tokens', 64)
+    max_new_tokens = getattr(args, 'viu_max_tokens', 160)
     # Priority: Use 4-bit quantization by default for all LLM models (Unsloth best practice)
     use_quantization = getattr(args, 'use_quantization', True)  # Default: True (4-bit enabled)
     use_torch_compile = getattr(args, 'use_torch_compile', False)
