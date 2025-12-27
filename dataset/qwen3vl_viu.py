@@ -32,10 +32,14 @@ except ImportError:
 
 
 # VIU prompt template
-VIU_PROMPT = """You are a visual product attribute extractor. Describe ONLY what is clearly visible in the image.
-If a field is not readable or uncertain, output "Unknown". Do not guess.
+VIU_PROMPT = """You are a visual product attribute extractor.
 
-Return EXACTLY this bullet list in this exact order (no extra text, no extra bullets):
+Describe ONLY what is clearly visible on the product packaging in the image.
+If any field is not readable or uncertain, write exactly: "Unknown".
+Do NOT guess. Do NOT infer. Do NOT explain.
+
+Return EXACTLY the following bullet list, in this exact order.
+Do NOT add extra text, notes, explanations, or commentary.
 
 - Product name:
 - Category:
@@ -45,18 +49,43 @@ Return EXACTLY this bullet list in this exact order (no extra text, no extra bul
 - Size/volume:
 - On-pack claims:
 
-Definitions / rules:
-1) "Product name" must be the specific name printed on the package. If only the line/series is visible, write that; otherwise Unknown. Do NOT write a generic type as a name (e.g., "Shampoo", "Conditioner").
-2) "Category" and "Type/form" must be supported by visible text on-pack (e.g., "shampoo", "conditioner", "cleanser"). If not explicitly visible, write Unknown.
-3) "Brand" only if clearly readable; otherwise Unknown.
-4) "Packaging": container type must be one of {bottle, tube, jar, pump bottle, spray bottle, aerosol can, pouch}. Closure type must be one of {flip-top cap, screw cap, pump, trigger spray, spray nozzle, aerosol}. If unclear, write Unknown.
-5) "Size/volume" only if visible (e.g., "12 fl oz", "400 mL"); otherwise Unknown.
-6) "On-pack claims" must be a list of up to 8 short phrases copied from the package (verbatim or near-verbatim). Each claim must appear AT MOST ONCE. If none are readable, write "Unknown".
+Rules (must follow):
+1) Product name:
+   - Must be the specific name printed on the package.
+   - If only a product line/series is visible, write that.
+   - Do NOT use a generic type as a name (e.g., "Shampoo", "Conditioner").
+   - If unclear, write "Unknown".
 
-Anti-repetition / self-check (must apply BEFORE final answer):
-- If any word/phrase repeats more than 2 times anywhere, rewrite that field using deduplicated items or "Unknown".
-- If On-pack claims would exceed 8 items, keep only the 8 most prominent/large-text claims.
-- If output starts repeating tokens/phrases, STOP and output "Unknown" for the affected field.
+2) Category and Type/form:
+   - ONLY if the exact words appear on the package (e.g., "shampoo", "conditioner", "cleanser").
+   - If not explicitly written, write "Unknown".
+
+3) Brand:
+   - ONLY if clearly readable on the package.
+   - Otherwise write "Unknown".
+
+4) Packaging:
+   - Container type must be one of:
+     bottle, tube, jar, pump bottle, spray bottle, aerosol can, pouch
+   - Closure type must be one of:
+     flip-top cap, screw cap, pump, trigger spray, spray nozzle, aerosol
+   - If any part is unclear, write "Unknown" for that part.
+
+5) Size/volume:
+   - ONLY if explicitly printed (e.g., "12 fl oz", "400 mL").
+   - Otherwise write "Unknown".
+
+6) On-pack claims:
+   - Copy short phrases that appear on the package (verbatim or near-verbatim).
+   - List each claim AT MOST ONCE.
+   - Maximum 8 claims.
+   - If none are readable, write exactly: "Unknown".
+
+Strict output constraints:
+- No repetition of words or phrases.
+- No explanations, notes, or phrases like "inferred", "likely", "based on".
+- No extra lines such as "The above fields…" or "Formatted exactly…".
+- If output begins to repeat or loop, STOP and output "Unknown" for the affected field.
 """
 
 def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
