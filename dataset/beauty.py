@@ -115,13 +115,16 @@ class BeautyDataset(AbstractDataset):
             items_to_remove = remaining_items - valid_image_items
             if items_to_remove:
                 print(f'Removing {len(items_to_remove)} items without valid images...')
-                # Lọc df để loại bỏ items không có image
-                df = df[df['sid'].isin(valid_image_items)]
+                # ✅ FIX: Map valid_image_items (old IDs) to new IDs using smap
+                valid_new_items = {smap[old] for old in valid_image_items if old in smap}
+                # Lọc df để loại bỏ items không có image (df['sid'] is already new IDs)
+                df = df[df['sid'].isin(valid_new_items)]
                 # Tạo lại mapping
                 df, umap, smap = self.densify_index(df)
                 print(f'Final items after image filtering: {len(smap)}')
         train, val, test = self.split_df(df, len(umap))
-        meta = {smap[k]: v for k, v in meta_raw.items() if k in smap}
+        inv_smap = {v: k for k, v in smap.items()}
+        meta = {new_id: meta_raw[orig] for new_id, orig in inv_smap.items() if orig in meta_raw}
         # Save CSV export instead of pickle so downstream tools can use CSV-only workflow
         preproc_folder = dataset_path.parent
         rows = []
