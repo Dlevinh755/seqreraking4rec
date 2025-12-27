@@ -176,7 +176,7 @@ class QwenReranker(BaseReranker):
             patience: Early stopping patience (None = no early stopping)
         """
         super().__init__(top_k=top_k)
-        self.mode = mode.lower()
+        self.mode = mode
         self.model_name = model.lower()
         
         # Get max_history from config if not provided
@@ -214,9 +214,9 @@ class QwenReranker(BaseReranker):
         self.patience = patience
         
         # Validate mode
-        if self.mode not in ["text_only", "caption", "viu"]:
+        if self.mode not in ["text_only", "caption", "VIU"]:
             raise ValueError(
-                f"Invalid mode: {self.mode}. Must be one of: text_only, caption, viu"
+                f"Invalid mode: {self.mode}. Must be one of: text_only, caption, VIU"
             )
         
         # Validate model
