@@ -1,12 +1,3 @@
-"""Qwen3-VL semantic summary generation for images.
-
-This module provides functions to generate semantic summaries for images using Qwen3-VL model
-from unsloth repository (unsloth/Qwen3-VL-2B-Instruct).
-Semantic summaries are saved to CSV for later use.
-
-Reference: https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct
-"""
-
 import os
 import torch
 from pathlib import Path
@@ -35,16 +26,15 @@ except ImportError:
         FAST_VISION_MODEL_AVAILABLE = False
     
     if not QWEN3VL_AVAILABLE or not FAST_VISION_MODEL_AVAILABLE:
-        print("Warning: transformers or unsloth FastVisionModel not available. Qwen3-VL semantic summary generation will be disabled.")
+        print("Warning: transformers or unsloth FastVisionModel not available. Qwen3-VL VIU generation will be disabled.")
 
 
-# Batch size for semantic summary generation (configurable via args)
-# Default: 4 (smaller due to VL model size)
-# Can be increased if GPU memory allows (8, 16, 32)
 
-# Semantic summary prompt template
-SEMANTIC_SUMMARY_PROMPT = """What is in the image and describe its category, 
-type, color, style, brand, specifications, and feature?"""
+
+# VIU prompt template
+VIU_PROMPT = """What is in the image and describe its category, 
+type, color, style, brand, specifications, and feature?
+"""
 
 def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
     """Load Qwen3-VL model using Unsloth FastVisionModel for optimized inference.
@@ -187,7 +177,7 @@ def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
             )
 
 
-def generate_semantic_summaries(
+def generate_viu(
     model,
     processor,
     device: torch.device,
@@ -198,22 +188,6 @@ def generate_semantic_summaries(
     max_new_tokens: int = 64,
     preload_all_images: bool = False,
 ) -> Dict[int, str]:
-    """Generate semantic summaries for all images in meta.
-    
-    Args:
-        model: Qwen3-VL model
-        processor: Qwen3-VL processor
-        device: Device to run inference on
-        meta: Dict {item_id: {image_path: str, ...}}
-        num_items: Total number of items
-        batch_size: Batch size for processing (default: 4)
-        use_torch_compile: Whether to use torch.compile() for faster inference
-        max_new_tokens: Maximum tokens to generate (default: 64, reduced for speed)
-        preload_all_images: Pre-load all images into memory before processing (faster but uses more RAM)
-        
-    Returns:
-        Dict {item_id: semantic_summary} - Semantic summaries for items with valid images
-    """
     if not QWEN3VL_AVAILABLE:
         return {}
     
@@ -226,10 +200,10 @@ def generate_semantic_summaries(
             items_with_img.append((item_id, image_path))
     
     if not items_with_img:
-        print("No images found for semantic summary generation")
+        print("No images found for VIU generation")
         return {}
     
-    print(f"Generating semantic summaries for {len(items_with_img)} images...")
+    print(f"Generating VIU for {len(items_with_img)} images...")
     print(f"Using batch size: {batch_size}, max_new_tokens: {max_new_tokens}")
     
     # Helper function to load and resize image (for parallel processing)
@@ -295,7 +269,7 @@ def generate_semantic_summaries(
     
     with torch.no_grad():
         # Process in batches with parallel image loading
-        for i in tqdm(range(0, len(items_with_img), batch_size), desc="Qwen3 VL semantic summaries"):
+        for i in tqdm(range(0, len(items_with_img), batch_size), desc="Qwen3 VL VIU"):
             batch = items_with_img[i : i + batch_size]
             
             # Wait for previous batch loading to complete (if exists)
@@ -342,7 +316,7 @@ def generate_semantic_summaries(
                                 "role": "user",
                                 "content": [
                                     {"type": "image", "image": img},
-                                    {"type": "text", "text": SEMANTIC_SUMMARY_PROMPT}
+                                    {"type": "text", "text": VIU_PROMPT}
                                 ]
                             }
                         ])
@@ -444,7 +418,7 @@ def generate_semantic_summaries(
                                 "role": "user",
                                 "content": [
                                     {"type": "image", "image": img},
-                                    {"type": "text", "text": SEMANTIC_SUMMARY_PROMPT}
+                                    {"type": "text", "text": VIU_PROMPT}
                                 ]
                             }
                         ]
@@ -526,64 +500,54 @@ def generate_semantic_summaries(
                 print(f"Error generating summaries for batch: {e}")
                 continue
     
-    print(f"Generated {len(summaries)} semantic summaries")
+    print(f"Generated {len(summaries)} VIU")
     return summaries
 
 
-def maybe_generate_semantic_summaries(
+def maybe_generate_viu(
     dataset,
     data: Dict[str, Any],
     args,
 ) -> Optional[Dict[int, str]]:
-    """Generate Qwen3 VL semantic summaries if enabled and images are available.
-    
-    Args:
-        dataset: Dataset instance
-        data: Dataset data dict
-        args: Arguments with use_image and generate_semantic_summary flags
-        
-    Returns:
-        Dict {item_id: semantic_summary} or None if not generated
-    """
-    if not hasattr(args, 'generate_semantic_summary') or not args.generate_semantic_summary:
+    if not hasattr(args, 'generate_viu') or not args.generate_viu:
         return None
     
     if not args.use_image:
-        print("Warning: generate_semantic_summary requires --use_image flag")
+        print("Warning: generate_viu requires --use_image flag")
         return None
-    
+
     if not QWEN3VL_AVAILABLE:
-        print("Warning: Qwen3-VL not available. Skipping semantic summary generation.")
+        print("Warning: Qwen3-VL not available. Skipping VIU generation.")
         print("Note: Qwen3-VL requires latest transformers. Install with:")
         print("pip install git+https://github.com/huggingface/transformers")
         return None
     
     meta = data.get("meta", {})
     if not meta:
-        print("Warning: No metadata found. Skipping semantic summary generation.")
+        print("Warning: No metadata found. Skipping VIU generation.")
         return None
     
     num_items = max(meta.keys()) if meta else 0
     if num_items == 0:
-        print("Warning: No items found. Skipping semantic summary generation.")
+        print("Warning: No items found. Skipping VIU generation.")
         return None
     
     # Check if summaries already exist
     preproc_folder = Path(dataset._get_preprocessed_folder_path())
-    summaries_path = preproc_folder / "qwen3vl_semantic_summaries.pt"
+    summaries_path = preproc_folder / "qwen3vl_viu.pt"
     
     if summaries_path.exists():
-        print(f"Loading existing semantic summaries from {summaries_path}")
+        print(f"Loading existing VIU from {summaries_path}")
         summaries = torch.load(summaries_path, map_location="cpu")
         return summaries
     
-    # Generate summaries
+    # Generate VIU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # Get optimization settings from args
-    batch_size = getattr(args, 'semantic_summary_batch_size', 4)
-    max_new_tokens = getattr(args, 'semantic_summary_max_tokens', 64)
+    batch_size = getattr(args, 'viu_batch_size', 4)
+    max_new_tokens = getattr(args, 'viu_max_tokens', 64)
     # Priority: Use 4-bit quantization by default for all LLM models (Unsloth best practice)
     use_quantization = getattr(args, 'use_quantization', True)  # Default: True (4-bit enabled)
     use_torch_compile = getattr(args, 'use_torch_compile', False)
@@ -591,7 +555,7 @@ def maybe_generate_semantic_summaries(
     
     # Load model with Unsloth and 4-bit quantization (default)
     model, processor = _load_qwen3vl_model(device, use_quantization=use_quantization)
-    summaries = generate_semantic_summaries(
+    summaries = generate_viu(
         model, processor, device, meta, num_items,
         batch_size=batch_size,
         use_torch_compile=use_torch_compile,
@@ -603,8 +567,8 @@ def maybe_generate_semantic_summaries(
     if summaries:
         summaries_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(summaries, summaries_path)
-        print(f"Saved semantic summaries cache to {summaries_path}")
-        print(f"Note: Semantic summaries will also be saved to CSV in dataset_single_export.csv")
+        print(f"Saved VIU cache to {summaries_path}")
+        print(f"Note: VIU will also be saved to CSV in dataset_single_export.csv")
     
     return summaries
 

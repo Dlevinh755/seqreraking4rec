@@ -178,12 +178,12 @@ def load_dataset_from_csv(
         text = row.get("item_text") if not pd.isna(row.get("item_text")) else None
         image_path = row.get("item_image_path") if not pd.isna(row.get("item_image_path")) else None
         caption = row.get("item_caption") if not pd.isna(row.get("item_caption")) else None
-        semantic_summary = row.get("item_semantic_summary") if not pd.isna(row.get("item_semantic_summary")) else None
+        viu = row.get("item_viu") if not pd.isna(row.get("item_viu")) else None
         meta[int(item_new_id)] = {
             "text": text,
             "image_path": image_path,
             "caption": caption,
-            "semantic_summary": semantic_summary
+            "viu": viu
         }
     
     # Build smap

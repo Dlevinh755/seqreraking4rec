@@ -98,12 +98,12 @@ def main():
             # Map legacy modes to new modes
             mode_mapping = {
                 'caption': 'caption',
-                'semantic_summary': 'semantic_summary',
-                'semantic_summary_small': 'semantic_summary'  # Map to semantic_summary
+                'VIU': 'VIU',
+                'viu_small': 'VIU'  # Map to VIU
             }
             qwen_mode = mode_mapping.get(qwen3vl_mode_legacy, 'caption')
-            # For semantic_summary_small, use qwen3-0.6b model
-            if qwen3vl_mode_legacy == 'semantic_summary_small' and qwen_model is None:
+            # For viu_small, use qwen3-0.6b model
+            if qwen3vl_mode_legacy == 'viu_small' and qwen_model is None:
                 qwen_model = 'qwen3-0.6b'
         
         if qwen_mode:
@@ -162,11 +162,11 @@ def main():
             reranker_kwargs["item_id2text"] = item_id2text
             reranker_kwargs["user_history"] = user_history_text
         
-        # Add item_meta for multimodal modes (caption, semantic_summary)
+        # Add item_meta for multimodal modes (caption, VIU)
         if args.rerank_method in ["qwen", "qwen3vl"]:
             # Get mode from kwargs or config
             qwen_mode = reranker_kwargs.get("mode", "text_only")
-            if qwen_mode in ["caption", "semantic_summary"]:
+            if qwen_mode in ["caption", "VIU"]:
                 training_kwargs["item_meta"] = item_meta
                 # ✅ Also add to reranker_kwargs so reranker can use it during eval
                 reranker_kwargs["item_meta"] = item_meta

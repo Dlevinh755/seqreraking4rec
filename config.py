@@ -27,12 +27,12 @@ parser.add_argument('--use_image', action='store_true', default=False, help='Fil
 parser.add_argument('--use_text', action='store_true', default=False, help='Filter out items without text')
 parser.add_argument('--generate_caption', action='store_true', default=False, 
                     help='Generate BLIP2 captions for images and save to CSV')
-parser.add_argument('--generate_semantic_summary', action='store_true', default=False,
-                    help='Generate Qwen3 VL semantic summaries for images and save to CSV')
-parser.add_argument('--semantic_summary_batch_size', type=int, default=8,
-					help='Batch size for semantic summary generation (increase if GPU memory allows, recommended: 8-16 for T4)')
-parser.add_argument('--semantic_summary_max_tokens', type=int, default=128,
-					help='Maximum tokens for semantic summary generation (default: 64, reduced from 128 for speed)')
+parser.add_argument('--generate_viu', action='store_true', default=False,
+                    help='Generate Qwen3 VL VIU for images and save to CSV')
+parser.add_argument('--viu_batch_size', type=int, default=8,
+					help='Batch size for VIU generation (increase if GPU memory allows, recommended: 8-16 for T4)')
+parser.add_argument('--viu_max_tokens', type=int, default=128,
+					help='Maximum tokens for VIU generation (default: 64, reduced from 128 for speed)')
 parser.add_argument('--use_quantization', action='store_true', default=True,
 					help='Use 4-bit quantization for models (saves memory, may slightly reduce accuracy)')
 parser.add_argument('--use_torch_compile', action='store_true', default=True,
@@ -141,8 +141,8 @@ parser.add_argument('--retrieval_eval_mode', type=str, default='full_ranking',
 					choices=['full_ranking', 'candidate_list'],
 					help='Evaluation mode for retrieval models: full_ranking (evaluate on all items) or candidate_list (evaluate only on pre-generated candidates, default: full_ranking).')
 parser.add_argument('--qwen_mode', type=str, default='text_only',
-					choices=['text_only', 'caption', 'semantic_summary'],
-					help='Prompt mode for Qwen reranker: text_only (description only), caption, semantic_summary')
+					choices=['text_only', 'caption', 'VIU'],
+					help='Prompt mode for Qwen reranker: text_only (description only), caption, VIU')
 parser.add_argument('--qwen_model', type=str, default='qwen3-0.6b',
 					help='Model for Qwen reranker. Can be: qwen3-0.6b, qwen3-2bvl, qwen3-1.7b, qwen3-4b, or any HuggingFace model name (e.g., Qwen/Qwen2.5-0.5B-Instruct)')
 parser.add_argument('--qwen_max_history', type=int, default=5,
@@ -169,7 +169,7 @@ parser.add_argument('--rerank_action', type=str, default='train',
 					help='Action for rerank: train (train model) or eval (load pretrained model and evaluate only, default: train). When eval, pass model path to --qwen_model and Unsloth will automatically load the adapter.')
 # Legacy: Keep qwen3vl_mode for backward compatibility (will be removed in future)
 parser.add_argument('--qwen3vl_mode', type=str, default=None,
-					choices=['caption', 'semantic_summary', 'semantic_summary_small'],
+					choices=['caption', 'VIU', 'viu_small'],
 					help='[DEPRECATED] Use --qwen_mode instead. This argument is kept for backward compatibility only.')
 
 parser.add_argument('--max_text_length', type=int, default=256,

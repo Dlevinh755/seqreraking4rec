@@ -1,7 +1,7 @@
 from dataset import *
 from dataset.clip_embeddings import maybe_extract_clip_embeddings
 from dataset.blip2_captions import maybe_generate_blip2_captions
-from dataset.qwen3vl_semantic_summary import maybe_generate_semantic_summaries
+from dataset.qwen3vl_viu import maybe_generate_viu
 from config import *
 from pytorch_lightning import seed_everything
 import torch
@@ -21,13 +21,13 @@ def main(args):
     # Captions will be saved directly to CSV (no need for separate .pt file)
     captions = maybe_generate_blip2_captions(dataset, data, args)
     
-    # Generate Qwen3 VL semantic summaries if enabled
-    # Semantic summaries will be saved directly to CSV
-    semantic_summaries = maybe_generate_semantic_summaries(dataset, data, args)
+    # Generate Qwen3 VL VIU if enabled
+    # VIU will be saved directly to CSV
+    viu_data = maybe_generate_viu(dataset, data, args)
 
     # Export a single CSV with columns:
     # {Item_id, user_id, item_new_id, item_text, item_image_embedding,
-    #  item_text_embedding, item_image_path, item_caption, item_semantic_summary, split}
+    #  item_text_embedding, item_image_path, item_caption, item_viu, split}
     preproc_folder = Path(dataset._get_preprocessed_folder_path())
     clip_path = preproc_folder.joinpath("clip_embeddings.pt")
 
@@ -61,10 +61,10 @@ def main(args):
                 if captions is not None:
                     caption = captions.get(item)
                 
-                # Get semantic summary if available
-                semantic_summary = None
-                if semantic_summaries is not None:
-                    semantic_summary = semantic_summaries.get(item)
+                # Get VIU if available
+                viu = None
+                if viu_data is not None:
+                    viu = viu_data.get(item)
 
                 img_emb = None
                 txt_emb = None
@@ -86,7 +86,7 @@ def main(args):
                     "item_text_embedding": json.dumps(txt_emb) if txt_emb is not None else "",
                     "item_image_path": image_path or "",
                     "item_caption": caption or "",
-                    "item_semantic_summary": semantic_summary or "",
+                    "item_viu": viu or "",
                     "split": split_name,
                 })
 

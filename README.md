@@ -1,11 +1,11 @@
 # Sequential Reranking for Recommendation
 
-Hệ thống hai giai đoạn: **Retrieval** sinh candidates và **Reranking** sắp xếp lại bằng LLM/multimodal. Qwen đã được hợp nhất: `--rerank_method qwen` dùng chung cho 3 mode (`text_only`, `caption`, `semantic_summary`); `qwen3vl` chỉ còn là alias. `raw_image` không còn hỗ trợ.
+Hệ thống hai giai đoạn: **Retrieval** sinh candidates và **Reranking** sắp xếp lại bằng LLM/multimodal. Qwen đã được hợp nhất: `--rerank_method qwen` dùng chung cho 3 mode (`text_only`, `caption`, `VIU`); `qwen3vl` chỉ còn là alias. `raw_image` không còn hỗ trợ.
 
 ## Tổng quan nhanh
 - Retrieval: LRURec, MMGCN, VBPR, BM3.
 - Rerank: Qwen (unified), VIP5; alias `qwen3vl` trỏ về Qwen unified.
-- Multimodal: image, text, caption (BLIP2), semantic summary (Qwen3-VL, ở dạng text đã sinh sẵn).
+- Multimodal: image, text, caption (BLIP2), VIU (Qwen3-VL, ở dạng text đã sinh sẵn).
 - Train độc lập từng stage hoặc end-to-end; metric: Recall/NDCG/Hit @5/10/20; early stopping.
 
 ## Cài đặt
@@ -26,8 +26,8 @@ python data_prepare.py --dataset_code beauty --min_rating 3 --min_uc 20 --min_sc
 # sinh caption (BLIP2)
 python data_prepare.py --dataset_code beauty --min_rating 3 --min_uc 20 --min_sc 20 --use_image --generate_caption
 
-# sinh semantic summary (Qwen3-VL, lưu text)
-python data_prepare.py --dataset_code beauty --min_rating 3 --min_uc 20 --min_sc 20 --use_image --generate_semantic_summary
+# sinh VIU (Qwen3-VL, lưu text)
+python data_prepare.py --dataset_code beauty --min_rating 3 --min_uc 20 --min_sc 20 --use_image --generate_viu
 ```
 
 ## Train Retrieval (Stage 1)
@@ -43,7 +43,7 @@ python scripts/train_retrieval.py --retrieval_method bm3
 # Qwen unified (3 mode)
 python scripts/train_rerank_standalone.py --rerank_method qwen --qwen_mode text_only --mode ground_truth
 python scripts/train_rerank_standalone.py --rerank_method qwen --qwen_mode caption --mode ground_truth
-python scripts/train_rerank_standalone.py --rerank_method qwen --qwen_mode semantic_summary --mode ground_truth
+python scripts/train_rerank_standalone.py --rerank_method qwen --qwen_mode VIU --mode ground_truth
 # alias (backward-compat)
 python scripts/train_rerank_standalone.py --rerank_method qwen3vl --qwen_mode caption --mode ground_truth
 
@@ -79,7 +79,7 @@ python scripts/train_pipeline.py \
 ### Rerank
 | Method | Mô tả | Data cần | Command |
 |--------|-------|----------|---------|
-| qwen / qwen3vl (alias) | Unified LLM 3 mode | text; thêm caption/semantic_summary nếu dùng | `--rerank_method qwen --qwen_mode <mode>` |
+| qwen / qwen3vl (alias) | Unified LLM 3 mode | text; thêm caption/VIU nếu dùng | `--rerank_method qwen --qwen_mode <mode>` |
 | vip5 | Multimodal T5 | image + CLIP | `--rerank_method vip5` |
 
 ### Qwen modes (unified)
@@ -87,7 +87,7 @@ python scripts/train_pipeline.py \
 |------|-------|-------------|-----------|
 | text_only | Chỉ description | `qwen3-0.6b`, `qwen3-1.6b` | text |
 | caption | Thêm BLIP2 caption | `qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl` | `--use_image --generate_caption` |
-| semantic_summary | Thêm Qwen3-VL summary (text) | `qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl` | `--use_image --generate_semantic_summary` |
+| VIU | Thêm Qwen3-VL VIU (text) | `qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl` | `--use_image --generate_viu` |
 
 Lưu ý: cả 3 mode dùng chung `LLMModel`; không hỗ trợ `raw_image` trong unified.
 
@@ -100,7 +100,7 @@ Lưu ý: cả 3 mode dùng chung `LLMModel`; không hỗ trợ `raw_image` trong
 ## Cấu hình chính (config.py / CLI)
 - Retrieval: `--retrieval_epochs`, `--retrieval_lr`, `--batch_size_retrieval`, `--retrieval_patience`.
 - Rerank: `--rerank_epochs`, `--rerank_lr`, `--rerank_batch_size`, `--rerank_patience`, `--rerank_eval_candidates` (default 50).
-- Qwen: `--qwen_mode` (`text_only|caption|semantic_summary`), `--qwen_model` (`qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl`), `--qwen_max_candidates`, `--qwen_max_history`, `--qwen_max_seq_length`, `--qwen_temperature`.
+- Qwen: `--qwen_mode` (`text_only|caption|VIU`), `--qwen_model` (`qwen3-0.6b`, `qwen3-1.6b`, `qwen3-2bvl`), `--qwen_max_candidates`, `--qwen_max_history`, `--qwen_max_seq_length`, `--qwen_temperature`.
 - Alias: `--qwen3vl_mode` deprecated, giữ để tương thích; dùng `--qwen_mode`.
 - Hiệu năng: `--use_quantization` (4-bit Unsloth), `--use_torch_compile`.
 
@@ -110,7 +110,7 @@ data/preprocessed/{dataset_code}_.../
 ├── dataset_single_export.csv
 ├── clip_embeddings.pt
 ├── blip2_captions.pt
-└── qwen3vl_semantic_summaries.pt
+└── qwen3vl_viu.pt
 
 experiments/
 ├── retrieval/{method}/{dataset_code}/seed{seed}/
@@ -124,7 +124,7 @@ experiments/
 ## Troubleshooting nhanh
 - OOM: giảm `--rerank_batch_size`, giảm `--qwen_max_candidates`, bật `--use_quantization`.
 - Prompt bị cắt: tăng `--qwen_max_seq_length`.
-- Thiếu caption/summary: chạy `data_prepare.py` với `--generate_caption` / `--generate_semantic_summary`.
+- Thiếu caption/VIU: chạy `data_prepare.py` với `--generate_caption` / `--generate_viu`.
 - Dùng alias `--rerank_method qwen3vl`: vẫn gọi unified Qwen.
 
 ## Cập nhật mới nhất

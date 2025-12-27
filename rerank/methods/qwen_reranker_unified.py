@@ -8,7 +8,7 @@ from copy import deepcopy
 
 from rerank.base import BaseReranker
 from rerank.models.llm import LLMModel, build_prompt_from_candidates, rank_candidates
-# ✅ REFACTORED: Qwen3VLModel is no longer used. All modes (text_only, caption, semantic_summary) use LLMModel.
+# ✅ REFACTORED: Qwen3VLModel is no longer used. All modes (text_only, caption, VIU) use LLMModel.
 # from rerank.models.qwen3vl import Qwen3VLModel  # Deprecated
 from evaluation.metrics import recall_at_k
 
@@ -123,11 +123,11 @@ MODEL_MAPPING = {
 class QwenReranker(BaseReranker):
     """Unified Qwen reranker supporting multiple prompt modes.
     
-    **IMPORTANT**: All 3 modes (`text_only`, `caption`, `semantic_summary`) use the SAME training
+    **IMPORTANT**: All 3 modes (`text_only`, `caption`, `VIU`) use the SAME training
     and evaluation process. They ONLY differ in how the prompt is built:
     - `text_only`: Uses only item text: "{text}"
     - `caption`: Adds caption info: "{text} (Image: {caption})"
-    - `semantic_summary`: Adds semantic summary: "{text} (Semantic: {semantic_summary})"
+    - `VIU`: Adds VIU: "{text} (VIU: {viu})"
     
     All modes use the same LLMModel (for all models including qwen3-2bvl),
     with identical training loops, loss functions, and evaluation metrics.
@@ -135,20 +135,20 @@ class QwenReranker(BaseReranker):
     **3 Prompt Modes**:
     1. `text_only`: Chỉ sử dụng description (text)
     2. `caption`: Sử dụng image caption (thêm thông tin caption vào prompt)
-    3. `semantic_summary`: Sử dụng image semantic summary (thêm thông tin semantic summary vào prompt)
+    3. `VIU`: Sử dụng image VIU (thêm thông tin VIU vào prompt)
     
     **3 Model Options**:
-    1. `qwen3-0.6b`: Text model (for text_only, caption, semantic_summary modes)
-    2. `qwen3-2bvl`: Can be used for all modes (text_only, caption, semantic_summary) - uses LLMModel
-    3. `qwen3-1.6b`: Text model (for text_only, caption, semantic_summary modes)
+    1. `qwen3-0.6b`: Text model (for text_only, caption, VIU modes)
+    2. `qwen3-2bvl`: Can be used for all modes (text_only, caption, VIU) - uses LLMModel
+    3. `qwen3-1.6b`: Text model (for text_only, caption, VIU modes)
     
-    Note: Even `qwen3-2bvl` (VL model) uses LLMModel for caption/semantic_summary modes
-    because captions/semantic_summaries are pre-generated text, not images.
+    Note: Even `qwen3-2bvl` (VL model) uses LLMModel for caption/VIU modes
+    because captions/VIU are pre-generated text, not images.
     
     **Requirements**:
     - Mode `text_only`: Requires text in item_meta or item_id2text
     - Mode `caption`: Requires captions in item_meta (run data_prepare.py with --generate_caption)
-    - Mode `semantic_summary`: Requires semantic summaries in item_meta (run data_prepare.py with --generate_semantic_summary)
+    - Mode `VIU`: Requires VIU in item_meta (run data_prepare.py with --generate_viu)
     """
     
     def __init__(
@@ -166,7 +166,7 @@ class QwenReranker(BaseReranker):
         """
         Args:
             top_k: Số lượng items trả về sau rerank
-            mode: Prompt mode - "text_only", "caption", "semantic_summary"
+            mode: Prompt mode - "text_only", "caption", "VIU"
             model: Model name - "qwen3-0.6b", "qwen3-2bvl", "qwen3-1.6b"
             max_history: Số lượng items trong history để dùng cho prompt (None = lấy từ config, default: 5)
             max_candidates: Maximum number of candidates to process (None = no limit)
@@ -214,9 +214,9 @@ class QwenReranker(BaseReranker):
         self.patience = patience
         
         # Validate mode
-        if self.mode not in ["text_only", "caption", "semantic_summary"]:
+        if self.mode not in ["text_only", "caption", "VIU"]:
             raise ValueError(
-                f"Invalid mode: {mode}. Must be one of: text_only, caption, semantic_summary"
+                f"Invalid mode: {mode}. Must be one of: text_only, caption, VIU"
             )
         
         # Validate model
@@ -230,8 +230,8 @@ class QwenReranker(BaseReranker):
             raise ValueError(
                 "text_only mode requires text model (qwen3-0.6b or qwen3-1.6b), not qwen3-2bvl"
             )
-        # Note: caption and semantic_summary modes can use text-only models (qwen3-0.6b, qwen3-1.6b)
-        # because captions and semantic summaries are pre-generated, no need for VL model
+        # Note: caption and VIU modes can use text-only models (qwen3-0.6b, qwen3-1.6b)
+        # because captions and VIU are pre-generated, no need for VL model
         # Only qwen3-2bvl is not allowed for text_only mode (already checked above)
         
         # Model instances
@@ -242,7 +242,7 @@ class QwenReranker(BaseReranker):
         # Data structures
         self.user_history: Dict[int, List[str]] = {}  # user_id -> [item_texts]
         self.item_id2text: Dict[int, str] = {}  # item_id -> item_text (for text_only mode)
-        self.item_meta: Dict[int, Dict[str, Any]] = {}  # item_id -> {caption, semantic_summary, text} (for multimodal modes)
+        self.item_meta: Dict[int, Dict[str, Any]] = {}  # item_id -> {caption, viu, text} (for multimodal modes)
         self.train_user_history: Dict[int, List[int]] = {}  # user_id -> [item_ids] for training
         
         # Debug flag: print sample test prompt only once
@@ -265,7 +265,7 @@ class QwenReranker(BaseReranker):
             train_data: Dict {user_id: [item_ids]} - training interactions
             **kwargs: Additional arguments:
                 - item_id2text: Dict[int, str] - mapping item_id -> text (for text_only mode)
-                - item_meta: Dict[int, Dict] - mapping item_id -> {caption, semantic_summary, text} (for multimodal modes)
+                - item_meta: Dict[int, Dict] - mapping item_id -> {caption, viu, text} (for multimodal modes)
                 - user_history: Dict[int, List[str]] - user history texts
                 - val_data: Dict[int, List[int]] - validation data for early stopping
                 - train_data_for_llm: List[dict] - training data cho LLM (for text_only mode, optional)
@@ -298,24 +298,24 @@ class QwenReranker(BaseReranker):
         use_torch_compile = getattr(arg, 'use_torch_compile', False)
         
         # Load model based on mode and model type
-        # ✅ IMPORTANT: All 3 modes (text_only, caption, semantic_summary) use the SAME model and training process.
-        #    They ONLY differ in prompt format (caption/semantic_summary add extra info to prompt).
-        # ✅ REFACTORED: All caption/semantic_summary modes use LLMModel because captions/semantic_summaries 
+        # ✅ IMPORTANT: All 3 modes (text_only, caption, VIU) use the SAME model and training process.
+        #    They ONLY differ in prompt format (caption/VIU add extra info to prompt).
+        # ✅ REFACTORED: All caption/VIU modes use LLMModel because captions/VIU 
         #    are pre-generated text (no need for VL model, even if using qwen3-2bvl).
         #    Qwen3VLModel is only needed for raw_image mode (loading images directly), which is not supported here.
-        use_text_model = self.mode in ["text_only", "caption", "semantic_summary"]
+        use_text_model = self.mode in ["text_only", "caption", "VIU"]
         
         if use_text_model:
-            # ✅ Use LLMModel for ALL modes (text_only, caption, semantic_summary)
+            # ✅ Use LLMModel for ALL modes (text_only, caption, VIU)
             #    Training and evaluation are identical, only prompt format differs
             #    Note: Even if model is qwen3-2bvl (VL model), we use LLMModel because
-            #    caption/semantic_summary modes only use pre-generated text, not images.
+            #    caption/VIU modes only use pre-generated text, not images.
             # ✅ Use mapping if available, otherwise use model_name directly as HuggingFace path
             model_path = MODEL_MAPPING.get(self.model_name, self.model_name)
             train_data_for_llm = kwargs.get("train_data_for_llm")
             
-            # For caption/semantic_summary modes, prepare training data from item_meta
-            if self.mode in ["caption", "semantic_summary"] and train_data_for_llm is None:
+            # For caption/VIU modes, prepare training data from item_meta
+            if self.mode in ["caption", "VIU"] and train_data_for_llm is None:
                 train_samples = self._prepare_training_samples(train_data)
                 if len(train_samples) > 0:
                     # Convert to LLM training format
@@ -326,7 +326,7 @@ class QwenReranker(BaseReranker):
                         candidates = sample["candidates"]
                         target_idx = sample["target_idx"]
                         
-                        # Build prompt using item_meta (with caption/semantic_summary)
+                        # Build prompt using item_meta (with caption/VIU)
                         history_texts = []
                         for item_id in history[-self.max_history:]:
                             meta = self.item_meta.get(item_id, {})
@@ -337,10 +337,10 @@ class QwenReranker(BaseReranker):
                                     history_texts.append(f"{text} (Image: {caption})")
                                 else:
                                     history_texts.append(text)
-                            elif self.mode == "semantic_summary":
-                                semantic_summary = meta.get("semantic_summary", "")
-                                if semantic_summary:
-                                    history_texts.append(f"{text} (Image: {semantic_summary})")
+                            elif self.mode == "VIU":
+                                viu = meta.get("viu", "")
+                                if viu:
+                                    history_texts.append(f"{text} (VIU: {viu})")
                                 else:
                                     history_texts.append(text)
                         
@@ -354,10 +354,10 @@ class QwenReranker(BaseReranker):
                                     candidate_texts.append(f"{text} (Image: {caption})")
                                 else:
                                     candidate_texts.append(text)
-                            elif self.mode == "semantic_summary":
-                                semantic_summary = meta.get("semantic_summary", "")
-                                if semantic_summary:
-                                    candidate_texts.append(f"{text} (Image: {semantic_summary})")
+                            elif self.mode == "VIU":
+                                viu = meta.get("viu", "")
+                                if viu:
+                                    candidate_texts.append(f"{text} (VIU: {viu})")
                                 else:
                                     candidate_texts.append(text)
                         
@@ -431,7 +431,7 @@ Candidate items:
                 )
                 self.llm_model.load_model(use_torch_compile=use_torch_compile)
         
-        # ✅ REFACTORED: All modes (text_only, caption, semantic_summary) now use LLMModel.
+        # ✅ REFACTORED: All modes (text_only, caption, VIU) now use LLMModel.
         #    Qwen3VLModel is only needed for raw_image mode (not supported in unified reranker).
         self.is_fitted = True
     
@@ -471,16 +471,16 @@ Candidate items:
         
         # Predict probabilities based on mode and model type
         # ✅ IMPORTANT: All 3 modes use the SAME evaluation process. They only differ in prompt format.
-        # ✅ REFACTORED: All caption/semantic_summary modes use LLMModel because captions/semantic_summaries 
+        # ✅ REFACTORED: All caption/VIU modes use LLMModel because captions/VIU 
         #    are pre-generated text (no need for VL model, even if using qwen3-2bvl).
         num_candidates = len(candidates)
-        use_text_model = self.mode in ["text_only", "caption", "semantic_summary"]
+        use_text_model = self.mode in ["text_only", "caption", "VIU"]
         
         if use_text_model:
-            # ✅ Use LLMModel for ALL modes (text_only, caption, semantic_summary)
+            # ✅ Use LLMModel for ALL modes (text_only, caption, VIU)
             #    Evaluation is identical, only prompt format differs
             #    Note: Even if model is qwen3-2bvl (VL model), we use LLMModel because
-            #    caption/semantic_summary modes only use pre-generated text, not images.
+            #    caption/VIU modes only use pre-generated text, not images.
             if self.llm_model is None:
                 raise RuntimeError("LLM model chưa được load. Gọi fit() trước!")
             
@@ -494,7 +494,7 @@ Candidate items:
                     max_candidates=self.max_candidates
                 )
             else:
-                # Build prompt with caption/semantic_summary for caption/semantic_summary modes
+                # Build prompt with caption/VIU for caption/VIU modes
                 history_texts = []
                 for item_id in history[-self.max_history:]:
                     meta = self.item_meta.get(item_id, {})
@@ -505,10 +505,10 @@ Candidate items:
                             history_texts.append(f"{text} (Image: {caption})")
                         else:
                             history_texts.append(text)
-                    elif self.mode == "semantic_summary":
-                        semantic_summary = meta.get("semantic_summary", "")
-                        if semantic_summary:
-                            history_texts.append(f"{text} (Image: {semantic_summary})")
+                    elif self.mode == "VIU":
+                        viu = meta.get("viu", "")
+                        if viu:
+                            history_texts.append(f"{text} (VIU: {viu})")
                         else:
                             history_texts.append(text)
                 
@@ -522,10 +522,10 @@ Candidate items:
                             candidate_texts.append(f"{text} (Image: {caption})")
                         else:
                             candidate_texts.append(text)
-                    elif self.mode == "semantic_summary":
-                        semantic_summary = meta.get("semantic_summary", "")
-                        if semantic_summary:
-                            candidate_texts.append(f"{text} (Image: {semantic_summary})")
+                    elif self.mode == "VIU":
+                        viu = meta.get("viu", "")
+                        if viu:
+                            candidate_texts.append(f"{text} (VIU: {viu})")
                         else:
                             candidate_texts.append(text)
                 
@@ -602,17 +602,17 @@ Candidate items:
                     print(f"User ID: {user_id}")
                     print(f"History items: {history}")
                     print(f"Candidates: {candidates[:10]}..." if len(candidates) > 10 else f"Candidates: {candidates}")
-                    # Debug: Check item_meta for semantic_summary
-                    if self.mode == "semantic_summary":
-                        print(f"\n[DEBUG] Checking semantic_summary in item_meta:")
+                    # Debug: Check item_meta for VIU
+                    if self.mode == "VIU":
+                        print(f"\n[DEBUG] Checking VIU in item_meta:")
                         sample_item_id = candidates[0] if candidates else None
                         if sample_item_id:
                             sample_meta = self.item_meta.get(sample_item_id, {})
-                            has_semantic = "semantic_summary" in sample_meta and sample_meta.get("semantic_summary")
-                            print(f"  Sample item {sample_item_id}: has VIU = {has_semantic}")
-                            if has_semantic:
-                                semantic_preview = sample_meta["semantic_summary"][:100] if len(sample_meta["semantic_summary"]) > 100 else sample_meta["semantic_summary"]
-                                print(f"  Semantic preview: {semantic_preview}...")
+                            has_viu = "viu" in sample_meta and sample_meta.get("viu")
+                            print(f"  Sample item {sample_item_id}: has VIU = {has_viu}")
+                            if has_viu:
+                                viu_preview = sample_meta["viu"][:100] if len(sample_meta["viu"]) > 100 else sample_meta["viu"]
+                                print(f"  VIU preview: {viu_preview}...")
                             else:
                                 print(f"  Available keys in item_meta: {list(sample_meta.keys())}")
                     print(f"\nPrompt:\n{prompt}")
@@ -630,9 +630,9 @@ Candidate items:
             probs = self.llm_model.predict_probs(prompt, num_candidates=num_candidates)
         else:
             # ✅ REFACTORED: This branch should no longer be reached.
-            #    All supported modes (text_only, caption, semantic_summary) use LLMModel.
+            #    All supported modes (text_only, caption, VIU) use LLMModel.
             raise ValueError(
-                f"Invalid mode: {self.mode}. All supported modes (text_only, caption, semantic_summary) "
+                f"Invalid mode: {self.mode}. All supported modes (text_only, caption, VIU) "
                 f"use LLMModel. Qwen3VLModel is only needed for raw_image mode, which is not supported here."
             )
         
@@ -714,7 +714,7 @@ Candidate items:
         val_data: Optional[Dict[int, List[int]]] = None
     ) -> None:
         raise RuntimeError(
-            f"_train_model() is deprecated. All modes (text_only, caption, semantic_summary) "
+            f"_train_model() is deprecated. All modes (text_only, caption, VIU) "
             f"use LLMModel and training is handled by LLMModel.train() in fit() method."
         )
 
@@ -838,7 +838,7 @@ Candidate items:
         train_samples: List[Dict],
         val_data: Optional[Dict[int, List[int]]] = None
     ) -> None:
-        """Train VL model (caption, semantic_summary modes)."""
+        """Train VL model (caption, VIU modes)."""
         if not hasattr(self.qwen3vl_model, 'model') or not hasattr(self.qwen3vl_model, 'processor'):
             print("Warning: VL model does not support training. Using pretrained model only.")
             return
@@ -1057,11 +1057,11 @@ Candidate items:
     def _build_training_prompt(self, sample: Dict) -> str:
         """Build training prompt from sample.
         
-        ✅ IMPORTANT: This is the ONLY place where modes differ. All 3 modes (text_only, caption, semantic_summary)
+        ✅ IMPORTANT: This is the ONLY place where modes differ. All 3 modes (text_only, caption, VIU)
            use the same training process, loss function, and evaluation. They only differ in prompt format:
            - text_only: "{text}"
            - caption: "{text} (Image: {caption})"
-           - semantic_summary: "{text} (Semantic: {semantic_summary})"
+           - VIU: "{text} (VIU: {viu})"
         """
         history = sample["history"]
         candidates = sample["candidates"]
@@ -1082,16 +1082,16 @@ Candidate items:
                     history_texts.append(f"{text} (Image: {caption})")
                 else:
                     history_texts.append(text)
-            elif self.mode == "semantic_summary":
-                semantic_summary = meta.get("semantic_summary", "")
+            elif self.mode == "VIU":
+                viu = meta.get("viu", "")
                 text = meta.get("text", f"item_{item_id}")
                 # Avoid double truncation: text was already truncated to max_text_length during data preparation
                 # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
                 # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
                 truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
                 text = _truncate_item_text(text, max_chars=truncate_limit)
-                if semantic_summary:
-                    history_texts.append(f"{text} (Image: {semantic_summary})")
+                if viu:
+                    history_texts.append(f"{text} (VIU: {viu})")
                 else:
                     history_texts.append(text)
             else:  # text_only mode
@@ -1119,16 +1119,16 @@ Candidate items:
                     candidate_texts.append(f"{text} (Image: {caption})")
                 else:
                     candidate_texts.append(text)
-            elif self.mode == "semantic_summary":
-                semantic_summary = meta.get("semantic_summary", "")
+            elif self.mode == "VIU":
+                viu = meta.get("viu", "")
                 text = meta.get("text", f"item_{item_id}")
                 # Avoid double truncation: text was already truncated to max_text_length during data preparation
                 # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
                 # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
                 truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
                 text = _truncate_item_text(text, max_chars=truncate_limit)
-                if semantic_summary:
-                    candidate_texts.append(f"{text} (Image: {semantic_summary})")
+                if viu:
+                    candidate_texts.append(f"{text} (VIU: {viu})")
                 else:
                     candidate_texts.append(text)
             else:  # text_only mode
@@ -1197,16 +1197,16 @@ Candidate items:
                     history_texts.append(f"{text} (Image: {caption})")
                 else:
                     history_texts.append(text)
-            elif self.mode == "semantic_summary":
-                semantic_summary = meta.get("semantic_summary", "")
+            elif self.mode == "VIU":
+                viu = meta.get("viu", "")
                 text = meta.get("text", f"item_{item_id}")
                 # Avoid double truncation: text was already truncated to max_text_length during data preparation
                 # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
                 # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
                 truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
                 text = _truncate_item_text(text, max_chars=truncate_limit)
-                if semantic_summary:
-                    history_texts.append(f"{text} (Image: {semantic_summary})")
+                if viu:
+                    history_texts.append(f"{text} (VIU: {viu})")
                 else:
                     history_texts.append(text)
             else:  # text_only mode
@@ -1234,16 +1234,16 @@ Candidate items:
                     candidate_texts.append(f"{text} (Image: {caption})")
                 else:
                     candidate_texts.append(text)
-            elif self.mode == "semantic_summary":
-                semantic_summary = meta.get("semantic_summary", "")
+            elif self.mode == "VIU":
+                viu = meta.get("viu", "")
                 text = meta.get("text", f"item_{item_id}")
                 # Avoid double truncation: text was already truncated to max_text_length during data preparation
                 # Only truncate if text is longer than max_text_length (shouldn't happen, but safety check)
                 # Use max(200, max_text_length) to ensure we don't truncate unnecessarily
                 truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
                 text = _truncate_item_text(text, max_chars=truncate_limit)
-                if semantic_summary:
-                    candidate_texts.append(f"{text} (Image: {semantic_summary})")
+                if viu:
+                    candidate_texts.append(f"{text} (VIU: {viu})")
                 else:
                     candidate_texts.append(text)
             else:  # text_only mode
@@ -1467,7 +1467,7 @@ Candidate items:
         if user_histories is None:
             user_histories = self.user_history
         
-        use_text_model = self.mode == "text_only" or (self.mode in ["caption", "semantic_summary"] and self.model_name in ["qwen3-0.6b", "qwen3-1.6b"])
+        use_text_model = self.mode == "text_only" or (self.mode in ["caption", "VIU"] and self.model_name in ["qwen3-0.6b", "qwen3-1.6b"])
         
         for user_id in users:
             candidates = candidates_by_user.get(user_id, [])
@@ -1492,7 +1492,7 @@ Candidate items:
                         max_candidates=self.max_candidates
                     )
                 else:
-                    # Build prompt with caption/semantic_summary
+                    # Build prompt with caption/VIU
                     history_texts = []
                     for item_id in history:
                         meta = self.item_meta.get(item_id, {})
@@ -1503,10 +1503,10 @@ Candidate items:
                                 history_texts.append(f"{text} (Image: {caption})")
                             else:
                                 history_texts.append(text)
-                        elif self.mode == "semantic_summary":
-                            semantic_summary = meta.get("semantic_summary", "")
-                            if semantic_summary:
-                                history_texts.append(f"{text} (Image: {semantic_summary})")
+                        elif self.mode == "VIU":
+                            viu = meta.get("viu", "")
+                            if viu:
+                                history_texts.append(f"{text} (VIU: {viu})")
                             else:
                                 history_texts.append(text)
                     
@@ -1520,10 +1520,10 @@ Candidate items:
                                 candidate_texts.append(f"{text} (Image: {caption})")
                             else:
                                 candidate_texts.append(text)
-                        elif self.mode == "semantic_summary":
-                            semantic_summary = meta.get("semantic_summary", "")
-                            if semantic_summary:
-                                candidate_texts.append(f"{text} (Image: {semantic_summary})")
+                        elif self.mode == "VIU":
+                            viu = meta.get("viu", "")
+                            if viu:
+                                candidate_texts.append(f"{text} (VIU: {viu})")
                             else:
                                 candidate_texts.append(text)
                     

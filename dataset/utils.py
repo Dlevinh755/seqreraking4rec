@@ -334,7 +334,7 @@ def process_item_text(title: str, description: str, max_length: int = 512) -> st
     # Step 1: Concatenate title + description
     title = str(title).strip() if title else ""
     description = str(description).strip() if description else ""
-    text = f"Title: {title} Description: {description}".strip()
+    text = f"{title} {description}".strip()
     
     if not text:
         return ""

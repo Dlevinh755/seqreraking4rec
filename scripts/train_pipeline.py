@@ -156,11 +156,11 @@ def main():
             reranker_kwargs["item_id2text"] = item_id2text
             reranker_kwargs["user_history"] = user_history_text
         
-        # Add item_meta for multimodal modes (caption, semantic_summary)
+        # Add item_meta for multimodal modes (caption, VIU)
         if args.rerank_method.lower() in ["qwen", "qwen3vl"]:
             # Get mode from config
             qwen_mode_val = qwen_mode or (args.qwen3vl_mode if args.rerank_method.lower() == "qwen3vl" else "text_only")
-            if qwen_mode_val in ["caption", "semantic_summary"]:
+            if qwen_mode_val in ["caption", "VIU"]:
                 reranker_kwargs["item_meta"] = item_meta
     
     # Train Stage 1
