@@ -522,10 +522,27 @@ def generate_viu(
                         ]
                         summary = processor.batch_decode(
                             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                        )[0]
-                        
-                        summaries[item_id] = summary.strip()
-                        
+                        )[0].strip()
+
+                        sanitized, dbg = sanitize_viu(summary, max_claims=8, strict=True, keep_unknown=True)
+
+                        if sanitized is None:
+                            # Nếu fail: bạn có thể regenerate 1 lần (tùy bạn), hoặc lưu Unknown toàn bộ để tránh rác
+                            # Ở đây chọn phương án an toàn: lưu skeleton Unknown
+                            fallback = "\n".join([
+                                "- Product name: Unknown",
+                                "- Category: Unknown",
+                                "- Type/form: Unknown",
+                                "- Brand: Unknown",
+                                "- Packaging (primary color, secondary color, container type, closure type): Unknown",
+                                "- Size/volume: Unknown",
+                                "- On-pack claims: Unknown",
+                            ])
+                            summaries[item_id] = fallback
+                        else:
+                            summaries[item_id] = sanitized
+
+                    
                     except Exception as e:
                         print(f"Error generating summary for item {item_id}: {e}")
                         continue
@@ -606,3 +623,282 @@ def maybe_generate_viu(
     
     return summaries
 
+
+
+import re
+from typing import Dict, List, Optional, Tuple
+
+# ---- Canonical keys (must match your prompt order) ----
+CANON_KEYS = [
+    "Product name",
+    "Category",
+    "Type/form",
+    "Brand",
+    "Packaging (primary color, secondary color, container type, closure type)",
+    "Size/volume",
+    "On-pack claims",
+]
+
+# Accept some common variants seen in your logs
+KEY_ALIASES = {
+    "product name": "Product name",
+    "name": "Product name",
+    "category": "Category",
+    "type": "Type/form",
+    "type/form": "Type/form",
+    "type form": "Type/form",
+    "brand": "Brand",
+    "packaging": "Packaging (primary color, secondary color, container type, closure type)",
+    "packaging (primary color, secondary color, container type, closure type)": "Packaging (primary color, secondary color, container type, closure type)",
+    "packaging ( primary color, secondary colour, container type , closure type)": "Packaging (primary color, secondary color, container type, closure type)",
+    "packaging ( primary color, secondary colour, container type , closure type )": "Packaging (primary color, secondary color, container type, closure type)",
+    "packaging ( primary color, secondary colour, container type, closure type)": "Packaging (primary color, secondary color, container type, closure type)",
+    "size/volume": "Size/volume",
+    "size/volumes": "Size/volume",
+    "size/volumne": "Size/volume",
+    "size/volume:": "Size/volume",
+    "on-pack claims": "On-pack claims",
+    "on pack claims": "On-pack claims",
+    "on-pack claims (verbatim or near-verbatim text)": "On-pack claims",
+    "on-pack claims:": "On-pack claims",
+}
+
+# Some phrases that indicate "explanations / inference" you want to forbid
+BANNED_META_PATTERNS = [
+    r"\binferred\b",
+    r"\bnote:\b",
+    r"\bthe above fields\b",
+    r"\bformatted exactly\b",
+    r"\baccording to\b",
+    r"\bprovided instructions\b",
+    r"\bthere are no repeated\b",
+]
+
+def _normalize_key(raw_key: str) -> Optional[str]:
+    k = raw_key.strip().strip("-•*").strip().rstrip(":").strip()
+    k_l = re.sub(r"\s+", " ", k).lower()
+    # Direct alias
+    if k_l in KEY_ALIASES:
+        return KEY_ALIASES[k_l]
+    # Heuristic: match prefixes
+    if k_l.startswith("product name"):
+        return "Product name"
+    if k_l.startswith("category"):
+        return "Category"
+    if k_l.startswith("type"):
+        return "Type/form"
+    if k_l.startswith("brand"):
+        return "Brand"
+    if k_l.startswith("packaging"):
+        return "Packaging (primary color, secondary color, container type, closure type)"
+    if k_l.startswith("size"):
+        return "Size/volume"
+    if "claims" in k_l:
+        return "On-pack claims"
+    return None
+
+def _dedup_preserve_order(items: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for it in items:
+        key = it.strip().lower()
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it.strip())
+    return out
+
+def _clean_value(v: str) -> str:
+    v = v.strip()
+    # remove surrounding quotes if present
+    if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+        v = v[1:-1].strip()
+    # collapse whitespace
+    v = re.sub(r"\s+", " ", v).strip()
+    # normalize common "Unknown:" patterns
+    if re.fullmatch(r"unknown[:\s]*", v, flags=re.I):
+        return "Unknown"
+    if v == "":
+        return "Unknown"
+    return v
+
+def _contains_banned_meta(text: str) -> bool:
+    t = text.lower()
+    return any(re.search(pat, t) for pat in BANNED_META_PATTERNS)
+
+def _too_repetitive(text: str, max_repeat: int = 2) -> bool:
+    """
+    Simple repetition check: if any non-trivial token (len>=3) repeats > max_repeat.
+    """
+    tokens = re.findall(r"[A-Za-z0-9\+\-]{3,}", text.lower())
+    if not tokens:
+        return False
+    freq: Dict[str, int] = {}
+    for tok in tokens:
+        freq[tok] = freq.get(tok, 0) + 1
+        if freq[tok] > max_repeat:
+            return True
+    return False
+
+def sanitize_viu(
+    raw: str,
+    *,
+    max_claims: int = 8,
+    strict: bool = True,
+    keep_unknown: bool = True,
+) -> Tuple[Optional[str], Dict[str, str]]:
+    """
+    Sanitize a VIU text into the canonical 7-field bullet format.
+
+    Returns:
+      (sanitized_text_or_None, debug_info)
+
+    strict=True will return None if severe issues are found (meta/explanations, extreme repetition).
+    If strict=False, it will attempt best-effort cleanup.
+
+    keep_unknown=True keeps "Unknown" markers; set False only for display/UI.
+    """
+    debug = {"status": "ok", "reason": ""}
+
+    if raw is None:
+        debug["status"] = "fail"
+        debug["reason"] = "raw_is_none"
+        return None, debug
+
+    text = raw.strip()
+
+    # Quick block: if the model adds meta/explanations, treat as fail in strict mode.
+    if _contains_banned_meta(text):
+        if strict:
+            debug["status"] = "fail"
+            debug["reason"] = "banned_meta_detected"
+            return None, debug
+
+    # If overall output is extremely repetitive, fail in strict mode.
+    if _too_repetitive(text, max_repeat=6):  # higher threshold for whole text
+        if strict:
+            debug["status"] = "fail"
+            debug["reason"] = "global_repetition_detected"
+            return None, debug
+
+    # Parse lines
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip() != ""]
+    fields: Dict[str, str] = {k: "Unknown" for k in CANON_KEYS}
+    claims: List[str] = []
+
+    current_key: Optional[str] = None
+
+    # Patterns for bullet field line like "- Key: value" or "Key: value"
+    field_line_re = re.compile(r"^\s*[-•*]?\s*([^:]{2,80})\s*:\s*(.*)$")
+
+    # Claim bullet like "  - CLAIM" or "- CLAIM" under claims section
+    claim_re = re.compile(r"^\s*[-•*]\s+(.*)$")
+
+    for ln in lines:
+        # If we hit a new field line
+        m = field_line_re.match(ln)
+        if m:
+            raw_key = m.group(1)
+            val = m.group(2)
+            norm_key = _normalize_key(raw_key)
+
+            if norm_key is not None and norm_key in fields:
+                current_key = norm_key
+                # Special handling for On-pack claims: may have empty value then bullets follow
+                if norm_key == "On-pack claims":
+                    # if val contains claims inline (CSV/quoted), parse as claims
+                    inline = val.strip()
+                    if inline and inline.lower() != "unknown":
+                        # split on commas but keep phrases
+                        parts = [p.strip() for p in re.split(r"\s*,\s*", inline) if p.strip()]
+                        claims.extend(parts)
+                    continue
+                else:
+                    cleaned = _clean_value(val)
+                    fields[norm_key] = cleaned
+                    continue
+
+        # If not a field line, maybe claims bullets under On-pack claims
+        if current_key == "On-pack claims":
+            m2 = claim_re.match(ln)
+            if m2:
+                c = _clean_value(m2.group(1))
+                # avoid nested "Unknown:" noise
+                if c.lower().startswith("unknown"):
+                    continue
+                # strip trailing punctuation
+                c = c.strip().strip(",;")
+                if c:
+                    claims.append(c)
+                continue
+
+        # Otherwise ignore stray lines (like repeated "Unknown" lines)
+        # (Optionally you could collect them for debugging)
+
+    # Post-process fields (fix obviously bad generic product names)
+    # If product name equals a generic type, set Unknown
+    generic_names = {"shampoo", "conditioner", "leave in conditioner", "leave-in conditioner",
+                     "cleanser", "wipes", "gel", "cream", "lotion", "soap", "body wash"}
+    pn = fields["Product name"].strip().lower()
+    if pn in generic_names:
+        fields["Product name"] = "Unknown"
+
+    # Dedup & cap claims
+    cleaned_claims = []
+    for c in claims:
+        cc = _clean_value(c)
+        if cc.lower() == "unknown":
+            continue
+        # Prevent super-long marketing chains
+        if len(cc) > 80:
+            cc = cc[:80].rstrip()
+        cleaned_claims.append(cc)
+
+    cleaned_claims = _dedup_preserve_order(cleaned_claims)
+
+    # If claims themselves are repetitive, cut and/or mark Unknown
+    # (this catches "SALON PROFESSIONAL" repeated)
+    if cleaned_claims:
+        joined = " ".join(cleaned_claims)
+        if _too_repetitive(joined, max_repeat=2):
+            # too repetitive claims -> keep unique only (already), then cap hard
+            pass
+
+    if len(cleaned_claims) > max_claims:
+        cleaned_claims = cleaned_claims[:max_claims]
+
+    # If still empty -> Unknown
+    if not cleaned_claims:
+        fields["On-pack claims"] = "Unknown"
+    else:
+        # We'll render as multiline bullets
+        fields["On-pack claims"] = "\n" + "\n".join([f"  - {c}" for c in cleaned_claims])
+
+    # Final strict checks: no huge loops / no extra fields
+    final_text = []
+    for k in CANON_KEYS:
+        v = fields[k]
+        if not keep_unknown and v.strip() == "Unknown":
+            v = ""
+        if k == "On-pack claims" and v != "Unknown" and v.startswith("\n"):
+            final_text.append(f"- {k}:{v}")
+        else:
+            final_text.append(f"- {k}: {v}")
+
+    out = "\n".join(final_text).strip()
+
+    # If the output still contains obvious meta/explanation or pathological repetition, fail strict
+    if strict:
+        if _contains_banned_meta(out):
+            debug["status"] = "fail"
+            debug["reason"] = "banned_meta_after_sanitize"
+            return None, debug
+        # Detect the classic loop like "cap/pump: cap/pump"
+        if re.search(r"(cap/pump:)\s*(\1\s*){2,}", raw, flags=re.I):
+            debug["status"] = "fail"
+            debug["reason"] = "loop_detected_cap_pump"
+            return None, debug
+
+    return out, debug
