@@ -43,16 +43,8 @@ except ImportError:
 # Can be increased if GPU memory allows (8, 16, 32)
 
 # Semantic summary prompt template
-SEMANTIC_SUMMARY_PROMPT = """Summarize the given image into a high-level semantic description.
-
-Focus on the abstract attributes such as:
-- object or product category
-- functional purpose
-- usage scenario
-- user intent
-
-Avoid describing low-level visual details.
-Keep the summary concise."""
+SEMANTIC_SUMMARY_PROMPT = """What is in the image and describe its category, 
+type, color, style, brand, specifications, and feature?"""
 
 def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
     """Load Qwen3-VL model using Unsloth FastVisionModel for optimized inference.
