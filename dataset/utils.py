@@ -338,7 +338,6 @@ def process_item_text(title: str, description: str, max_length: int = 512) -> st
     
     if not text:
         return ""
-    
     # Step 2: Normalize (lowercase, remove special chars)
     text = normalize_text(text)
     

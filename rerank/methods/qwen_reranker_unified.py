@@ -214,9 +214,9 @@ class QwenReranker(BaseReranker):
         self.patience = patience
         
         # Validate mode
-        if self.mode not in ["text_only", "caption", "VIU"]:
+        if self.mode not in ["text_only", "caption", "viu"]:
             raise ValueError(
-                f"Invalid mode: {mode}. Must be one of: text_only, caption, VIU"
+                f"Invalid mode: {self.mode}. Must be one of: text_only, caption, viu"
             )
         
         # Validate model
