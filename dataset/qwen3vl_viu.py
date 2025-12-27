@@ -32,8 +32,21 @@ except ImportError:
 
 
 # VIU prompt template
-VIU_PROMPT = """What is in the image and describe its category, 
-type, color, style, brand, specifications, and feature?
+VIU_PROMPT = """Describe ONLY what is clearly visible in the image. If something is not readable/uncertain, write "Unknown".
+
+Output in bullet points with EXACT keys (keep the same order):
+- Product name:
+- Category:
+- Type/form:
+- Brand:
+- Packaging (primary color, secondary color, container type, cap/pump):
+- Size/volume:
+- On-pack claims (verbatim or near-verbatim text):
+
+Rules:
+- Do NOT guess or infer ingredients, benefits, usage, hair/skin type, or product category if it is not explicitly written.
+- Do NOT use outside knowledge about the brand or typical product lines.
+- If only partial text is readable, include only that partial text and mark the rest Unknown.
 """
 
 def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
