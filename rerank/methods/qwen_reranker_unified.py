@@ -340,7 +340,7 @@ class QwenReranker(BaseReranker):
                             elif self.mode == "semantic_summary":
                                 semantic_summary = meta.get("semantic_summary", "")
                                 if semantic_summary:
-                                    history_texts.append(f"{text} (Semantic: {semantic_summary})")
+                                    history_texts.append(f"{text} (Image: {semantic_summary})")
                                 else:
                                     history_texts.append(text)
                         
@@ -357,7 +357,7 @@ class QwenReranker(BaseReranker):
                             elif self.mode == "semantic_summary":
                                 semantic_summary = meta.get("semantic_summary", "")
                                 if semantic_summary:
-                                    candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+                                    candidate_texts.append(f"{text} (Image: {semantic_summary})")
                                 else:
                                     candidate_texts.append(text)
                         
@@ -508,7 +508,7 @@ Candidate items:
                     elif self.mode == "semantic_summary":
                         semantic_summary = meta.get("semantic_summary", "")
                         if semantic_summary:
-                            history_texts.append(f"{text} (Semantic: {semantic_summary})")
+                            history_texts.append(f"{text} (Image: {semantic_summary})")
                         else:
                             history_texts.append(text)
                 
@@ -525,7 +525,7 @@ Candidate items:
                     elif self.mode == "semantic_summary":
                         semantic_summary = meta.get("semantic_summary", "")
                         if semantic_summary:
-                            candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+                            candidate_texts.append(f"{text} (Image: {semantic_summary})")
                         else:
                             candidate_texts.append(text)
                 
@@ -609,7 +609,7 @@ Candidate items:
                         if sample_item_id:
                             sample_meta = self.item_meta.get(sample_item_id, {})
                             has_semantic = "semantic_summary" in sample_meta and sample_meta.get("semantic_summary")
-                            print(f"  Sample item {sample_item_id}: has semantic_summary = {has_semantic}")
+                            print(f"  Sample item {sample_item_id}: has VIU = {has_semantic}")
                             if has_semantic:
                                 semantic_preview = sample_meta["semantic_summary"][:100] if len(sample_meta["semantic_summary"]) > 100 else sample_meta["semantic_summary"]
                                 print(f"  Semantic preview: {semantic_preview}...")
@@ -1091,7 +1091,7 @@ Candidate items:
                 truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
                 text = _truncate_item_text(text, max_chars=truncate_limit)
                 if semantic_summary:
-                    history_texts.append(f"{text} (Semantic: {semantic_summary})")
+                    history_texts.append(f"{text} (Image: {semantic_summary})")
                 else:
                     history_texts.append(text)
             else:  # text_only mode
@@ -1128,7 +1128,7 @@ Candidate items:
                 truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
                 text = _truncate_item_text(text, max_chars=truncate_limit)
                 if semantic_summary:
-                    candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+                    candidate_texts.append(f"{text} (Image: {semantic_summary})")
                 else:
                     candidate_texts.append(text)
             else:  # text_only mode
@@ -1206,7 +1206,7 @@ Candidate items:
                 truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
                 text = _truncate_item_text(text, max_chars=truncate_limit)
                 if semantic_summary:
-                    history_texts.append(f"{text} (Semantic: {semantic_summary})")
+                    history_texts.append(f"{text} (Image: {semantic_summary})")
                 else:
                     history_texts.append(text)
             else:  # text_only mode
@@ -1243,7 +1243,7 @@ Candidate items:
                 truncate_limit = max(200, self.max_text_length) if hasattr(self, 'max_text_length') else 200
                 text = _truncate_item_text(text, max_chars=truncate_limit)
                 if semantic_summary:
-                    candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+                    candidate_texts.append(f"{text} (Image: {semantic_summary})")
                 else:
                     candidate_texts.append(text)
             else:  # text_only mode
@@ -1506,7 +1506,7 @@ Candidate items:
                         elif self.mode == "semantic_summary":
                             semantic_summary = meta.get("semantic_summary", "")
                             if semantic_summary:
-                                history_texts.append(f"{text} (Semantic: {semantic_summary})")
+                                history_texts.append(f"{text} (Image: {semantic_summary})")
                             else:
                                 history_texts.append(text)
                     
@@ -1523,7 +1523,7 @@ Candidate items:
                         elif self.mode == "semantic_summary":
                             semantic_summary = meta.get("semantic_summary", "")
                             if semantic_summary:
-                                candidate_texts.append(f"{text} (Semantic: {semantic_summary})")
+                                candidate_texts.append(f"{text} (Image: {semantic_summary})")
                             else:
                                 candidate_texts.append(text)
                     
