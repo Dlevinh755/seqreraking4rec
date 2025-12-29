@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from tqdm import tqdm
 from PIL import Image
-from reduce_viu import reduce_viu_for_reranker
+from .reduce_viu import reduce_viu_for_reranker
 
 try:
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
