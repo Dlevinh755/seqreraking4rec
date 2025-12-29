@@ -33,60 +33,38 @@ except ImportError:
 
 
 # VIU prompt template
-VIU_PROMPT = """You are a visual product attribute extractor.
+VIU_PROMPT = """You are a visual product attribute summarizer for recommendation ranking.
 
-Describe ONLY what is clearly visible on the product packaging in the image.
-If any field is not readable or uncertain, write exactly: "Unknown".
-Do NOT guess. Do NOT infer. Do NOT explain.
+Describe what is CLEARLY visible on the product and its packaging in the image.
+You may use short descriptive phrases, but do NOT guess unseen facts.
+If something is unclear, omit it rather than guessing.
 
-Return EXACTLY the following bullet list, in this exact order.
-Do NOT add extra text, notes, explanations, or commentary.
+Your goal is to produce a concise, DISCRIMINATIVE description that helps
+distinguish this product from other similar products for ranking.
 
-- Product name:
-- Category:
-- Type/form:
-- Brand:
-- Packaging (primary color, secondary color, container type, closure type):
-- Size/volume:
-- On-pack claims:
+Output exactly TWO parts:
 
-Rules (must follow):
-1) Product name:
-   - Must be the specific name printed on the package.
-   - If only a product line/series is visible, write that.
-   - Do NOT use a generic type as a name (e.g., "Shampoo", "Conditioner").
-   - If unclear, write "Unknown".
+PART 1: Key visible attributes (concise)
+- Category or product type (if explicitly visible; otherwise omit):
+- Brand (if readable; otherwise omit):
+- Packaging appearance (container type, dominant color(s), overall visual style):
+- Size/volume (only if clearly printed):
+- Visible on-pack claims (short phrases only; max 5):
 
-2) Category and Type/form:
-   - ONLY if the exact words appear on the package (e.g., "shampoo", "conditioner", "cleanser").
-   - If not explicitly written, write "Unknown".
+PART 2: Decision-oriented visual distinction (1–2 sentences)
+- Summarize the overall visual impression using visible cues.
+- Emphasize aspects that help distinguish this product from similar ones
+  (e.g., color scheme, packaging shape, design style, perceived positioning).
+- You may describe perceived positioning ONLY if it is strongly suggested by visible design cues
+  (e.g., minimalistic vs. decorative, clinical vs. cosmetic).
+- Keep it concise and neutral.
 
-3) Brand:
-   - ONLY if clearly readable on the package.
-   - Otherwise write "Unknown".
+Rules:
+- Do NOT fabricate or assume missing information.
+- Prefer omission over "Unknown".
+- Avoid repeating the same words across fields.
+- No explanations, no meta commentary.
 
-4) Packaging:
-   - Container type must be one of:
-     bottle, tube, jar, pump bottle, spray bottle, aerosol can, pouch
-   - Closure type must be one of:
-     flip-top cap, screw cap, pump, trigger spray, spray nozzle, aerosol
-   - If any part is unclear, write "Unknown" for that part.
-
-5) Size/volume:
-   - ONLY if explicitly printed (e.g., "12 fl oz", "400 mL").
-   - Otherwise write "Unknown".
-
-6) On-pack claims:
-   - Copy short phrases that appear on the package (verbatim or near-verbatim).
-   - List each claim AT MOST ONCE.
-   - Maximum 8 claims.
-   - If none are readable, write exactly: "Unknown".
-
-Strict output constraints:
-- No repetition of words or phrases.
-- No explanations, notes, or phrases like "inferred", "likely", "based on".
-- No extra lines such as "The above fields…" or "Formatted exactly…".
-- If output begins to repeat or loop, STOP and output "Unknown" for the affected field.
 """
 
 def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
@@ -110,7 +88,7 @@ def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
         raise ImportError("transformers library is required. Install with: pip install transformers")
     
     # Use unsloth's Qwen3-VL model (includes unsloth optimizations and chat template fixes)
-    model_name = "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit"
+    model_name = "unsloth/Qwen3-VL-4B-Instruct-unsloth-bnb-4bit"
     
     # Load processor (still need from transformers)
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
@@ -541,10 +519,13 @@ def generate_viu(
                         # Generate summary with optimized settings
                         generated_ids = model.generate(
                             **inputs,
-                            max_new_tokens=max_new_tokens,
-                            **gen_cfg,
+                            max_new_tokens=max_new_tokens,  # Configurable max tokens
+                            do_sample=False,
+                            num_beams=1,
+                            pad_token_id=processor.tokenizer.eos_token_id,
+                            use_cache=True,
+                            repetition_penalty=1.0,  # Disable repetition penalty for speed
                         )
-
                         
                         # Decode summary
                         generated_ids_trimmed = [
@@ -552,25 +533,9 @@ def generate_viu(
                         ]
                         summary = processor.batch_decode(
                             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                        )[0].strip()
-
-                        sanitized, dbg = sanitize_viu(summary, max_claims=8, strict=True, keep_unknown=True)
-
-                        if sanitized is None:
-                            # Nếu fail: bạn có thể regenerate 1 lần (tùy bạn), hoặc lưu Unknown toàn bộ để tránh rác
-                            # Ở đây chọn phương án an toàn: lưu skeleton Unknown
-                            fallback = "\n".join([
-                                "- Product name: Unknown",
-                                "- Category: Unknown",
-                                "- Type/form: Unknown",
-                                "- Brand: Unknown",
-                                "- Packaging (primary color, secondary color, container type, closure type): Unknown",
-                                "- Size/volume: Unknown",
-                                "- On-pack claims: Unknown",
-                            ])
-                            summaries[item_id] = fallback
-                        else:
-                            summaries[item_id] = sanitized
+                        )[0]
+                        
+                        summaries[item_id] = summary.strip()
 
                     
                     except Exception as e:
