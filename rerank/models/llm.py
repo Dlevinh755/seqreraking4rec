@@ -9,6 +9,7 @@ import ast
 import numpy as np
 import os
 import math
+import logging
 
 # Legacy: Keep for backward compatibility, but now we use numbers
 # Use both uppercase and lowercase for up to 52 candidates (A-Z, a-z)
@@ -221,6 +222,19 @@ class LLMModel:
         from trl import SFTTrainer, SFTConfig
         from unsloth.chat_templates import train_on_responses_only
 
+        # Setup logging to file
+        log_file = "training_eval_log.txt"
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file, mode='a'),  # Append mode
+                logging.StreamHandler()  # Also print to console
+            ]
+        )
+        logger = logging.getLogger(__name__)
+        logger.info("Starting LLM training and evaluation logging")
+
         hf_train_dataset = Dataset.from_list(self.train_data)
         
         # ✅ Format messages to text using chat template (like notebook Cell 7)
@@ -369,27 +383,25 @@ class LLMModel:
         
         # ✅ Actually train the model! (skip if eval mode)
         if rerank_action != "eval":
-            print(f"[LLMModel] Starting training for {num_epochs} epochs...")
-            print(f"[LLMModel] Training config: lr={learning_rate}, batch_size={batch_size}, epochs={num_epochs}")
-            print(f"[LLMModel] Dataset size: {len(hf_train_dataset)} samples")
-            print(f"[LLMModel] Total steps: {len(hf_train_dataset) // (batch_size * 2) * num_epochs}")
-            
-            trainer.train()
-            
-            # ✅ Save final model (vì load_best_model_at_end=False)
-            print(f"[LLMModel] Saving final model...")
-            trainer.save_model()  # Save to output_dir
-            print(f"[LLMModel] Model saved to {training_args.output_dir}")
-            
-            # ✅ Log final training loss
-            print(f"[LLMModel] Training completed!")
-            print(f"[LLMModel] Check training logs above for loss progression")
-            print(f"[LLMModel] If loss did not decrease, check:")
-            print(f"  - Learning rate (current: {learning_rate})")
-            print(f"  - Training data quality")
-            print(f"  - Model size (current: {self.model_name})")
-
-    def predict_probs(self, prompt, num_candidates=None):
+                logger.info(f"[LLMModel] Starting training for {num_epochs} epochs...")
+                logger.info(f"[LLMModel] Training config: lr={learning_rate}, batch_size={batch_size}, epochs={num_epochs}")
+                logger.info(f"[LLMModel] Dataset size: {len(hf_train_dataset)} samples")
+                logger.info(f"[LLMModel] Total steps: {len(hf_train_dataset) // (batch_size * 2) * num_epochs}")
+                
+                trainer.train()
+                
+                # ✅ Save final model (vì load_best_model_at_end=False)
+                logger.info(f"[LLMModel] Saving final model...")
+                trainer.save_model()  # Save to output_dir
+                logger.info(f"[LLMModel] Model saved to {training_args.output_dir}")
+                
+                # ✅ Log final training loss
+                logger.info(f"[LLMModel] Training completed!")
+                logger.info(f"[LLMModel] Check training logs above for loss progression")
+                logger.info(f"[LLMModel] If loss did not decrease, check:")
+                logger.info(f"  - Learning rate (current: {learning_rate})")
+                logger.info(f"  - Training data quality")
+                logger.info(f"  - Model size (current: {self.model_name})")
         """Predict probabilities for candidates using letters (A, B, C, ... or a, b, c, ...) - LlamaRec style.
         
         Args:
@@ -399,6 +411,18 @@ class LLMModel:
         Returns:
             numpy array of probabilities [num_candidates]
         """
+        # Setup logging to file (append mode)
+        log_file = "training_eval_log.txt"
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file, mode='a'),  # Append mode
+                logging.StreamHandler()  # Also print to console
+            ]
+        )
+        logger = logging.getLogger(__name__)
+        
         # ✅ Increment debug counter FIRST (before any debug prints)
         self._debug_predict_count += 1
         
@@ -461,6 +485,8 @@ class LLMModel:
             outputs = self.model(**inputs)
 
         logits = outputs.logits[:, -1]  # [vocab_size]
+        
+        logger.info(f"[Eval] Predicted for sample {self._debug_predict_count}, num_candidates={num_candidates}")
         
         # Infer num_candidates from original prompt (before chat template) if not provided
         # Note: We use the original prompt for inference, not the chat template formatted text

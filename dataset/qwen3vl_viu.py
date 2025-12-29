@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from tqdm import tqdm
 from PIL import Image
+from reduce_viu import reduce_viu_for_reranker
 
 try:
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
@@ -635,9 +636,10 @@ def maybe_generate_viu(
     
     # Load model with Unsloth and 4-bit quantization (default)
     model, processor = _load_qwen3vl_model(device, use_quantization=use_quantization)
+    safe_batch_size = 1
     summaries = generate_viu(
         model, processor, device, meta, num_items,
-        batch_size=batch_size,
+        batch_size=safe_batch_size,
         use_torch_compile=use_torch_compile,
         max_new_tokens=max_new_tokens,
         preload_all_images=preload_all_images
