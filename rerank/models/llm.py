@@ -638,7 +638,7 @@ class LLMModel:
             history = user2history[user_id][-10:]
 
             prompt = build_prompt_from_candidates(history, candidate_ids,item_id2text)
-            probs = self.predict_probs(prompt)
+            probs = self.predict(prompt)
             ranked_items = rank_candidates(probs, candidate_ids)
 
             for k in recalls:
@@ -651,3 +651,7 @@ class LLMModel:
             **{f"Recall@{k}": sum(v)/len(v) for k, v in recalls.items()},
             **{f"NDCG@{k}": sum(v)/len(v) for k, v in ndcgs.items()}
         }
+    
+    def predict(self, prompt, num_candidates=None):
+        """Alias for predict_probs for backward compatibility."""
+        return self.predict_probs(prompt, num_candidates)

@@ -627,7 +627,7 @@ Candidate items:
                 
                 self._debug_test_prompt_printed = True
             
-            probs = self.llm_model.predict_probs(prompt, num_candidates=num_candidates)
+            probs = self.llm_model.predict(prompt, num_candidates=num_candidates)
         else:
             # ✅ REFACTORED: This branch should no longer be reached.
             #    All supported modes (text_only, caption, VIU) use LLMModel.
