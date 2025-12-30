@@ -402,6 +402,8 @@ class LLMModel:
                 logger.info(f"  - Learning rate (current: {learning_rate})")
                 logger.info(f"  - Training data quality")
                 logger.info(f"  - Model size (current: {self.model_name})")
+    
+    def predict(self, prompt, num_candidates=None):
         """Predict probabilities for candidates using letters (A, B, C, ... or a, b, c, ...) - LlamaRec style.
         
         Args:
@@ -652,6 +654,6 @@ class LLMModel:
             **{f"NDCG@{k}": sum(v)/len(v) for k, v in ndcgs.items()}
         }
     
-    def predict(self, prompt, num_candidates=None):
-        """Alias for predict_probs for backward compatibility."""
-        return self.predict_probs(prompt, num_candidates)
+    def predict_probs(self, prompt, num_candidates=None):
+        """Alias for predict for backward compatibility."""
+        return self.predict(prompt, num_candidates)
