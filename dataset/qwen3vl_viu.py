@@ -33,37 +33,26 @@ except ImportError:
 
 
 # VIU prompt template
-VIU_PROMPT = """You are a visual product attribute summarizer for recommendation ranking.
+VIU_PROMPT = """You are generating a visual cue for recommendation reranking.
 
-Describe what is CLEARLY visible on the product and its packaging in the image.
-You may use short descriptive phrases, but do NOT guess unseen facts.
-If something is unclear, omit it rather than guessing.
+Describe ONLY the most visually distinctive aspects of the product and its packaging
+that help distinguish it from other similar products.
 
-Your goal is to produce a concise, DISCRIMINATIVE description that helps
-distinguish this product from other similar products for ranking.
+Focus on:
+- Product category or type if clearly visible
+- One or two dominant visual cues (e.g., color, shape, design style)
+- Overall visual positioning (e.g., minimalist, professional, playful, clinical),
+  ONLY if strongly suggested by visible design cues
 
-Output exactly TWO parts:
+STRICT rules:
+- Use at most ONE short sentence (max 20–25 words).
+- Do NOT explain function, benefits, or usage.
+- Do NOT infer ingredients, performance, or target users.
+- Do NOT mention packaging details unless they are visually distinctive.
+- Do NOT add brand slogans or marketing language.
+- Prefer omission over guessing.
 
-PART 1: Key visible attributes (concise)
-- Category or product type (if explicitly visible; otherwise omit):
-- Brand (if readable; otherwise omit):
-- Packaging appearance (container type, dominant color(s), overall visual style):
-- Size/volume (only if clearly printed):
-- Visible on-pack claims (short phrases only; max 5):
-
-PART 2: Decision-oriented visual distinction (1–2 sentences)
-- Summarize the overall visual impression using visible cues.
-- Emphasize aspects that help distinguish this product from similar ones
-  (e.g., color scheme, packaging shape, design style, perceived positioning).
-- You may describe perceived positioning ONLY if it is strongly suggested by visible design cues
-  (e.g., minimalistic vs. decorative, clinical vs. cosmetic).
-- Keep it concise and neutral.
-
-Rules:
-- Do NOT fabricate or assume missing information.
-- Prefer omission over "Unknown".
-- Avoid repeating the same words across fields.
-- No explanations, no meta commentary.
+Output ONLY the sentence. No labels, no extra text.
 """
 
 def _load_qwen3vl_model(device: torch.device, use_quantization: bool = True):
