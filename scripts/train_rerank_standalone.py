@@ -439,5 +439,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    from contextlib import redirect_stdout, redirect_stderr
+    
+    # Save all training output to file
+    output_file = 'training_output.txt'
+    with open(output_file, 'w') as f:
+        with redirect_stdout(f), redirect_stderr(f):
+            main()
+    
+    print(f"Training output saved to {output_file}")
 

@@ -123,7 +123,7 @@ parser.add_argument('--rerank_epochs', type=int, default=1,
 					help='Number of training epochs for rerank models (e.g., BERT4Rec).')
 parser.add_argument('--rerank_batch_size', type=int, default=16,
 					help='Batch size for rerank model training.')
-parser.add_argument('--rerank_lr', type=float, default=1e-4,
+parser.add_argument('--rerank_lr', type=float, default=5e-4,
 					help='Learning rate for rerank models (default: 1e-4).')
 parser.add_argument('--rerank_patience', type=int, default=2,
 					help='Early stopping patience (epochs without val improvement) for rerank models.')
@@ -147,9 +147,9 @@ parser.add_argument('--qwen_model', type=str, default='qwen3-0.6b',
 					help='Model for Qwen reranker. Can be: qwen3-0.6b, qwen3-2bvl, qwen3-1.7b, qwen3-4b, or any HuggingFace model name (e.g., Qwen/Qwen2.5-0.5B-Instruct)')
 parser.add_argument('--qwen_max_history', type=int, default=5,
 					help='Maximum number of items in user history to use for Qwen reranker prompts (default: 5). History will be truncated to the last N items if longer.')
-parser.add_argument('--qwen_gradient_accumulation_steps', type=int, default=2,
+parser.add_argument('--qwen_gradient_accumulation_steps', type=int, default=1,
 					help='Gradient accumulation steps for Qwen LLM training (default: 2). Effective batch size = batch_size * gradient_accumulation_steps.')
-parser.add_argument('--qwen_warmup_steps', type=int, default=20,
+parser.add_argument('--qwen_warmup_steps', type=int, default=10,
 					help='Number of warmup steps for Qwen LLM training (default: 20).')
 parser.add_argument('--qwen_lora_r', type=int, default=8,
 					help='LoRA rank (r) for Qwen LLM fine-tuning (default: 8). Higher values = more parameters but better capacity.')
