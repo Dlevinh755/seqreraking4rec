@@ -9,6 +9,7 @@ Can work in two modes:
 import os
 import sys
 from pathlib import Path
+from datetime import datetime
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -17,6 +18,25 @@ if str(project_root) not in sys.path:
 
 import argparse
 from typing import Dict, List, Optional
+
+
+class TeeLogger:
+    """Redirect stdout/stderr to both terminal and file."""
+    def __init__(self, file_path, mode='w'):
+        self.file = open(file_path, mode, encoding='utf-8')
+        self.terminal = sys.stdout if 'stdout' in str(file_path) else sys.stderr
+        
+    def write(self, message):
+        self.terminal.write(message)
+        self.file.write(message)
+        self.file.flush()  # Ensure immediate write
+        
+    def flush(self):
+        self.terminal.flush()
+        self.file.flush()
+        
+    def close(self):
+        self.file.close()
 
 # Note: config import is moved to main() to avoid argument parsing conflicts
 from evaluation.utils import load_dataset_from_csv, evaluate_split
@@ -28,6 +48,22 @@ from pytorch_lightning import seed_everything
 def main():
     # Import config (it now includes script-specific arguments as optional)
     from config import arg
+    
+    # Setup logging to file
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"training_log_{timestamp}.txt"
+    
+    # Redirect stdout and stderr to both terminal and file
+    tee_stdout = TeeLogger(log_file, mode='w')
+    tee_stderr = TeeLogger(log_file, mode='a')
+    sys.stdout = tee_stdout
+    sys.stderr = tee_stderr
+    
+    print(f"[INFO] Training log will be saved to: {log_file.absolute()}")
+    print(f"[INFO] Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print()
     
     # Get script-specific arguments from arg (with defaults and validation)
     rerank_method_val = getattr(arg, 'rerank_method', None)
@@ -436,17 +472,26 @@ def main():
         values = [test_metrics.get(f"{metric_name}@{k}", 0.0) for k in ks]
         print(f"  {metric_name.capitalize():<12} {values[0]:>10.4f} {values[1]:>10.4f} {values[2]:>10.4f} {values[3]:>10.4f}")
     print("=" * 80)
+    
+    # Log completion
+    print()
+    print(f"[INFO] Training completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"[INFO] Log saved to: {log_file.absolute()}")
+    
+    # Restore stdout and stderr
+    sys.stdout = tee_stdout.terminal
+    sys.stderr = tee_stderr.terminal
+    tee_stdout.close()
+    tee_stderr.close()
 
 
 if __name__ == "__main__":
-    import sys
-    from contextlib import redirect_stdout, redirect_stderr
-    
-    # Save all training output to file
-    output_file = 'training_output.txt'
-    with open(output_file, 'w') as f:
-        with redirect_stdout(f), redirect_stderr(f):
-            main()
-    
-    print(f"Training output saved to {output_file}")
+    try:
+        main()
+    except Exception as e:
+        # Ensure error is logged before exiting
+        print(f"\n[ERROR] Training failed: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        raise
 
