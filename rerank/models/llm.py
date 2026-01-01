@@ -349,7 +349,7 @@ class LLMModel:
             num_train_epochs=num_epochs,
             logging_steps=5,
         save_steps=500,
-        report_to="none",
+        report_to="tensorboard",  # ✅ Changed from "none" to enable logging
             fp16=True,
             optim="adamw_8bit",
             ddp_find_unused_parameters = False,
@@ -358,6 +358,7 @@ class LLMModel:
             lr_scheduler_type = "cosine",
             warmup_steps = warmup_steps,  # ✅ Use from config
             weight_decay = 0.1,
+            disable_tqdm=False,  # ✅ Enable progress bar
         )
         
         trainer = SFTTrainer(
