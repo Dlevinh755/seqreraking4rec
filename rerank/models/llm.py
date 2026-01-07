@@ -328,36 +328,59 @@ class LLMModel:
         # Optional mid-training ranking evaluation on validation set
         # Run every N steps on a random subset of validation samples
         class _RankingEvalCallback(TrainerCallback):
-            def __init__(self, llm_model):
+            def __init__(self, llm_model, trainer_ref, logger_ref):
                 self.llm_model = llm_model
+                self._trainer = trainer_ref
+                self._logger = logger_ref
 
             def on_step_end(self, args, state, control, **kwargs):
+                # Avoid duplicated work in DDP
+                if int(os.environ.get("LOCAL_RANK", 0)) != 0:
+                    return control
+
                 # Only run if validation data is available
-                if (self.llm_model.val_df is None or
-                    self.llm_model.val_user2history is None or
-                    self.llm_model.val_item_id2text is None):
+                if (
+                    self.llm_model.val_df is None
+                    or self.llm_model.val_user2history is None
+                    or self.llm_model.val_item_id2text is None
+                ):
                     return control
 
                 # Evaluate every val_eval_interval_steps steps
-                interval = max(1, getattr(self.llm_model, "val_eval_interval_steps", 50))
-                if state.global_step == 0 or state.global_step % interval != 0:
+                interval = max(1, int(getattr(self.llm_model, "val_eval_interval_steps", 50)))
+                if state.global_step == 0 or (state.global_step % interval) != 0:
                     return control
 
                 import random
                 import pandas as pd
 
                 val_df = self.llm_model.val_df
-                # Ensure we are working with a DataFrame copy to avoid side effects
-                if not isinstance(val_df, pd.DataFrame):
+                if not isinstance(val_df, pd.DataFrame) or len(val_df) == 0:
                     return control
 
-                sample_size = getattr(self.llm_model, "val_eval_sample_size", 100)
+                sample_size = int(getattr(self.llm_model, "val_eval_sample_size", 100))
                 sample_size = max(1, min(sample_size, len(val_df)))
-                if sample_size <= 0:
-                    return control
 
-                # Random sample without replacement
-                val_sample = val_df.sample(n=sample_size, replace=False, random_state=random.randint(0, 1_000_000))
+                val_sample = val_df.sample(
+                    n=sample_size,
+                    replace=False,
+                    random_state=random.randint(0, 1_000_000),
+                )
+
+                self._logger.info(
+                    f"[LLMModel] Running mid-train validation at step={state.global_step} "
+                    f"(epoch≈{state.epoch:.2f}, interval={interval}, sample={sample_size})"
+                )
+                print(
+                    f"\n[LLMModel] Mid-train validation: step={state.global_step} "
+                    f"epoch≈{state.epoch:.2f} sample={sample_size}"
+                )
+
+                was_training = getattr(self.llm_model.model, "training", True)
+                try:
+                    self.llm_model.model.eval()
+                except Exception:
+                    pass
 
                 metrics = self.llm_model.evaluate(
                     val_sample,
@@ -365,11 +388,26 @@ class LLMModel:
                     self.llm_model.val_item_id2text,
                 )
 
-                # Log metrics via trainer if available
-                trainer = kwargs.get("trainer", None)
-                if trainer is not None and metrics:
+                try:
+                    if was_training:
+                        self.llm_model.model.train()
+                except Exception:
+                    pass
+
+                if metrics:
                     prefixed = {f"ranking_{k}": float(v) for k, v in metrics.items()}
-                    trainer.log(prefixed)
+                    # Log into Trainer history + tensorboard if enabled
+                    try:
+                        self._trainer.log(prefixed)
+                    except Exception:
+                        pass
+
+                    # Also print so you can see it in stdout
+                    printable = " ".join([f"{k}={v:.4f}" for k, v in metrics.items()])
+                    print(f"[LLMModel] Mid-train metrics: {printable}\n")
+                    self._logger.info(f"[LLMModel] Mid-train metrics: {prefixed}")
+
+                print("[LLMModel] Resuming training...\n")
 
                 return control
 
@@ -383,11 +421,7 @@ class LLMModel:
                 effective_batch_size = batch_size * gradient_accumulation_steps * num_devices
                 steps_per_epoch = max(1, len(hf_train_dataset) // effective_batch_size)
                 self.val_eval_interval_steps = max(1, steps_per_epoch // 2)
-                
-                # Update args.eval_steps to ensure Trainer also knows about it
-                training_args.eval_steps = self.val_eval_interval_steps
-                training_args.evaluation_strategy = "steps"
-                
+
                 logger.info(f"[LLMModel] Validation interval set to {self.val_eval_interval_steps} steps (approx. 1/2 epoch)")
             except Exception as e:
                 logger.warning(f"[LLMModel] Could not calculate steps_per_epoch: {e}. Keeping default interval.")
@@ -400,14 +434,15 @@ class LLMModel:
              except Exception as e:
                 logger.warning(f"[LLMModel] Could not calculate val sample size: {e}. Keeping default.")
 
-        trainer.add_callback(_RankingEvalCallback(self))
-        
         # ✅ Use train_on_responses_only to automatically mask prompt tokens (like notebook)
+        # NOTE: Unsloth may return a new trainer object here, so attach callbacks AFTER this call.
         trainer = train_on_responses_only(
             trainer,
             instruction_part="<|im_start|>user\n",
             response_part="<|im_start|>assistant\n",
         )
+
+        trainer.add_callback(_RankingEvalCallback(self, trainer, logger))
         
         # ✅ Check if in eval mode - skip training if so
         try:
