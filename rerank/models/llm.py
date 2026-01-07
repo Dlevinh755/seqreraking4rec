@@ -93,8 +93,8 @@ class LLMModel:
             self.val_df = val_df
             self.val_user2history = val_user2history
             self.val_item_id2text = val_item_id2text
-            self.val_eval_interval_steps = val_eval_interval_steps
-            self.val_eval_sample_size = val_eval_sample_size
+            self.val_eval_interval_steps = len(val_df)//2
+            self.val_eval_sample_size = len(val_df)//5
             try:
                 from config import arg
                 self.verbose = getattr(arg, 'qwen_verbose', verbose)
@@ -124,6 +124,23 @@ class LLMModel:
         )
         
 
+        # HOTFIX: Monkey-patch LoraConfig to ignore 'ensure_weight_tying' argument
+        # This resolves the conflict between Unsloth (which passes this arg) and older PEFT versions
+        try:
+            from peft import LoraConfig
+            # Avoid re-patching if already done
+            if not getattr(LoraConfig, '_is_patched_for_weight_tying', False):
+                _original_init = LoraConfig.__init__
+                def _patched_init(self, *args, **kwargs):
+                    if 'ensure_weight_tying' in kwargs:
+                        kwargs.pop('ensure_weight_tying')
+                    _original_init(self, *args, **kwargs)
+                LoraConfig.__init__ = _patched_init
+                LoraConfig._is_patched_for_weight_tying = True
+                print(f"  🛠️  Applied hotfix for LoraConfig compatibility")
+        except Exception as e:
+            print(f"  ⚠️  Could not apply LoraConfig hotfix: {e}")
+
         try:
             # Get LoRA parameters from config
             try:
@@ -152,27 +169,9 @@ class LLMModel:
                     bias = "none",
                     use_gradient_checkpointing = True,
                 )
-        except Exception:
-            # Fallback: always add LoRA if check fails
-            print(f"  Adding LoRA (fallback)...")
-            try:
-                from config import arg
-                lora_r = getattr(arg, 'qwen_lora_r', 8)
-                lora_alpha = getattr(arg, 'qwen_lora_alpha', 16)
-                lora_dropout = getattr(arg, 'qwen_lora_dropout', 0.05)
-            except ImportError:
-                lora_r = 8
-                lora_alpha = 16
-                lora_dropout = 0.05
-            self.model = FastLanguageModel.get_peft_model(
-                self.model,
-                r = lora_r,
-                target_modules = ["q_proj","k_proj","v_proj","o_proj"],
-                lora_alpha = lora_alpha,
-                lora_dropout = lora_dropout,
-                bias = "none",
-                use_gradient_checkpointing = True,
-            )
+        except Exception as e:
+            print(f"  ❌ Error adding LoRA adapter: {e}")
+            raise
         
         # Compile model if requested (PyTorch 2.0+)
         if use_torch_compile and hasattr(torch, 'compile'):
