@@ -1,11 +1,3 @@
-"""Standalone training script for rerank models (Stage 2).
-
-This script allows training rerank models independently from retrieval.
-Can work in two modes:
-1. With pre-trained retrieval: Load retrieval model and use its candidates
-2. Ground truth mode: Use ground truth + random negatives (no retrieval needed)
-"""
-
 import os
 import sys
 from pathlib import Path
@@ -41,7 +33,6 @@ class TeeLogger:
 # Note: config import is moved to main() to avoid argument parsing conflicts
 from evaluation.utils import load_dataset_from_csv, evaluate_split
 from rerank.registry import get_reranker_class
-from retrieval.registry import get_retriever_class
 from pytorch_lightning import seed_everything
 
 
@@ -66,11 +57,9 @@ def main():
     print()
     
     # Get script-specific arguments from arg (with defaults and validation)
-    rerank_method_val = getattr(arg, 'rerank_method', None)
-    if rerank_method_val is None:
-        raise ValueError("--rerank_method is required. Please specify: --rerank_method qwen|qwen3vl|vip5")
+    rerank_method_val = getattr(arg, 'rerank_method', 'qwen') or 'qwen'  # Default to 'qwen'
     
-    valid_rerank_methods = ["qwen", "qwen3vl", "vip5"]
+    valid_rerank_methods = ["qwen", "qwen3vl"]
     if rerank_method_val not in valid_rerank_methods:
         raise ValueError(f"Invalid rerank_method: {rerank_method_val}. Must be one of {valid_rerank_methods}")
     
