@@ -1,5 +1,3 @@
-
-##%%writefile /kaggle/working/rerank/models/llm.py
 from unsloth import FastLanguageModel
 import torch
 import torch.nn.functional as F
@@ -17,17 +15,6 @@ LETTERS = list(string.ascii_uppercase) + list(string.ascii_lowercase)  # A-Z, a-
 
 
 def build_prompt_from_candidates(user_history, candidate_ids, item_id2text, max_candidates=None):
-    """Build prompt for LLM reranking.
-    
-    Args:
-        user_history: List of item texts in user history
-        candidate_ids: List of candidate item IDs
-        item_id2text: Mapping from item_id to item text
-        max_candidates: Maximum number of candidates (None = no limit, uses all)
-        
-    Returns:
-        Formatted prompt string with candidate labels (A, B, C, ... or a, b, c, ...)
-    """
     if max_candidates is not None and len(candidate_ids) > max_candidates:
         candidate_ids = candidate_ids[:max_candidates]
     
@@ -71,18 +58,6 @@ Candidate items:
     return prompt
 
 def rank_candidates(probs, candidate_ids):
-    """Rank candidates by probabilities.
-    
-    Args:
-        probs: Array of probabilities (one per candidate)
-        candidate_ids: List of candidate item IDs
-        
-    Returns:
-        List of candidate IDs sorted by probability (descending)
-        
-    Raises:
-        ValueError: If len(probs) != len(candidate_ids)
-    """
     if len(probs) != len(candidate_ids):
         raise ValueError(
             f"Mismatch: {len(candidate_ids)} candidates but {len(probs)} probabilities. "
@@ -107,14 +82,19 @@ def ndcg_at_k(ranked_items, gt_item, k):
     return 1.0 / math.log2(rank + 1)
 
 class LLMModel:
-    def __init__(self, train_data=None, model_name=None, verbose=1):
-            # Priority: Use Unsloth models by default for better performance and 4-bit quantization
-            # ✅ Track debug print count to limit frequency during eval
+    def __init__(self, train_data=None, model_name=None, verbose=1,
+                 val_df=None, val_user2history=None, val_item_id2text=None,
+                 val_eval_interval_steps: int = 50, val_eval_sample_size: int = 100):
             self._debug_predict_count = 0
             self._max_debug_prints = 3  # Only print debug for first 3 samples
             self.model_name = model_name or "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
             self.train_data = train_data
-            # Verbosity level: 0 (minimal), 1 (normal), 2 (verbose/debug)
+            # Optional validation data for mid-training eval
+            self.val_df = val_df
+            self.val_user2history = val_user2history
+            self.val_item_id2text = val_item_id2text
+            self.val_eval_interval_steps = val_eval_interval_steps
+            self.val_eval_sample_size = val_eval_sample_size
             try:
                 from config import arg
                 self.verbose = getattr(arg, 'qwen_verbose', verbose)
@@ -122,18 +102,6 @@ class LLMModel:
                 self.verbose = verbose
 
     def load_model(self, use_torch_compile=False, max_seq_length=None):
-        """Load LLM model with 4-bit quantization (default for Unsloth models).
-        
-        Args:
-            use_torch_compile: Whether to use torch.compile() for faster inference
-            max_seq_length: Maximum sequence length (None = get from config, default: 2048)
-        
-        Note:
-            - All Unsloth models are loaded with 4-bit quantization by default
-            - If self.model_name points to a path with adapter weights, Unsloth will automatically
-              load the adapter. Otherwise, it loads base model and prepares for training.
-        """
-        # Get max_seq_length from config if not provided
         if max_seq_length is None:
             try:
                 from config import arg
@@ -155,9 +123,7 @@ class LLMModel:
             device_map={'': local_rank},
         )
         
-        # Only add LoRA if model doesn't already have adapter weights
-        # Unsloth's from_pretrained automatically loads adapter if present, so we check
-        # If adapter is already loaded, get_peft_model will reuse it
+
         try:
             # Get LoRA parameters from config
             try:
@@ -186,7 +152,7 @@ class LLMModel:
                     bias = "none",
                     use_gradient_checkpointing = True,
                 )
-        except Exception as e:
+        except Exception:
             # Fallback: always add LoRA if check fails
             print(f"  Adding LoRA (fallback)...")
             try:
@@ -198,15 +164,15 @@ class LLMModel:
                 lora_r = 8
                 lora_alpha = 16
                 lora_dropout = 0.05
-        self.model = FastLanguageModel.get_peft_model(
-            self.model,
+            self.model = FastLanguageModel.get_peft_model(
+                self.model,
                 r = lora_r,
-            target_modules = ["q_proj","k_proj","v_proj","o_proj"],
+                target_modules = ["q_proj","k_proj","v_proj","o_proj"],
                 lora_alpha = lora_alpha,
                 lora_dropout = lora_dropout,
-            bias = "none",
-            use_gradient_checkpointing = True,
-        )
+                bias = "none",
+                use_gradient_checkpointing = True,
+            )
         
         # Compile model if requested (PyTorch 2.0+)
         if use_torch_compile and hasattr(torch, 'compile'):
@@ -220,6 +186,7 @@ class LLMModel:
 
         from datasets import Dataset
         from trl import SFTTrainer, SFTConfig
+        from transformers import TrainerCallback
         from unsloth.chat_templates import train_on_responses_only
 
         # Setup logging to file
@@ -249,17 +216,9 @@ class LLMModel:
             messages_list = examples["messages"]
             
             def clean_thinking_content(text):
-                """Remove thinking content from text if present."""
-                # Remove <think>...</think> tags (Qwen3 thinking format)
                 text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-                # Remove <think>...</think> tags (Qwen3 format)  
-                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-                # Remove empty lines between assistant tag and response (if thinking was removed)
-                # This ensures format: <|im_start|>assistant\nA<|im_end|> instead of <|im_start|>assistant\n\nA<|im_end|>
                 text = re.sub(r'(<\|im_start\|>assistant\n)\n+', r'\1', text)
-                # Clean up extra newlines but preserve structure
-                # Don't strip() to preserve leading/trailing structure for train_on_responses_only
-                text = re.sub(r'\n\n+', '\n', text)  # Replace multiple newlines with single newline
+                text = re.sub(r'\n\n+', '\n', text)
                 return text
             
             # Check if batched (list of lists) or single (single list)
@@ -293,7 +252,6 @@ class LLMModel:
             
             raise ValueError(f"Invalid messages format: {type(messages_list)}")
         
-        # ✅ Map to format as text (like notebook Cell 7) - use batched=True for efficiency
         hf_train_dataset = hf_train_dataset.map(
             formatting_prompts_func,
             batched=True,  # Process in batches for efficiency (like notebook)
@@ -342,14 +300,14 @@ class LLMModel:
         print(hf_train_dataset[0]["text"])
         training_args = SFTConfig(
             dataset_text_field="text",  # Field name in dataset
-        output_dir="./qwen_rerank",
+            output_dir="./qwen_rerank",
             per_device_train_batch_size=batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,  # ✅ Use from config
             learning_rate=learning_rate,  # ✅ Use from config (default: 1e-4)
             num_train_epochs=num_epochs,
             logging_steps=5,
-        save_steps=500,
-        report_to="tensorboard",  # ✅ Changed from "none" to enable logging
+            save_steps=500,
+             report_to="tensorboard",  # ✅ Changed from "none" to enable logging
             fp16=True,
             optim="adamw_8bit",
             ddp_find_unused_parameters = False,
@@ -367,6 +325,57 @@ class LLMModel:
             train_dataset=hf_train_dataset,
             args=training_args,
         )
+
+        # Optional mid-training ranking evaluation on validation set
+        # Run every N steps on a random subset of validation samples
+        class _RankingEvalCallback(TrainerCallback):
+            def __init__(self, llm_model):
+                self.llm_model = llm_model
+
+            def on_step_end(self, args, state, control, **kwargs):
+                # Only run if validation data is available
+                if (self.llm_model.val_df is None or
+                    self.llm_model.val_user2history is None or
+                    self.llm_model.val_item_id2text is None):
+                    return control
+
+                # Evaluate every val_eval_interval_steps steps
+                interval = max(1, getattr(self.llm_model, "val_eval_interval_steps", 50))
+                if state.global_step == 0 or state.global_step % interval != 0:
+                    return control
+
+                import random
+                import pandas as pd
+
+                val_df = self.llm_model.val_df
+                # Ensure we are working with a DataFrame copy to avoid side effects
+                if not isinstance(val_df, pd.DataFrame):
+                    return control
+
+                sample_size = getattr(self.llm_model, "val_eval_sample_size", 100)
+                sample_size = max(1, min(sample_size, len(val_df)))
+                if sample_size <= 0:
+                    return control
+
+                # Random sample without replacement
+                val_sample = val_df.sample(n=sample_size, replace=False, random_state=random.randint(0, 1_000_000))
+
+                metrics = self.llm_model.evaluate(
+                    val_sample,
+                    self.llm_model.val_user2history,
+                    self.llm_model.val_item_id2text,
+                )
+
+                # Log metrics via trainer if available
+                trainer = kwargs.get("trainer", None)
+                if trainer is not None and metrics:
+                    prefixed = {f"ranking_{k}": float(v) for k, v in metrics.items()}
+                    trainer.log(prefixed)
+
+                return control
+
+        # Register callback so that validation is done during training instead of only after
+        trainer.add_callback(_RankingEvalCallback(self))
         
         # ✅ Use train_on_responses_only to automatically mask prompt tokens (like notebook)
         trainer = train_on_responses_only(
@@ -405,15 +414,6 @@ class LLMModel:
                 logger.info(f"  - Model size (current: {self.model_name})")
     
     def predict(self, prompt, num_candidates=None):
-        """Predict probabilities for candidates using letters (A, B, C, ... or a, b, c, ...) - LlamaRec style.
-        
-        Args:
-            prompt: Input prompt (plain text, will be converted to chat template format)
-            num_candidates: Number of candidates (if None, infers from prompt)
-            
-        Returns:
-            numpy array of probabilities [num_candidates]
-        """
         # Setup logging to file (append mode)
         log_file = "training_eval_log.txt"
         logging.basicConfig(
@@ -436,9 +436,6 @@ class LLMModel:
         except ImportError:
             max_length = 2048  # Default fallback
         
-        # ✅ Convert plain text prompt to chat template format (consistency with training)
-        # Training uses apply_chat_template with system message, so inference should too
-        # ✅ Remove "You are a recommendation ranking assistant." from prompt if present (already in system message)
         system_msg = "You are a recommendation ranking assistant."
         if prompt.strip().startswith(system_msg):
             # Remove system message from prompt (already in system message)
@@ -452,15 +449,11 @@ class LLMModel:
             {"role": "system", "content": system_msg},
             {"role": "user", "content": prompt}
         ]
-        
-        # Apply chat template with generation prompt (adds <|im_start|>assistant\n at the end)
-        # This ensures consistency with training format
-        # ✅ Disable thinking mode to ensure direct answer prediction (for reranking, we want direct letter answers)
         text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True,  # ✅ Add <|im_start|>assistant\n for generation
-            enable_thinking=False  # ✅ Disable thinking mode for direct answer prediction
+            add_generation_prompt=True,
+            enable_thinking=False
         )
         
         # Tokenize the chat template formatted text
@@ -471,7 +464,7 @@ class LLMModel:
             max_length=max_length,  # ✅ Use from config
         ).to(self.model.device)
 
-        # ✅ Debug: Check prompt format and tokenization (only if verbose >= 2, and only for first few samples)
+    
         if self.verbose >= 2 and self._debug_predict_count <= self._max_debug_prints:
             # Check if prompt ends correctly (should end with <|im_start|>assistant\n)
             if not text.rstrip().endswith("<|im_start|>assistant"):
@@ -491,9 +484,6 @@ class LLMModel:
         
         logger.info(f"[Eval] Predicted for sample {self._debug_predict_count}, num_candidates={num_candidates}")
         
-        # Infer num_candidates from original prompt (before chat template) if not provided
-        # Note: We use the original prompt for inference, not the chat template formatted text
-        # because the chat template adds special tokens that might interfere with parsing
         if num_candidates is None:
             # Count "Candidate items:" section in original prompt
             if "Candidate items:" in prompt:
@@ -585,10 +575,7 @@ class LLMModel:
         # Extract probabilities for letter tokens
         token_ids = [tid for _, _, tid in letter_tokens]
         
-        # ✅ Apply temperature scaling if specified (default: 1.0 = no scaling)
-        # Temperature < 1.0: sharper distribution (more confident)
-        # Temperature > 1.0: smoother distribution (less confident)
-        # Temperature = 1.0: standard softmax (default)
+
         try:
             from config import arg
             temperature = getattr(arg, 'qwen_temperature', 1.0)
@@ -620,7 +607,6 @@ class LLMModel:
                 print(f"[WARNING] This will cause recall = random! Model may not have learned anything.")
             prob_array = np.ones(num_candidates) / num_candidates
         
-        # ✅ Debug: Check if probabilities are uniform (model chưa học được gì) - only warn if verbose >= 2, and only for first sample
         if self.verbose >= 2 and self._debug_predict_count <= 1:
             prob_std = np.std(prob_array)
             expected_uniform_std = 0.0  # Uniform distribution has std = 0

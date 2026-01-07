@@ -8,12 +8,6 @@ EXPERIMENT_ROOT = 'experiments'
 
 parser = argparse.ArgumentParser(description='Configuration for the project.')
 
-parser.add_argument('--rerank_top_k', type=int, default=None, help='Number of final recommendations (used by train_pipeline.py)')
-parser.add_argument('--metric_k', type=int, default=None, help='Cutoff for evaluation metrics (used by train_pipeline.py)')
-parser.add_argument('--retrieval_top_k', type=int, default=None, help='Number of candidates from Stage 1 (used by train_pipeline.py)')
-parser.add_argument('--rerank_method', type=str, default=None, help='Rerank method (used by train_pipeline.py)')
-parser.add_argument('--rerank_mode', type=str, default=None, help='Rerank mode (used by train_pipeline.py)')
-
 #=========================================================================
 # Data preparation arguments
 #=========================================================================
@@ -39,82 +33,8 @@ parser.add_argument('--use_torch_compile', action='store_true', default=True,
 					help='Use torch.compile() for faster inference (requires PyTorch 2.0+)')
 parser.add_argument('--preload_all_images', action='store_true', default=True,
 					help='Pre-load all images into memory before processing (faster but uses more RAM)')
-
-#===========================================================================
-# Training retrieval arguments
-#===========================================================================
 parser.add_argument('--seed', type=int, default=42)
-parser.add_argument('--retrieval_epochs', type=int, default=100,
-					help='Number of training epochs for Stage-1 retrieval models (e.g., neural LRURec).')
-parser.add_argument('--batch_size_retrieval', type=int, default=512,
-					help='Batch size for Stage-1 retrieval model training.')
-parser.add_argument('--num_workers_retrieval', type=int, default=4,
-					help='Number of DataLoader workers for Stage-1 retrieval model.')
-parser.add_argument('--retrieval_patience', type=int, default=10,
-					help='Early stopping patience (epochs without val improvement) for Stage-1 retrieval.')
-parser.add_argument('--retrieval_lr', type=float, default=1e-3,
-					help='Learning rate for all retrieval methods (default: 1e-4). Note: VBPR paper uses 5e-4, MMGCN may need 1e-3 for better performance.')
 
-#===========================================================================
-# MMGCN-specific hyperparameters
-#===========================================================================
-parser.add_argument('--mmgcn_dim_x', type=int, default=64,
-					help='MMGCN embedding dimension (default: 64, recommended: 128-256 for better performance)')
-parser.add_argument('--mmgcn_num_layer', type=int, default=2,
-					help='MMGCN number of GCN layers (default: 2, max: 3)')
-parser.add_argument('--mmgcn_concate', action='store_true', default=False,
-					help='MMGCN concat features (default: False, recommended: True for better performance)')
-parser.add_argument('--mmgcn_reg_weight', type=float, default=1e-4,
-					help='MMGCN regularization weight (default: 1e-4, range: 1e-5 to 1e-3)')
-parser.add_argument('--mmgcn_aggr_mode', type=str, default='add',
-					choices=['add', 'mean', 'max'],
-					help='MMGCN aggregation mode (default: add, usually best for recommendation)')
-
-
-#===========================================================================
-# VBPR-specific hyperparameters
-#===========================================================================
-parser.add_argument('--vbpr_dim_gamma', type=int, default=128,
-					help='VBPR dimension of user/item latent factors (default: 20, recommended: 64 for better performance)')
-parser.add_argument('--vbpr_dim_theta', type=int, default=128,
-					help='VBPR dimension of visual projection (default: 20, recommended: 64 for better performance)')
-parser.add_argument('--vbpr_lambda_reg', type=float, default=0.01,
-					help='VBPR regularization weight (default: 0.01, range: 1e-4 to 0.1)')
-parser.add_argument('--vbpr_optimizer', type=str, default='adam',
-					choices=['adam', 'sgd'],
-					help='VBPR optimizer (default: adam, recommended for better convergence)')
-
-#===========================================================================
-# BM3-specific hyperparameters
-#===========================================================================
-parser.add_argument('--bm3_embed_dim', type=int, default=128,
-					help='BM3 embedding dimension (default: 64, recommended: 128-256 for better performance)')
-parser.add_argument('--bm3_layers', type=int, default=2,
-					help='BM3 number of MLP layers for feature fusion (default: 1, recommended: 2-3 for better performance)')
-parser.add_argument('--bm3_dropout', type=float, default=0.05,
-					help='BM3 dropout rate (default: 0.1, range: 0.0-0.5, lower dropout may improve performance)')
-parser.add_argument('--bm3_reg_weight', type=float, default=1e-4,
-					help='BM3 regularization weight (default: 1e-4, range: 1e-5 to 1e-3)')
-
-#===========================================================================
-# BERT4Rec-specific hyperparameters
-#===========================================================================
-parser.add_argument('--bert4rec_hidden_size', type=int, default=256,
-					help='BERT4Rec hidden dimension (default: 64, recommended: 256 for better performance)')
-parser.add_argument('--bert4rec_num_hidden_layers', type=int, default=2,
-					help='BERT4Rec number of transformer layers (default: 2, recommended: 2-4)')
-parser.add_argument('--bert4rec_num_attention_heads', type=int, default=4,
-					help='BERT4Rec number of attention heads (default: 2, recommended: 4-8 for better performance)')
-parser.add_argument('--bert4rec_intermediate_size', type=int, default=1024,
-					help='BERT4Rec feed-forward intermediate size (default: 256, recommended: 1024 for better performance)')
-parser.add_argument('--bert4rec_max_seq_length', type=int, default=200,
-					help='BERT4Rec maximum sequence length (default: 200, increase if users have long histories)')
-parser.add_argument('--bert4rec_attention_dropout', type=float, default=0.2,
-					help='BERT4Rec attention dropout rate (default: 0.2, range: 0.0-0.5)')
-parser.add_argument('--bert4rec_hidden_dropout', type=float, default=0.2,
-					help='BERT4Rec hidden dropout rate (default: 0.2, range: 0.0-0.5)')
-parser.add_argument('--bert4rec_warmup_steps', type=int, default=1000,
-					help='BERT4Rec learning rate warmup steps (default: 100, recommended: 1000-2000 for better convergence)')
 
 #===========================================================================
 # Training reranking arguments
@@ -133,10 +53,7 @@ parser.add_argument('--qwen_max_candidates', type=int, default=50,
 					help='Maximum number of candidates for Qwen reranker during inference (default: 20). If None, uses retrieval_top_k from pipeline config.')
 parser.add_argument('--qwen_max_seq_length', type=int, default=2048,
 					help='Maximum sequence length for Qwen LLM models (default: 2048). Increase for longer prompts (e.g., 4096 for multimodal with images).')
-parser.add_argument('--vip5_max_candidates', type=int, default=50,
-					help='Maximum number of candidates for VIP5 Direct Task training (default: 100). Number of negatives + 1 positive = total candidates.')
-parser.add_argument('--vip5_max_text_length', type=int, default=128,
-					help='Maximum text sequence length for VIP5 (default: 128, increase for longer prompts)')
+
 parser.add_argument('--retrieval_eval_mode', type=str, default='full_ranking',
 					choices=['full_ranking', 'candidate_list'],
 					help='Evaluation mode for retrieval models: full_ranking (evaluate on all items) or candidate_list (evaluate only on pre-generated candidates, default: full_ranking).')
@@ -167,10 +84,6 @@ parser.add_argument('--qwen_temperature', type=float, default=1.0,
 parser.add_argument('--rerank_action', type=str, default='train',
 					choices=['train', 'eval'],
 					help='Action for rerank: train (train model) or eval (load pretrained model and evaluate only, default: train). When eval, pass model path to --qwen_model and Unsloth will automatically load the adapter.')
-# Legacy: Keep qwen3vl_mode for backward compatibility (will be removed in future)
-parser.add_argument('--qwen3vl_mode', type=str, default=None,
-					choices=['caption', 'VIU', 'viu_small'],
-					help='[DEPRECATED] Use --qwen_mode instead. This argument is kept for backward compatibility only.')
 
 parser.add_argument('--max_text_length', type=int, default=256,
 					help='Maximum text length in characters for item metadata (default: 512, range: 256-512). Text will be truncated from the end if longer.')
@@ -178,7 +91,6 @@ parser.add_argument('--max_text_length', type=int, default=256,
 #===========================================================================
 # Script-specific arguments (not used by config, but added to avoid "unrecognized arguments" errors)
 #===========================================================================
-parser.add_argument('--retrieval_method', type=str, default=None, help='Retrieval method (used by train_retrieval.py)')
 parser.add_argument('--mode', type=str, default=None, help='Training mode (used by train_rerank_standalone.py)')
 arg = parser.parse_args()
 
