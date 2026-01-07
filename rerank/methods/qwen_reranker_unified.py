@@ -408,9 +408,17 @@ Candidate items:
                         })
             
             if train_data_for_llm is not None:
+                # Extract validation data if available
+                val_df = kwargs.get("val_df")
+                val_user2history = kwargs.get("val_user2history")
+                val_item_id2text = kwargs.get("val_item_id2text")
+                
                 self.llm_model = LLMModel(
                     train_data=train_data_for_llm,
-                    model_name=model_path
+                    model_name=model_path,
+                    val_df=val_df,
+                    val_user2history=val_user2history,
+                    val_item_id2text=val_item_id2text
                 )
                 self.llm_model.load_model(use_torch_compile=False)
                 # ✅ Check if eval mode - skip training if so

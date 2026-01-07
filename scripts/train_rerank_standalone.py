@@ -316,6 +316,58 @@ def main():
                     training_kwargs["train_data_for_llm"] = training_samples
                 else:
                     print("  Warning: No training samples prepared. Qwen reranker will be loaded without training.")
+
+                # ✅ Prepare validation data for mid-training evaluation
+                print(f"  Preparing validation data for mid-training evaluation...")
+                import pandas as pd
+                
+                val_samples = []
+                val_user2history = {}
+                
+                # Check for item_id2text (needed for eval)
+                if item_id2text:
+                    for user_id, items in val.items():
+                        if user_id not in train or not items:
+                            continue
+                        
+                        target_item = items[0]  # Use first item as target
+                        history = train[user_id]
+                        val_user2history[user_id] = history
+                        
+                        # Generate candidates: target + random negatives
+                        user_items_set = set(history).union(set(items))
+                        negative_candidates = [item for item in all_items if item not in user_items_set]
+                        
+                        # Get num_negatives (default: 19 for 20 total candidates)
+                        try:
+                            total_candidates = getattr(arg, 'rerank_eval_candidates', 20)
+                            num_negatives = total_candidates - 1
+                        except (ImportError, AttributeError):
+                            num_negatives = 19
+                        
+                        num_negatives = min(num_negatives, len(negative_candidates))
+                        if num_negatives > 0:
+                            negatives = random.sample(negative_candidates, num_negatives)
+                        else:
+                            negatives = []
+                        
+                        candidates = [target_item] + negatives
+                        random.shuffle(candidates)
+                        
+                        val_samples.append({
+                            "user_index": user_id,
+                            "label": target_item,
+                            "candidate_ids": str(candidates)  # Store as string (ast.literal_eval used in evaluate)
+                        })
+                    
+                    if val_samples:
+                        val_df = pd.DataFrame(val_samples)
+                        print(f"  Prepared {len(val_df)} validation samples for Qwen LLM mid-training eval")
+                        training_kwargs["val_df"] = val_df
+                        training_kwargs["val_user2history"] = val_user2history
+                        training_kwargs["val_item_id2text"] = item_id2text
+                    else:
+                        print("  Warning: No validation samples prepared.")
     
     # Load retrieval model if needed
     if args.mode == "retrieval":

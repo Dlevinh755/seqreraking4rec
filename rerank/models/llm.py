@@ -93,8 +93,8 @@ class LLMModel:
             self.val_df = val_df
             self.val_user2history = val_user2history
             self.val_item_id2text = val_item_id2text
-            self.val_eval_interval_steps = len(val_df)//2
-            self.val_eval_sample_size = len(val_df)//5
+            self.val_eval_interval_steps = val_eval_interval_steps
+            self.val_eval_sample_size = val_eval_sample_size
             try:
                 from config import arg
                 self.verbose = getattr(arg, 'qwen_verbose', verbose)
@@ -374,6 +374,27 @@ class LLMModel:
                 return control
 
         # Register callback so that validation is done during training instead of only after
+        
+        # Calculate dynamic validation settings
+        # 1. Evaluate every half epoch
+        if len(hf_train_dataset) > 0 and batch_size > 0:
+            try:
+                num_devices = torch.cuda.device_count() if torch.cuda.is_available() else 1
+                effective_batch_size = batch_size * gradient_accumulation_steps * num_devices
+                steps_per_epoch = max(1, len(hf_train_dataset) // effective_batch_size)
+                self.val_eval_interval_steps = max(1, steps_per_epoch // 2)
+                logger.info(f"[LLMModel] Validation interval set to {self.val_eval_interval_steps} steps (approx. 1/2 epoch)")
+            except Exception as e:
+                logger.warning(f"[LLMModel] Could not calculate steps_per_epoch: {e}. Keeping default interval.")
+        
+        # 2. Use 1/5 of validation set size
+        if self.val_df is not None:
+             try:
+                self.val_eval_sample_size = max(1, len(self.val_df) // 5)
+                logger.info(f"[LLMModel] Validation sample size set to {self.val_eval_sample_size} (1/5 of val set)")
+             except Exception as e:
+                logger.warning(f"[LLMModel] Could not calculate val sample size: {e}. Keeping default.")
+
         trainer.add_callback(_RankingEvalCallback(self))
         
         # ✅ Use train_on_responses_only to automatically mask prompt tokens (like notebook)
