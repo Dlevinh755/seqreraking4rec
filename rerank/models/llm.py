@@ -383,6 +383,11 @@ class LLMModel:
                 effective_batch_size = batch_size * gradient_accumulation_steps * num_devices
                 steps_per_epoch = max(1, len(hf_train_dataset) // effective_batch_size)
                 self.val_eval_interval_steps = max(1, steps_per_epoch // 2)
+                
+                # Update args.eval_steps to ensure Trainer also knows about it
+                training_args.eval_steps = self.val_eval_interval_steps
+                training_args.evaluation_strategy = "steps"
+                
                 logger.info(f"[LLMModel] Validation interval set to {self.val_eval_interval_steps} steps (approx. 1/2 epoch)")
             except Exception as e:
                 logger.warning(f"[LLMModel] Could not calculate steps_per_epoch: {e}. Keeping default interval.")
