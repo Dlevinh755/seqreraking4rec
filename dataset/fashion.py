@@ -87,11 +87,8 @@ class AmazonFashionDataset(AbstractDataset):
         df = self.filter_triplets(df)
         print(f'Ratings after filter_triplets: {len(df)}')
 
-        # Step 3: densify index
-        df, umap, smap = self.densify_index(df)
-
-        # Step 4: remaining items
-        remaining_items = set(smap.keys())
+        # Step 3: remaining items (original item ids)
+        remaining_items = set(df['sid'].unique())
         print(f'Items remaining after triplet filtering: {len(remaining_items)}')
 
         # Step 5: download images for remaining items
@@ -113,10 +110,11 @@ class AmazonFashionDataset(AbstractDataset):
             items_to_remove = remaining_items - valid_image_items
             if items_to_remove:
                 print(f'Removing {len(items_to_remove)} items without valid images...')
-                keep_sids = [smap[item] for item in valid_image_items if item in smap]
-                df = df[df['sid'].isin(keep_sids)]
-                df, umap, smap = self.densify_index(df)
-                print(f'Final items after image filtering: {len(smap)}')
+                df = df[df['sid'].isin(valid_image_items)]
+                print(f"Final items after image filtering: {df['sid'].nunique()}")
+
+        # Step 6: densify index ONCE (after all filtering)
+        df, umap, smap = self.densify_index(df)
 
         train, val, test = self.split_df(df, len(umap))
         meta = {smap[k]: v for k, v in meta_raw.items() if k in smap}

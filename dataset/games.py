@@ -86,12 +86,9 @@ class GamesDataset(AbstractDataset):
         print(f'Ratings before filter_triplets: {len(df)}')
         df = self.filter_triplets(df)
         print(f'Ratings after filter_triplets: {len(df)}')
-        
-        # BƯỚC 3: Densify index - tạo mapping mới
-        df, umap, smap = self.densify_index(df)
-        
-        # BƯỚC 4: Xác định items còn lại sau khi lọc triplets
-        remaining_items = set(smap.keys())  # Original item IDs còn lại
+
+        # BƯỚC 3: Xác định items còn lại sau khi lọc triplets (original item ids)
+        remaining_items = set(df['sid'].unique())
         print(f'Items remaining after triplet filtering: {len(remaining_items)}')
         
         # BƯỚC 5: DOWNLOAD IMAGES - chỉ cho items còn lại (đã giảm rất nhiều!)
@@ -116,11 +113,12 @@ class GamesDataset(AbstractDataset):
             items_to_remove = remaining_items - valid_image_items
             if items_to_remove:
                 print(f'Removing {len(items_to_remove)} items without valid images...')
-                # Lọc df để loại bỏ items không có image
+                # Filter on original item ids (df['sid'] is still original at this point)
                 df = df[df['sid'].isin(valid_image_items)]
-                # Tạo lại mapping
-                df, umap, smap = self.densify_index(df)
-                print(f'Final items after image filtering: {len(smap)}')
+                print(f"Final items after image filtering: {df['sid'].nunique()}")
+
+        # BƯỚC 6: Densify index ONCE (after all filtering)
+        df, umap, smap = self.densify_index(df)
         train, val, test = self.split_df(df, len(umap))
         meta = {smap[k]: v for k, v in meta_raw.items() if k in smap}
         # Export CSV and keep in-memory dataset for compatibility
