@@ -70,7 +70,20 @@ class AbstractDataset(metaclass=ABCMeta):
         if not csv_path.is_file():
             return None
         
-        df = pd.read_csv(csv_path)
+        try:
+            df = pd.read_csv(csv_path)
+        except pd.errors.EmptyDataError:
+            # Common when a previous run wrote an empty CSV (no columns) due to filtering.
+            # Treat as invalid so caller can re-run preprocessing.
+            print(f"[dataset] WARNING: CSV exists but is empty: {csv_path}. Will re-run preprocessing.")
+            return None
+        except Exception as e:
+            print(f"[dataset] WARNING: Failed to read CSV {csv_path}: {e}. Will re-run preprocessing.")
+            return None
+
+        if df is None or df.empty:
+            print(f"[dataset] WARNING: CSV has no rows: {csv_path}. Will re-run preprocessing.")
+            return None
         # Reconstruct train/val/test, meta, smap. umap cannot be recovered from CSV.
         df = df.reset_index(drop=False).rename(columns={"index": "row_order"})
         grouped = (
