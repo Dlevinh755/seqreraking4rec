@@ -107,6 +107,12 @@ class AbstractDataset(metaclass=ABCMeta):
         for item_new_id, row in meta_df.iterrows():
             text = row.get("item_text") if not pd.isna(row.get("item_text")) else None
             image_path = row.get("item_image_path") if not pd.isna(row.get("item_image_path")) else None
+            if isinstance(image_path, str):
+                # Handle legacy serialization like "PosixPath('data/.../img.jpg')" or "WindowsPath('...')".
+                for prefix in ("PosixPath('", "WindowsPath('"):
+                    if image_path.startswith(prefix) and image_path.endswith("')"):
+                        image_path = image_path[len(prefix):-2]
+                        break
             meta[int(item_new_id)] = {"text": text, "image_path": image_path}
 
         smap = {}
