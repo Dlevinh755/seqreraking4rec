@@ -117,8 +117,9 @@ class SportsDataset(AbstractDataset):
             items_to_remove = remaining_items - valid_image_items
             if items_to_remove:
                 print(f'Removing {len(items_to_remove)} items without valid images...')
-                # Lọc df để loại bỏ items không có image
-                df = df[df['sid'].isin(valid_image_items)]
+                # Map original item IDs to densified sids before filtering
+                keep_sids = [smap[item] for item in valid_image_items if item in smap]
+                df = df[df['sid'].isin(keep_sids)]
                 # Tạo lại mapping
                 df, umap, smap = self.densify_index(df)
                 print(f'Final items after image filtering: {len(smap)}')
