@@ -35,6 +35,7 @@ class SportsDataset(AbstractDataset):
     @classmethod
     def all_raw_file_names(cls):
         return ['ratings_Sports_and_Outdoors.csv', 'meta_Sports_and_Outdoors.json.gz']
+ 
     def maybe_download_raw_dataset(self):
         folder_path = self._get_rawdata_folder_path()
         if folder_path.is_dir() and\
@@ -116,9 +117,8 @@ class SportsDataset(AbstractDataset):
             items_to_remove = remaining_items - valid_image_items
             if items_to_remove:
                 print(f'Removing {len(items_to_remove)} items without valid images...')
-                # Map original item IDs to densified sids before filtering
-                keep_sids = [smap[item] for item in valid_image_items if item in smap]
-                df = df[df['sid'].isin(keep_sids)]
+                # Lọc df để loại bỏ items không có image
+                df = df[df['sid'].isin(valid_image_items)]
                 # Tạo lại mapping
                 df, umap, smap = self.densify_index(df)
                 print(f'Final items after image filtering: {len(smap)}')
