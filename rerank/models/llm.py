@@ -326,7 +326,6 @@ class LLMModel:
         hf_train_dataset = hf_train_dataset.map(
             formatting_prompts_func,
             batched=True,  # Process in batches for efficiency (like notebook)
-            num_proc=4,
         )
         
         # ✅ Debug: Print first sample to verify format (only if verbose >= 2)
