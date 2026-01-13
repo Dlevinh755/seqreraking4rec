@@ -572,7 +572,7 @@ Candidate items:
                     self._eval_prompts_analyzed = True
                     self._eval_prompts_count_at_analysis = len(self._eval_prompts)
                 # Final analysis if we've collected significantly more prompts (e.g., 10x more)
-                elif self._eval_prompts_analyzed and len(self._eval_prompts) >= self._eval_prompts_count_at_analysis * 10:
+                elif self._eval_prompts_analyzed and len(self._eval_prompts) >= self._eval_prompts_count_at_analysis + 1000:
                     print(f"\n[QwenReranker] Final eval prompt token analysis (all {len(self._eval_prompts)} prompts):")
                     self._analyze_eval_prompt_tokens()
                     self._eval_prompts_count_at_analysis = len(self._eval_prompts)  # Update to avoid repeated prints
