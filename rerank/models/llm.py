@@ -322,11 +322,11 @@ class LLMModel:
             
             raise ValueError(f"Invalid messages format: {type(messages_list)}")
         
-        # ✅ Map to format as text (like notebook Cell 7) - use batched=True for efficiency
+        # ✅ Map to format as text (like notebook Cell 7) - fix num_proc to 2 for stability
         hf_train_dataset = hf_train_dataset.map(
             formatting_prompts_func,
             batched=True,  # Process in batches for efficiency (like notebook)
-            num_proc=2,
+            num_proc=4,
         )
         
         # ✅ Debug: Print first sample to verify format (only if verbose >= 2)
