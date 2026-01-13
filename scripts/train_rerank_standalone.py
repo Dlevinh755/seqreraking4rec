@@ -462,13 +462,13 @@ def main():
     print("-" * 80)
     print(f"Val Metrics:")
     print(f"  {'Metric':<12} {'@1':>10} {'@5':>10} {'@10':>10} {'@20':>10}")
-    for metric_name in ["recall", "ndcg", "hit"]:
+    for metric_name in ["recall", "ndcg", "hit", "mrr"]:
         values = [val_metrics.get(f"{metric_name}@{k}", 0.0) for k in ks]
         print(f"  {metric_name.capitalize():<12} {values[0]:>10.4f} {values[1]:>10.4f} {values[2]:>10.4f} {values[3]:>10.4f}")
     
     print(f"\nTest Metrics:")
     print(f"  {'Metric':<12} {'@1':>10} {'@5':>10} {'@10':>10} {'@20':>10}")
-    for metric_name in ["recall", "ndcg", "hit"]:
+    for metric_name in ["recall", "ndcg", "hit", "mrr"]:
         values = [test_metrics.get(f"{metric_name}@{k}", 0.0) for k in ks]
         print(f"  {metric_name.capitalize():<12} {values[0]:>10.4f} {values[1]:>10.4f} {values[2]:>10.4f} {values[3]:>10.4f}")
     print("=" * 80)
