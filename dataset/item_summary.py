@@ -92,14 +92,20 @@ def _build_summary_prompt(
 
     content = "\n".join(blocks) if blocks else "- No content provided."
 
-    return (
-        "You are a product summarization assistant.\n"
-        "Write ONE factual sentence (<=60 words) that fuses the given details.\n"
-        "Do not invent attributes or marketing claims. Prefer omission over guessing.\n"
-        f"Output language: {language}.\n\n"
-        f"Details:\n{content}\n\n"
-        "Summary:"
-    )
+    return (f"""You are a product summarization assistant.
+
+Write exactly ONE neutral, factual sentence (maximum 60 words) that accurately combines the provided details.
+Use only information that is explicitly stated in the input.
+Do NOT infer, assume, or add attributes (e.g., compatibility, included items, materials, sizes) unless clearly specified.
+If information is unclear or conflicting, omit it rather than guessing.
+
+Output language: {language}
+
+Details:
+{content}
+
+Summary:
+""")
 
 
 def _select_auxiliary_text(

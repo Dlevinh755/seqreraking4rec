@@ -113,8 +113,8 @@ parser.add_argument('--retrieval_eval_mode', type=str, default='full_ranking',
 					choices=['full_ranking', 'candidate_list'],
 					help='Evaluation mode for retrieval models: full_ranking (evaluate on all items) or candidate_list (evaluate only on pre-generated candidates, default: full_ranking).')
 parser.add_argument('--qwen_mode', type=str, default='text_only',
-					choices=['text_only', 'caption', 'VIU'],
-					help='Prompt mode for Qwen reranker: text_only (description only), caption, VIU')
+				choices=['text_only', 'caption', 'VIU', 'summary'],
+				help='Prompt mode for Qwen reranker: text_only (description), caption, VIU, or summary (use item_summary column)')
 parser.add_argument('--qwen_model', type=str, default='qwen3-0.6b',
 					help='Model for Qwen reranker. Can be: qwen3-0.6b, qwen3-2bvl, qwen3-1.7b, qwen3-4b, or any HuggingFace model name (e.g., Qwen/Qwen2.5-0.5B-Instruct)')
 parser.add_argument('--qwen_max_history', type=int, default=5,

@@ -177,10 +177,17 @@ def main():
         user_history_text = {}
         item_meta = {}
         
+        qwen_mode = reranker_kwargs.get("mode", "text_only")
         for item_id, meta in data["meta"].items():
+            summary_text = None
+            if meta:
+                summary_text = meta.get("item_summary") or meta.get("summary")
             text = meta.get("text") if meta else None
-            if text:
-                item_id2text[item_id] = text
+
+            # Prefer item_summary when mode=summary, else fall back to text
+            chosen_text = summary_text if (qwen_mode == "summary" and summary_text) else text
+            if chosen_text:
+                item_id2text[item_id] = chosen_text
             item_meta[item_id] = meta if meta else {}
         
         # Build user history texts
@@ -202,7 +209,7 @@ def main():
         if args.rerank_method in ["qwen", "qwen3vl"]:
             # Get mode from kwargs or config
             qwen_mode = reranker_kwargs.get("mode", "text_only")
-            if qwen_mode in ["caption", "VIU"]:
+            if qwen_mode in ["caption", "VIU", "summary"]:
                 training_kwargs["item_meta"] = item_meta
                 # ✅ Also add to reranker_kwargs so reranker can use it during eval
                 reranker_kwargs["item_meta"] = item_meta
