@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from tqdm import tqdm
 from PIL import Image
-from .reduce_viu import reduce_viu_for_reranker
 
 
 def _debug_image_discovery(meta: Dict[int, Dict[str, Any]], num_items: int, sample: int = 8) -> None:
