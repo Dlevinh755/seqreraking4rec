@@ -61,7 +61,7 @@ def main():
         out_path = Path(args.output_csv)
     else:
         folder = get_preprocessed_folder_path(args.dataset_code, args.min_rating, args.min_uc, args.min_sc, args.data_path)
-        out_path = folder / f"dataset_single_export_sampled_{len(chosen)}u.csv"
+        out_path = folder / f"dataset_single_export.csv"
 
     sampled_df.to_csv(out_path, index=False)
 
