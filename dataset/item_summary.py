@@ -130,8 +130,8 @@ def generate_item_summaries(
     vius: Optional[Dict[int, str]] = None,
     source: str = "auto",
     language: str = "en",
-    batch_size: int = 4,
-    max_new_tokens: int = 64,
+    batch_size: int = 1,
+    max_new_tokens: int = 128,
     temperature: float = 0.7,
     max_seq_length: int = 2048,
 ) -> Dict[int, str]:
@@ -139,6 +139,7 @@ def generate_item_summaries(
     item_ids = sorted(meta.keys())
     results: Dict[int, str] = {}
 
+    batch_size = 1
     for start in tqdm(range(0, len(item_ids), batch_size), desc="Qwen3 item summaries"):
         batch_ids = item_ids[start : start + batch_size]
         prompts = []

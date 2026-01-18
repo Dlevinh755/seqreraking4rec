@@ -5,6 +5,13 @@
 #   --sample_users 200 
 #   --sample_seed 123
 
+"""Randomly sample a subset of users from dataset_single_export.csv.
+
+Use this after data_prepare.py to shrink data size for quick experiments.
+Also filters out unused items (items not interacted with by sampled users).
+Additionally filters items with fewer than --min_sc interactions and users with fewer than --min_uc interactions.
+"""
+
 import argparse
 import random
 import os
@@ -20,7 +27,7 @@ from dataset.paths import get_preprocessed_csv_path, get_preprocessed_folder_pat
 
 
 def _parse_args():
-    parser = argparse.ArgumentParser(description="Sample users from preprocessed CSV")
+    parser = argparse.ArgumentParser(description="Sample users from preprocessed CSV, filter unused items, and apply min_sc/min_uc filtering")
     parser.add_argument("--data_path", type=str, default="data", help="Path to data folder")
     parser.add_argument("--dataset_code", type=str, default="beauty", help="Dataset code")
     parser.add_argument("--min_rating", type=int, default=4, help="Minimum rating used in preprocessing")
@@ -57,6 +64,34 @@ def main():
 
     sampled_df = df[df["user_id"].isin(chosen)].copy()
 
+    # Filter out unused items (items not interacted with by sampled users)
+    used_items = set(sampled_df["item_new_id"].unique())
+    original_item_count = df["item_new_id"].nunique()
+    sampled_item_count = len(used_items)
+    
+    # Keep only rows where item_new_id is in used_items
+    # This removes item metadata rows for unused items
+    sampled_df = sampled_df[sampled_df["item_new_id"].isin(used_items)].copy()
+    
+    print(f"[sample_users] Filtered unused items: {original_item_count} -> {sampled_item_count} items")
+
+    # Additional filtering: remove items with fewer than min_sc interactions
+    item_counts = sampled_df.groupby("item_new_id").size()
+    valid_items = item_counts[item_counts >= args.min_sc].index
+    if len(valid_items) < len(item_counts):
+        sampled_df = sampled_df[sampled_df["item_new_id"].isin(valid_items)].copy()
+        print(f"[sample_users] Filtered items with < {args.min_sc} interactions: {len(item_counts)} -> {len(valid_items)} items")
+
+    # Additional filtering: remove users with fewer than min_uc interactions
+    user_counts = sampled_df.groupby("user_id").size()
+    valid_users = user_counts[user_counts >= args.min_uc].index
+    if len(valid_users) < len(user_counts):
+        sampled_df = sampled_df[sampled_df["user_id"].isin(valid_users)].copy()
+        print(f"[sample_users] Filtered users with < {args.min_uc} interactions: {len(user_counts)} -> {len(valid_users)} users")
+
+    final_user_count = sampled_df["user_id"].nunique()
+    final_item_count = sampled_df["item_new_id"].nunique()
+
     if args.output_csv:
         out_path = Path(args.output_csv)
     else:
@@ -66,11 +101,12 @@ def main():
     sampled_df.to_csv(out_path, index=False)
 
     split_counts = sampled_df.groupby("split")["user_id"].nunique().to_dict() if "split" in sampled_df.columns else {}
-    split_counts_items = sampled_df.groupby("split")["item_id"].nunique().to_dict() if "split" in sampled_df.columns else {}
+    split_counts_items = sampled_df.groupby("split")["item_new_id"].nunique().to_dict() if "split" in sampled_df.columns else {}
 
     print("[sample_users] Sampling complete")
-    print(f"  Input users: {total_users}")
-    print(f"  Sampled users: {len(chosen)}")
+    print(f"  Input users: {total_users}, items: {original_item_count}")
+    print(f"  After sampling: {len(chosen)} users, {sampled_item_count} items")
+    print(f"  Final (after filtering): {final_user_count} users, {final_item_count} items")
     print(f"  Output: {out_path}")
     if split_counts:
         print(f"  Users per split: {split_counts}")
