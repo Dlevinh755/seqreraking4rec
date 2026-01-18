@@ -66,6 +66,7 @@ def main():
     sampled_df.to_csv(out_path, index=False)
 
     split_counts = sampled_df.groupby("split")["user_id"].nunique().to_dict() if "split" in sampled_df.columns else {}
+    split_counts_items = sampled_df.groupby("split")["item_id"].nunique().to_dict() if "split" in sampled_df.columns else {}
 
     print("[sample_users] Sampling complete")
     print(f"  Input users: {total_users}")
@@ -73,6 +74,8 @@ def main():
     print(f"  Output: {out_path}")
     if split_counts:
         print(f"  Users per split: {split_counts}")
+    if split_counts_items:
+        print(f"  Items per split: {split_counts_items}")
 
 
 if __name__ == "__main__":
