@@ -46,6 +46,7 @@ parser.add_argument('--use_torch_compile', action='store_true', default=True,
 parser.add_argument('--preload_all_images', action='store_true', default=True,
 					help='Pre-load all images into memory before processing (faster but uses more RAM)')
 
+
 #===========================================================================
 # Training retrieval arguments
 #===========================================================================

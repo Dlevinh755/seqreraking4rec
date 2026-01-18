@@ -11,6 +11,12 @@ Requirements:
 """
 
 import argparse
+import os
+import sys
+
+# Add project root to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from config import parser  # reuse global parser to stay consistent with existing flags
 
 # Import side-effects parse_args in config.py; ensure we parse CLI here

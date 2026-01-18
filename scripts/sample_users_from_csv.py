@@ -7,7 +7,12 @@
 
 import argparse
 import random
+import os
+import sys
 from pathlib import Path
+
+# Add project root to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 
