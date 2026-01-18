@@ -89,16 +89,25 @@ def main():
         sampled_df = sampled_df[sampled_df["user_id"].isin(valid_users)].copy()
         print(f"[sample_users] Filtered users with < {args.min_uc} interactions: {len(user_counts)} -> {len(valid_users)} users")
 
-    # Ensure users appearing in val/test also have at least one train interaction
+    # Ensure train/val/test share the same user set (val/test are last interactions per user)
     if "split" in sampled_df.columns:
-        split_counts = sampled_df.groupby(["user_id", "split"]).size().unstack(fill_value=0)
-        val_test_no_train = split_counts[
-            (split_counts.get("val", 0) + split_counts.get("test", 0) > 0)
-            & (split_counts.get("train", 0) == 0)
-        ].index
-        if len(val_test_no_train) > 0:
-            sampled_df = sampled_df[~sampled_df["user_id"].isin(val_test_no_train)].copy()
-            print(f"[sample_users] Dropped users with val/test but no train rows: {len(val_test_no_train)} users")
+        train_users = set(sampled_df[sampled_df["split"] == "train"]["user_id"].unique())
+        val_users = set(sampled_df[sampled_df["split"] == "val"]["user_id"].unique())
+        test_users = set(sampled_df[sampled_df["split"] == "test"]["user_id"].unique())
+
+        keep_users = train_users & val_users & test_users
+        dropped_users = (train_users | val_users | test_users) - keep_users
+
+        if dropped_users:
+            before_rows = len(sampled_df)
+            sampled_df = sampled_df[sampled_df["user_id"].isin(keep_users)].copy()
+            after_rows = len(sampled_df)
+            print(
+                f"[sample_users] Dropped users missing in any split (train/val/test must match): "
+                f"{len(dropped_users)} users, rows {before_rows} -> {after_rows}"
+            )
+        else:
+            print("[sample_users] Train/val/test user sets already aligned")
 
     final_user_count = sampled_df["user_id"].nunique()
     final_item_count = sampled_df["item_new_id"].nunique()
