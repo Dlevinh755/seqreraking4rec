@@ -6,7 +6,7 @@ from pathlib import Path
 import gzip
 from abc import *
 from .utils import *
-from config import RAW_DATASET_ROOT_FOLDER
+# RAW_DATASET_ROOT_FOLDER = 'data'  # Default, can be overridden by args
 
 import numpy as np
 import pandas as pd
@@ -210,7 +210,9 @@ class AbstractDataset(metaclass=ABCMeta):
         return train, val, test
 
     def _get_rawdata_root_path(self):
-        return Path(RAW_DATASET_ROOT_FOLDER)
+        # Use data_path from args if provided, else default to 'data'
+        data_path = getattr(self.args, 'data_path', None)
+        return Path(data_path if data_path is not None else 'data')
 
     def _get_rawdata_folder_path(self):
         root = self._get_rawdata_root_path()

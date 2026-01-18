@@ -21,6 +21,7 @@ from dataset.paths import get_preprocessed_csv_path, get_preprocessed_folder_pat
 
 def _parse_args():
     parser = argparse.ArgumentParser(description="Sample users from preprocessed CSV")
+    parser.add_argument("--data_path", type=str, default="data", help="Path to data folder")
     parser.add_argument("--dataset_code", type=str, default="beauty", help="Dataset code")
     parser.add_argument("--min_rating", type=int, default=4, help="Minimum rating used in preprocessing")
     parser.add_argument("--min_uc", type=int, default=6, help="Minimum user count used in preprocessing")
@@ -34,7 +35,7 @@ def _parse_args():
 def main():
     args = _parse_args()
 
-    csv_path = get_preprocessed_csv_path(args.dataset_code, args.min_rating, args.min_uc, args.min_sc)
+    csv_path = get_preprocessed_csv_path(args.dataset_code, args.min_rating, args.min_uc, args.min_sc, args.data_path)
     if not csv_path.exists():
         print(f"[sample_users] CSV not found at {csv_path}. Run data_prepare.py first.")
         return
@@ -59,7 +60,7 @@ def main():
     if args.output_csv:
         out_path = Path(args.output_csv)
     else:
-        folder = get_preprocessed_folder_path(args.dataset_code, args.min_rating, args.min_uc, args.min_sc)
+        folder = get_preprocessed_folder_path(args.dataset_code, args.min_rating, args.min_uc, args.min_sc, args.data_path)
         out_path = folder / f"dataset_single_export_sampled_{len(chosen)}u.csv"
 
     sampled_df.to_csv(out_path, index=False)

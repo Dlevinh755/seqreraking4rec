@@ -277,7 +277,7 @@ def generate_item_summaries_from_csv(args) -> Optional[Dict[int, str]]:
         return None
 
     # Locate preprocessed CSV
-    csv_path = get_preprocessed_csv_path(args.dataset_code, args.min_rating, args.min_uc, args.min_sc)
+    csv_path = get_preprocessed_csv_path(args.dataset_code, args.min_rating, args.min_uc, args.min_sc, getattr(args, 'data_path', None))
     if not csv_path.exists():
         print(f"[item_summary] CSV not found at {csv_path}. Run data_prepare.py first.")
         return None
@@ -289,7 +289,7 @@ def generate_item_summaries_from_csv(args) -> Optional[Dict[int, str]]:
         print("[item_summary] No metadata found. Skipping summary generation.")
         return None
 
-    preproc_folder = get_preprocessed_folder_path(args.dataset_code, args.min_rating, args.min_uc, args.min_sc)
+    preproc_folder = get_preprocessed_folder_path(args.dataset_code, args.min_rating, args.min_uc, args.min_sc, getattr(args, 'data_path', None))
     summaries_path = preproc_folder / "item_summaries_qwen3_4b.pt"
 
     if summaries_path.exists():
