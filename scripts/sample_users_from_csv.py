@@ -89,6 +89,17 @@ def main():
         sampled_df = sampled_df[sampled_df["user_id"].isin(valid_users)].copy()
         print(f"[sample_users] Filtered users with < {args.min_uc} interactions: {len(user_counts)} -> {len(valid_users)} users")
 
+    # Ensure users appearing in val/test also have at least one train interaction
+    if "split" in sampled_df.columns:
+        split_counts = sampled_df.groupby(["user_id", "split"]).size().unstack(fill_value=0)
+        val_test_no_train = split_counts[
+            (split_counts.get("val", 0) + split_counts.get("test", 0) > 0)
+            & (split_counts.get("train", 0) == 0)
+        ].index
+        if len(val_test_no_train) > 0:
+            sampled_df = sampled_df[~sampled_df["user_id"].isin(val_test_no_train)].copy()
+            print(f"[sample_users] Dropped users with val/test but no train rows: {len(val_test_no_train)} users")
+
     final_user_count = sampled_df["user_id"].nunique()
     final_item_count = sampled_df["item_new_id"].nunique()
 
